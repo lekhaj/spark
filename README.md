@@ -40,11 +40,8 @@ text-to-image-pipeline
 
 ## Installation
 
-1. Clone the repository:
-   ```
-   git clone https://github.com/yourusername/text-to-image-pipeline.git
-   cd text-to-image-pipeline
-   ```
+1. Clone the repository
+
 
 2. Install the required dependencies:
 
