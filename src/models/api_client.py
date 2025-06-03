@@ -6,7 +6,7 @@ import base64
 from PIL import Image
 import sys
 import logging
-from src.config import OPENAI_API_KEY, STABILITY_API_KEY, DALLE_API_KEY
+from config import OPENAI_API_KEY, STABILITY_API_KEY, DALLE_API_KEY
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)

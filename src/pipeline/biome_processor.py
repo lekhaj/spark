@@ -1,9 +1,9 @@
 import os
 import json
 import logging
-from src.models.api_client import get_client
-from src.terrain.biome_parser import BiomeParser
-from src.config import DEFAULT_GRID_MODEL, DEFAULT_IMAGE_WIDTH, DEFAULT_IMAGE_HEIGHT, DEFAULT_NUM_IMAGES, OUTPUT_DIR
+from models.api_client import get_client
+from terrain.biome_parser import BiomeParser
+from config import DEFAULT_GRID_MODEL, DEFAULT_IMAGE_WIDTH, DEFAULT_IMAGE_HEIGHT, DEFAULT_NUM_IMAGES, OUTPUT_DIR
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
