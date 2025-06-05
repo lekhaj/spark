@@ -1,0 +1,6 @@
+env/
+# Ignore the virtual environment directory
+__pycache__/
+log.txt
+
+logs/

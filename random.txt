@@ -1,0 +1,73 @@
+"A sun-scorched desert settlement nestled between sandstone cliffs, known for its mastery of wind magic and pottery. Dome-roofed adobe houses cluster around a central oasis with crystal-clear water. Tall stone obelisks engraved with ancient runes of Ra and Anubis stand like guardians at the village edge. Sand constantly drifts over sunbaked paths, and the air hums with heat mirages. Traders in dyed robes move through tight alleys, bartering herbs, glass, and desert silk. Despite the arid landscape, underground channels irrigate secret cactus gardens cultivated by village shamans."
+A coastal fishing town nestled along a crescent-shaped shoreline, known for its vibrant seafood markets and wooden piers stretching into the turquoise waters. Colorful fishing boats bob gently in the harbor, while seagulls circle above fishmongers shouting prices. The air smells of salt and smoked fish, and small shacks with weathered nets line the sand. A large lighthouse watches over the bay, and children play barefoot along the damp shore. Palm trees sway behind the cottages, and the town thrives on its daily catch.
+an ancient village in a forest specializing in herbal medicine, totems of naga and garuda scattered around, ground is damp, atmosphere is dim due to dense canopy hanging above the village
+ssh -i "s_spu_key.pem" ubuntu@ec2-13-203-200-155.ap-south-1.compute.amazonaws.com
+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
+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
+ubuntu@ip-172-31-6-174:~/sagar/gradio-app$
+
+172.31.6.174
+scp -i "C:\Users\Sagar H V\Downloads\s_spu_key.pem" `
+    *.py `
+    *.json `
+    *.txt `
+    *.md `
+    requirements.txt `
+    ubuntu@13.203.200.155:/home/ubuntu/sagar/gradio-app
+db.createUser({
+  user: "sagar",
+  pwd: "KrSiDnSI9m8RgcHE",  // Use your secure password
+  roles: [ { role: "root", db: "admin" } ]
+})
+
+db.biomes.insertOne({
+  "biome_name": "Ancient Temple Grounds",
+  "theme_prompt": "A sacred site filled with forgotten temples, moss-covered statues, and ceremonial plazas.",
+  "possible_structures": {
+    "buildings": {
+      "16": {
+        "type": "Main Temple",
+        "description": "A massive stone temple with engraved walls, used for rituals and offerings.",
+        "attributes": { "hp": 250 }
+      },
+      "17": {
+        "type": "Guardian Statue",
+        "description": "Towering stone statues of mythical beasts guarding sacred entries.",
+        "attributes": { "hp": 180 }
+      },
+      "18": {
+        "type": "Library Ruin",
+        "description": "A crumbled building that once stored sacred scrolls and maps.",
+        "attributes": { "hp": 100 }
+      },
+      "19": {
+        "type": "Hidden Altar",
+        "description": "A secluded stone table for secret rituals, surrounded by overgrowth.",
+        "attributes": { "hp": 90 }
+      },
+      "20": {
+        "type": "Cursed Fountain",
+        "description": "A cracked, vine-covered fountain rumored to bestow visions or madness.",
+        "attributes": { "hp": 70 }
+      }
+    }
+  },
+  "possible_grids": [
+    {
+      "grid_id": "grid_005",
+      "layout": [
+        [0, 16, 16, 16, 0, 0, 18, 18, 0, 0],
+        [0, 16, 16, 16, 0, 18, 18, 0, 0, 0],
+        [0, 0, 0, 0, 17, 17, 17, 0, 0, 0],
+        [19, 19, 0, 0, 0, 0, 0, 20, 20, 0],
+        [19, 19, 0, 0, 0, 0, 0, 20, 20, 0],
+        [0, 0, 0, 16, 16, 0, 17, 17, 17, 0],
+        [0, 0, 0, 16, 16, 0, 17, 17, 17, 0],
+        [0, 0, 0, 0, 0, 0, 18, 18, 0, 0],
+        [20, 20, 0, 0, 19, 19, 0, 0, 0, 0],
+        [20, 20, 0, 0, 19, 19, 0, 0, 0, 0]
+      ]
+    }
+  ]
+}
+);
