@@ -4,7 +4,7 @@ from config import OPENROUTER_API_KEY, OPENROUTER_BASE_URL
 from db import insert_biome, get_next_structure_id
 from utils import build_prompt, extract_json_block, remap_structure_ids
 
-client = OpenAI(api_key="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", base_url=OPENROUTER_BASE_URL)
+client = OpenAI(api_key="API_KEY", base_url=OPENROUTER_BASE_URL)
 
 def generate_biome(theme):
     prompt = build_prompt(theme)
