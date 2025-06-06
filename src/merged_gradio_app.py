@@ -11,6 +11,9 @@ from PIL import Image
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
+import pymongo
+from datetime import datetime
+from db_helper import MongoDBHelper
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -419,6 +422,242 @@ def generate_3d_from_image(
             seed,
         )
 
+
+
+# MongoDB Integration Functions
+def get_prompts_from_mongodb(db_name, collection_name, limit=100):
+    """Retrieve prompts from MongoDB collection"""
+    try:
+        mongo_helper = MongoDBHelper()
+        
+        # Find documents that have theme_prompt or description fields
+        query = {"$or": [
+            {"theme_prompt": {"$exists": True}},
+            {"description": {"$exists": True}}
+        ]}
+        
+        documents = mongo_helper.find_many(db_name, collection_name, query=query, limit=limit)
+        
+        if not documents:
+            return [], "No prompts found in the specified collection."
+        
+        # Extract prompts and IDs
+        prompt_items = []
+        for doc in documents:
+            doc_id = str(doc.get("_id"))
+            # Try different fields that might contain a prompt
+            prompt = None
+            if "theme_prompt" in doc:
+                prompt = doc["theme_prompt"]
+            elif "description" in doc:
+                prompt = doc["description"]
+            
+            # Extract nested descriptions if present
+            if not prompt and "possible_structures" in doc:
+                structures = doc.get("possible_structures", {})
+                for category in structures.values():
+                    for item in category.values():
+                        if "description" in item:
+                            if not prompt:  # Take the first description found
+                                prompt = item["description"]
+                            break
+                    if prompt:
+                        break
+            
+            if prompt:
+                prompt_items.append((doc_id, prompt))
+        
+        return prompt_items, f"Found {len(prompt_items)} prompts"
+    except Exception as e:
+        logger.error(f"MongoDB connection error: {str(e)}")
+        return [], f"Error connecting to MongoDB: {str(e)}"
+
+def process_mongodb_prompt(prompt_id, db_name, collection_name, width=512, height=512, 
+                          num_images=1, model_type="openai"):
+    """Process a prompt from MongoDB by ID"""
+    global text_processor, pipeline
+    
+    try:
+        mongo_helper = MongoDBHelper()
+        document = mongo_helper.find_by_id(db_name, collection_name, prompt_id)
+        
+        if not document:
+            return None, "Error: Document not found"
+        
+        # Try different fields that might contain a prompt
+        prompt = None
+        if "theme_prompt" in document:
+            prompt = document["theme_prompt"]
+        elif "description" in document:
+            prompt = document["description"]
+        
+        # Extract nested descriptions if no prompt found
+        if not prompt and "possible_structures" in document:
+            structures = document.get("possible_structures", {})
+            for category in structures.values():
+                for item in category.values():
+                    if "description" in item:
+                        if not prompt:  # Take the first description found
+                            prompt = item["description"]
+                        break
+                if prompt:
+                    break
+        
+        if not prompt:
+            return None, "Error: No prompt found in the document"
+        
+        image, message = process_text_prompt(prompt, width, height, num_images, model_type)
+        
+        if image is not None and "Error" not in message:
+            # Update document in MongoDB to mark as processed
+            update = {
+                "$set": {
+                    "processed": True,
+                    "processed_at": datetime.now(),
+                    "model_used": model_type
+                }
+            }
+            mongo_helper.update_by_id(db_name, collection_name, prompt_id, update)
+        
+        return image, message
+        
+    except Exception as e:
+        logger.error(f"Error processing MongoDB prompt: {str(e)}")
+        return None, f"Error: {str(e)}"
+
+def get_grids_from_mongodb(db_name, collection_name, limit=100):
+    """Retrieve grid data from MongoDB collection"""
+    try:
+        mongo_helper = MongoDBHelper()
+        
+        # Find documents that have grid or layout fields
+        query = {"$or": [
+            {"grid": {"$exists": True}},
+            {"possible_grids.layout": {"$exists": True}}
+        ]}
+        
+        documents = mongo_helper.find_many(db_name, collection_name, query=query, limit=limit)
+        
+        if not documents:
+            return [], "No grids found in the specified collection."
+        
+        # Extract grids and IDs
+        grid_items = []
+        for doc in documents:
+            doc_id = str(doc.get("_id"))
+            
+            # Check for direct grid field
+            if "grid" in doc:
+                grid = doc["grid"]
+                grid_items.append((doc_id, grid))
+            # Check for nested grids in possible_grids array
+            elif "possible_grids" in doc:
+                for grid_obj in doc["possible_grids"]:
+                    if "layout" in grid_obj:
+                        # Convert 2D array to string format
+                        grid_str = "\n".join([" ".join(map(str, row)) for row in grid_obj["layout"]])
+                        grid_items.append((f"{doc_id}_{grid_obj.get('grid_id', 'grid')}", grid_str))
+        
+        return grid_items, f"Found {len(grid_items)} grids"
+    except Exception as e:
+        logger.error(f"MongoDB connection error: {str(e)}")
+        return [], f"Error connecting to MongoDB: {str(e)}"
+
+def process_mongodb_grid(grid_item, db_name, collection_name, width=512, height=512, 
+                        num_images=1, model_type="stability"):
+    """Process a grid from MongoDB by ID"""
+    global grid_processor, pipeline
+    
+    try:
+        # Split the grid_item which could be "document_id" or "document_id_grid_id"
+        parts = grid_item.split("_", 1)
+        doc_id = parts[0]
+        
+        mongo_helper = MongoDBHelper()
+        document = mongo_helper.find_by_id(db_name, collection_name, doc_id)
+        
+        if not document:
+            return None, None, "Error: Document not found"
+        
+        grid = None
+        
+        # Direct grid field
+        if len(parts) == 1 and "grid" in document:
+            grid = document["grid"]
+        
+        # Nested grid in possible_grids
+        elif len(parts) > 1 and "possible_grids" in document:
+            grid_id = parts[1]
+            for grid_obj in document["possible_grids"]:
+                if grid_obj.get("grid_id") == grid_id:
+                    if "layout" in grid_obj:
+                        grid = "\n".join([" ".join(map(str, row)) for row in grid_obj["layout"]])
+                        break
+        
+        if not grid:
+            return None, None, "Error: Grid not found in the document"
+        
+        image, grid_viz, message = process_grid_input(grid, width, height, num_images, model_type)
+        
+        if image is not None and grid_viz is not None:
+            # Update document in MongoDB to mark as processed
+            update = {
+                "$set": {
+                    "processed": True,
+                    "processed_at": datetime.now(),
+                    "model_used": model_type
+                }
+            }
+            mongo_helper.update_by_id(db_name, collection_name, doc_id, update)
+        
+        return image, grid_viz, message
+        
+    except Exception as e:
+        logger.error(f"Error processing MongoDB grid: {str(e)}")
+        return None, None, f"Error: {str(e)}"
+
+def batch_process_mongodb_prompts(db_name, collection_name, limit=10, width=512, height=512, 
+                                 model_type="openai", update_db=False):
+    """Batch process multiple prompts from MongoDB"""
+    try:
+        # First get the prompts
+        prompt_items, status = get_prompts_from_mongodb(db_name, collection_name, limit)
+        
+        if not prompt_items:
+            return "No prompts found to process."
+        
+        results = []
+        for doc_id, prompt in prompt_items:
+            # Process the prompt
+            logger.info(f"Processing prompt: {prompt}")
+            image, message = process_text_prompt(prompt, width, height, 1, model_type)
+            
+            if image is not None and "Error" not in message:
+                # Save image
+                image_path = os.path.join(OUTPUT_DIR, f"{doc_id}.png")
+                image.save(image_path)
+                results.append(f"Generated image for: {prompt[:30]}...")
+                
+                # Update document in MongoDB if requested
+                if update_db:
+                    mongo_helper = MongoDBHelper()
+                    update = {
+                        "$set": {
+                            "processed": True,
+                            "image_path": image_path,
+                            "processed_at": datetime.now(),
+                            "model_used": model_type
+                        }
+                    }
+                    mongo_helper.update_by_id(db_name, collection_name, doc_id, update)
+            else:
+                results.append(f"Failed to generate image for: {prompt[:30]}... - {message}")
+        
+        return "\n".join(results)
+        
+    except Exception as e:
+        logger.error(f"Error in batch processing: {str(e)}")
+        return f"Error: {str(e)}"
 # Create the Gradio Interface
 def build_app():
     custom_css = """
@@ -545,7 +784,128 @@ def build_app():
                         with gr.Row():
                             file_out = gr.File(label="White Mesh", visible=False)
                             file_out2 = gr.File(label="Textured Mesh", visible=False)
-        
+            
+            # MongoDB Prompts Tab
+            with gr.TabItem("MongoDB", id="tab_mongodb"):
+                with gr.Tabs() as mongo_tabs:
+                    with gr.TabItem("Text Prompts", id="tab_mongo_text"):
+                        with gr.Row():
+                            with gr.Column(scale=2):
+                                mongo_db_name = gr.Textbox(label="Database Name", value="biomes", placeholder="Enter database name")
+                                mongo_collection = gr.Textbox(label="Collection Name", value="biomes", placeholder="Enter collection name")
+                                mongo_fetch_btn = gr.Button("Fetch Prompts")
+                                with gr.Row():
+                                    mongo_width = gr.Slider(minimum=256, maximum=1024, value=512, step=64, label="Width")
+                                    mongo_height = gr.Slider(minimum=256, maximum=1024, value=512, step=64, label="Height")
+                                mongo_num_images = gr.Slider(minimum=1, maximum=4, value=1, step=1, label="Number of Images")
+                                mongo_model = gr.Dropdown(["openai", "stability", "local"], value="openai", label="Model")
+                            mongo_process_btn = gr.Button("Generate Image", interactive=False)
+                    
+                        with gr.Column(scale=2):
+                            mongo_prompts = gr.Dropdown(label="Select a Prompt", choices=[], interactive=False)
+                            mongo_status = gr.Textbox(label="Status", interactive=False)
+                            mongo_output = gr.Image(label="Generated Image")
+                            mongo_message = gr.Textbox(label="Generation Status", interactive=False)
+                            mongo_to_3d_btn = gr.Button("Convert to 3D", visible=False)
+                        
+                    with gr.Accordion("Batch Processing", open=False):
+                        with gr.Row():
+                            batch_limit = gr.Slider(minimum=1, maximum=50, value=10, step=1, label="Number of Prompts to Process")
+                            update_db = gr.Checkbox(label="Update MongoDB after processing", value=True)
+                        batch_process_btn = gr.Button("Batch Process Prompts")
+                        batch_results = gr.Textbox(label="Batch Processing Results", interactive=False, lines=10)
+                        
+                with gr.TabItem("Grid Data", id="tab_mongo_grid"):
+                    with gr.Row():
+                        with gr.Column(scale=2):
+                            grid_db_name = gr.Textbox(label="Database Name", value="biomes", placeholder="Enter database name")
+                            grid_collection = gr.Textbox(label="Collection Name", value="biomes", placeholder="Enter collection name")
+                            grid_fetch_btn = gr.Button("Fetch Grids")
+                            with gr.Row():
+                                grid_width = gr.Slider(minimum=256, maximum=1024, value=512, step=64, label="Width")
+                                grid_height = gr.Slider(minimum=256, maximum=1024, value=512, step=64, label="Height")
+                            grid_num_images = gr.Slider(minimum=1, maximum=4, value=1, step=1, label="Number of Images")
+                            grid_model = gr.Dropdown(["openai", "stability", "local"], value="stability", label="Model")
+                            grid_process_btn = gr.Button("Generate Image", interactive=False)
+                    
+                        with gr.Column(scale=2):
+                            grid_items = gr.Dropdown(label="Select a Grid", choices=[], interactive=False)
+                            grid_status = gr.Textbox(label="Status", interactive=False)
+                            grid_output = gr.Image(label="Generated Image")
+                            grid_visualization = gr.Image(label="Grid Visualization")
+                            grid_message = gr.Textbox(label="Generation Status", interactive=False)
+                            grid_to_3d_btn = gr.Button("Convert to 3D", visible=False)
+    # MongoDB Prompt tab event handlers
+        mongo_fetch_btn.click(
+            get_prompts_from_mongodb,
+            inputs=[mongo_db_name, mongo_collection],
+            outputs=[mongo_prompts, mongo_status]
+        ).then(
+            lambda: (gr.update(interactive=True), gr.update(interactive=True)),
+            outputs=[mongo_prompts, mongo_process_btn]
+        )
+
+        mongo_process_btn.click(
+            process_mongodb_prompt,
+            inputs=[
+                mongo_prompts, mongo_db_name, mongo_collection,
+                mongo_width, mongo_height, mongo_num_images, mongo_model
+            ],
+            outputs=[mongo_output, mongo_message]
+        ).then(
+            lambda: gr.update(visible=HAS_3D_SUPPORT),  # Only show if 3D is supported
+            outputs=[mongo_to_3d_btn]
+        )
+
+        batch_process_btn.click(
+            batch_process_mongodb_prompts,
+            inputs=[
+                mongo_db_name, mongo_collection, batch_limit,
+                mongo_width, mongo_height, mongo_model, update_db
+            ],
+            outputs=[batch_results]
+        )
+
+        # MongoDB Grid tab event handlers
+        grid_fetch_btn.click(
+            get_grids_from_mongodb,
+            inputs=[grid_db_name, grid_collection],
+            outputs=[grid_items, grid_status]
+        ).then(
+            lambda: (gr.update(interactive=True), gr.update(interactive=True)),
+            outputs=[grid_items, grid_process_btn]
+        )
+
+        grid_process_btn.click(
+            process_mongodb_grid,
+            inputs=[
+                grid_items, grid_db_name, grid_collection,
+                grid_width, grid_height, grid_num_images, grid_model
+            ],
+            outputs=[grid_output, grid_visualization, grid_message]
+        ).then(
+            lambda: gr.update(visible=HAS_3D_SUPPORT),  # Only show if 3D is supported
+            outputs=[grid_to_3d_btn]
+        )
+
+        # Connect MongoDB outputs to 3D generation
+        mongo_to_3d_btn.click(
+            lambda: gr.update(selected="tab_3d"),
+            outputs=[tabs]
+        ).then(
+            lambda x: x,
+            inputs=[mongo_output],
+            outputs=[image_input]
+        )
+
+        grid_to_3d_btn.click(
+            lambda: gr.update(selected="tab_3d"),
+            outputs=[tabs]
+        ).then(
+            lambda x: x,
+            inputs=[grid_output],
+            outputs=[image_input]
+        )     
         # Set up event handlers
         text_submit.click(
             process_text_prompt,
