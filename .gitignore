@@ -63,3 +63,4 @@ Icon
 # Logs
 logs/
 *.log
+/gradio_cache

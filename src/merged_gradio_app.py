@@ -11,6 +11,10 @@ from PIL import Image
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
+try:
+    import uvicorn
+except ImportError:
+    pass
 import pymongo
 from datetime import datetime
 from db_helper import MongoDBHelper
@@ -791,7 +795,7 @@ def build_app():
                     with gr.TabItem("Text Prompts", id="tab_mongo_text"):
                         with gr.Row():
                             with gr.Column(scale=2):
-                                mongo_db_name = gr.Textbox(label="Database Name", value="biomes", placeholder="Enter database name")
+                                mongo_db_name = gr.Textbox(label="Database Name", value="World_builder", placeholder="Enter database name")
                                 mongo_collection = gr.Textbox(label="Collection Name", value="biomes", placeholder="Enter collection name")
                                 mongo_fetch_btn = gr.Button("Fetch Prompts")
                                 with gr.Row():
@@ -802,7 +806,7 @@ def build_app():
                             mongo_process_btn = gr.Button("Generate Image", interactive=False)
                     
                         with gr.Column(scale=2):
-                            mongo_prompts = gr.Dropdown(label="Select a Prompt", choices=[], interactive=False)
+                            mongo_prompts = gr.Dropdown(label="Select a Prompt", choices=[], interactive=False, allow_custom_value=True)
                             mongo_status = gr.Textbox(label="Status", interactive=False)
                             mongo_output = gr.Image(label="Generated Image")
                             mongo_message = gr.Textbox(label="Generation Status", interactive=False)
@@ -818,7 +822,7 @@ def build_app():
                 with gr.TabItem("Grid Data", id="tab_mongo_grid"):
                     with gr.Row():
                         with gr.Column(scale=2):
-                            grid_db_name = gr.Textbox(label="Database Name", value="biomes", placeholder="Enter database name")
+                            grid_db_name = gr.Textbox(label="Database Name", value="World_builder", placeholder="Enter database name")
                             grid_collection = gr.Textbox(label="Collection Name", value="biomes", placeholder="Enter collection name")
                             grid_fetch_btn = gr.Button("Fetch Grids")
                             with gr.Row():
@@ -829,7 +833,7 @@ def build_app():
                             grid_process_btn = gr.Button("Generate Image", interactive=False)
                     
                         with gr.Column(scale=2):
-                            grid_items = gr.Dropdown(label="Select a Grid", choices=[], interactive=False)
+                            grid_items = gr.Dropdown(label="Select a Grid", choices=[], interactive=False, allow_custom_value=True)
                             grid_status = gr.Textbox(label="Status", interactive=False)
                             grid_output = gr.Image(label="Generated Image")
                             grid_visualization = gr.Image(label="Grid Visualization")
@@ -1046,12 +1050,15 @@ if __name__ == "__main__":
             logger.warning("For Ubuntu/Debian: sudo apt-get install libgl1-mesa-glx xvfb")
             logger.warning("For CentOS/RHEL: sudo yum install mesa-libGL")
         
-        if False:  # Change to True to use FastAPI
+        # Launch the app using either FastAPI or Gradio's built-in server
+        try:
+            # Use FastAPI for better performance and static file handling
             import uvicorn
             app = create_fastapi_app(demo)
             uvicorn.run(app, host=args.host, port=args.port)
-        else:
-            # Launch using Gradio's built-in server
+        except ImportError:
+            # Fall back to Gradio's built-in server if uvicorn is not available
+            logger.warning("Uvicorn not found, using Gradio's built-in server instead")
             demo.launch(server_name=args.host, server_port=args.port, share=args.share)
     except Exception as e:
         logger.error(f"Error starting app: {str(e)}")
