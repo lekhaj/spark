@@ -1,0 +1,12 @@
+This file contains sample text prompts for testing the pipeline.
+
+A beautiful sunset over the mountains.
+A serene lake surrounded by pine trees.
+A bustling city skyline at night.
+A tranquil beach with white sand and clear water.
+A dense forest with sunlight filtering through the leaves.
+A snowy landscape with a cozy cabin.
+A vibrant flower garden in full bloom.
+A futuristic city with flying cars.
+A mystical forest with glowing plants.
+A desert landscape with sand dunes and cacti.
