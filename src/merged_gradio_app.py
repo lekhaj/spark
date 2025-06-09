@@ -24,7 +24,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Import local modules for 2D image generation
-from config import OUTPUT_DIR
+from config import OUTPUT_DIR, OUTPUT_IMAGES_DIR, OUTPUT_3D_ASSETS_DIR
 from pipeline.text_processor import TextProcessor
 from pipeline.grid_processor import GridProcessor
 from pipeline.pipeline import Pipeline
@@ -60,8 +60,12 @@ HTML_OUTPUT_PLACEHOLDER = f"""
 </div>
 """
 
+
+
 # Create output directories
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(OUTPUT_IMAGES_DIR, exist_ok=True)
+os.makedirs(OUTPUT_3D_ASSETS_DIR, exist_ok=True)
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 # Initialize global variables for processors and pipeline
@@ -150,10 +154,16 @@ def process_text_prompt(prompt, width=512, height=512, num_images=1, model_type=
         # Create a grid of images if multiple were generated
         if len(images) > 1:
             grid_image = create_image_grid(images)
-            save_image(grid_image, f"text_grid_{prompt[:20]}")
-            return grid_image, f"Generated {len(images)} images from text prompt"
+            grid_path = save_image(grid_image, f"text_grid_{prompt[:20]}", "images")
+            
+            # Also save individual images
+            for i, img in enumerate(images):
+                save_image(img, f"text_{prompt[:20]}_{i}", "images")
+                
+            return grid_image, f"Generated {len(images)} images from text prompt. Saved to {grid_path}"
         else:
-            return images[0], "Generated 1 image from text prompt"
+            img_path = save_image(images[0], f"text_{prompt[:20]}", "images")
+            return images[0], f"Generated 1 image from text prompt. Saved to {img_path}"
     
     except Exception as e:
         logger.error(f"Error processing text: {str(e)}")
@@ -183,13 +193,22 @@ def process_grid_input(grid_string, width=512, height=512, num_images=1, model_t
         
         logger.info(f"Generated {len(images)} images from grid")
         
+        # Save grid visualization
+        viz_path = save_image(grid_viz, "grid_visualization", "images")
+        
         # Create a grid of images if multiple were generated
         if len(images) > 1:
             grid_image = create_image_grid(images)
-            save_image(grid_image, "terrain_grid")
-            return grid_image, grid_viz, f"Generated {len(images)} images from grid"
+            grid_path = save_image(grid_image, "terrain_grid", "images")
+            
+            # Also save individual images
+            for i, img in enumerate(images):
+                save_image(img, f"terrain_{i}", "images")
+                
+            return grid_image, grid_viz, f"Generated {len(images)} images from grid. Saved to {grid_path}"
         else:
-            return images[0], grid_viz, "Generated 1 image from grid"
+            img_path = save_image(images[0], "terrain", "images")
+            return images[0], grid_viz, f"Generated 1 image from grid. Saved to {img_path}"
     
     except Exception as e:
         logger.error(f"Error processing grid: {str(e)}")
@@ -216,6 +235,9 @@ def process_file_upload(file_obj, width=512, height=512, num_images=1, text_mode
         else:
             logger.info("File content detected as text prompt")
             image, message = process_text_prompt(content, width, height, num_images, text_model_type)
+            # Save the file name for reference
+            if image is not None:
+                save_image(image, f"file_upload_{time.strftime('%Y%m%d-%H%M%S')}", "images")
             return image, None, message
             
     except Exception as e:
@@ -262,14 +284,34 @@ def gen_save_folder(max_size=200):
 
 def export_mesh(mesh, save_folder, textured=False, type='glb'):
     """Export the mesh to a file"""
+    # Create output directory for 3D assets if it doesn't exist
+    os.makedirs(OUTPUT_3D_ASSETS_DIR, exist_ok=True)
+    
+    # Generate timestamp for unique filenames
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Save to the temp folder for gradio display
     if textured:
         path = os.path.join(save_folder, f'textured_mesh.{type}')
+        output_name = f'textured_mesh_{timestamp}.{type}'
     else:
         path = os.path.join(save_folder, f'white_mesh.{type}')
+        output_name = f'white_mesh_{timestamp}.{type}'
+    
+    # Export to the gradio cache folder
     if type not in ['glb', 'obj']:
         mesh.export(path)
     else:
         mesh.export(path, include_normals=textured)
+        
+    # Also save a copy to the permanent output directory
+    output_path = os.path.join(OUTPUT_3D_ASSETS_DIR, output_name)
+    if type not in ['glb', 'obj']:
+        mesh.export(output_path)
+    else:
+        mesh.export(output_path, include_normals=textured)
+    
+    logger.info(f"Saved 3D model to {output_path}")
     return path
 
 def build_model_viewer_html(save_folder, height=660, width=790, textured=False):
@@ -338,6 +380,10 @@ def generate_3d_from_image(
     if isinstance(image, np.ndarray):
         image = Image.fromarray(image)
     
+    # Save input image
+    input_image_path = save_image(image, "3d_input", "images")
+    logger.info(f"Saved input image for 3D generation to {input_image_path}")
+    
     seed = int(randomize_seed_fn(seed, randomize_seed))
     
     start_time_0 = time.time()
@@ -350,7 +396,8 @@ def generate_3d_from_image(
             'octree_resolution': octree_resolution,
             'check_box_rembg': check_box_rembg,
             'num_chunks': num_chunks,
-        }
+        },
+        'input_image_path': input_image_path
     }
     time_meta = {}
     
@@ -623,6 +670,44 @@ def process_mongodb_grid(grid_item, db_name, collection_name, width=512, height=
 def batch_process_mongodb_prompts(db_name, collection_name, limit=10, width=512, height=512, 
                                  model_type="openai", update_db=False):
     """Batch process multiple prompts from MongoDB"""
+    try:
+        # First get the prompts
+        prompt_items, status = get_prompts_from_mongodb(db_name, collection_name, limit)
+        
+        if not prompt_items:
+            return "No prompts found to process."
+        
+        results = []
+        for doc_id, prompt in prompt_items:
+            # Process the prompt
+            logger.info(f"Processing prompt: {prompt}")
+            image, message = process_text_prompt(prompt, width, height, 1, model_type)
+            
+            if image is not None and "Error" not in message:
+                # Save image to the output directory
+                image_path = save_image(image, f"mongo_{doc_id}", "images")
+                results.append(f"Generated image for: {prompt[:30]}... Saved to {image_path}")
+                
+                # Update document in MongoDB if requested
+                if update_db:
+                    mongo_helper = MongoDBHelper()
+                    update = {
+                        "$set": {
+                            "processed": True,
+                            "image_path": image_path,
+                            "processed_at": datetime.now(),
+                            "model_used": model_type
+                        }
+                    }
+                    mongo_helper.update_by_id(db_name, collection_name, doc_id, update)
+            else:
+                results.append(f"Failed to generate image for: {prompt[:30]}... - {message}")
+        
+        return "\n".join(results)
+        
+    except Exception as e:
+        logger.error(f"Error in batch processing: {str(e)}")
+        return f"Error: {str(e)}"
     try:
         # First get the prompts
         prompt_items, status = get_prompts_from_mongodb(db_name, collection_name, limit)
@@ -1029,6 +1114,12 @@ if __name__ == "__main__":
     parser.add_argument('--share', action='store_true', help='Share the Gradio app')
     parser.add_argument('--disable_3d', action='store_true', help='Disable 3D generation functionality')
     args = parser.parse_args()
+    
+    # Create output directories
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    os.makedirs(OUTPUT_IMAGES_DIR, exist_ok=True)
+    os.makedirs(OUTPUT_3D_ASSETS_DIR, exist_ok=True)
+    os.makedirs(SAVE_DIR, exist_ok=True)
     
     # Build and launch the Gradio app
     try:

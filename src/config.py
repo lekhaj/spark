@@ -21,8 +21,10 @@ DEFAULT_NUM_IMAGES = int(os.getenv('DEFAULT_NUM_IMAGES', '1'))
 # Local model paths (for future implementation)
 LOCAL_MODEL_PATH = os.getenv('LOCAL_MODEL_PATH', './models/local')
 
-# Output directory
+# Output directories
 OUTPUT_DIR = os.getenv('OUTPUT_DIR', './output')
+OUTPUT_IMAGES_DIR = os.path.join(OUTPUT_DIR, 'images')
+OUTPUT_3D_ASSETS_DIR = os.path.join(OUTPUT_DIR, '3d_assets')
 
 class Config:
     API_KEY = os.getenv("API_KEY", "your_api_key_here")
