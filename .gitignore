@@ -2,7 +2,7 @@
 .env
 .env.*
 !.env.example
-
+.aws
 # Python cache files
 __pycache__/
 *.py[cod]
