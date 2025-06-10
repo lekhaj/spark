@@ -1,4 +1,4 @@
-# 2D-to-3D Generation Pipeline
+# Text to grid ,2D-to-3D Generation Pipeline
 
 A versatile pipeline that converts text prompts and terrain grids into images, and then transforms those images into 3D models using Hunyuan3D-2.
 
@@ -23,7 +23,15 @@ A versatile pipeline that converts text prompts and terrain grids into images, a
 │   ├── terrain                # Terrain type definitions and grid parsing
 │   │   ├── __init__.py
 │   │   ├── terrain_types.py    # Definitions of terrain types
-│   │   └── grid_parser.py      # Grid parsing logic
+│   │   └── grid_parser.py
+│   ├── text_to_grid                # Terrain type definitions and grid parsing
+│   │   ├── __init__.py
+│   │   ├── grid_generator.py    grid logic -> grid
+│   │   ├── grid_placement_logic.py    # logic -> grid logic
+|   |   ├── placement_suggestor.py    # llm suggestions -> logic
+│   │   ├── utils.py             # utility functions
+|   |   ├── llm.py             # llm calls
+|   |   └── structure_registry.py # Grid parsing logic
 │   └── utils                  # Utility functions
 │       ├── __init__.py
 │       └── image_utils.py      # Image manipulation utilities
