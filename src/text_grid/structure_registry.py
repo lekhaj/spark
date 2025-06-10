@@ -1,6 +1,6 @@
 import logging
 from pymongo import MongoClient
-from config import MONGO_URI, DB_NAME, COLLECTION_NAME, DB_USER, DB_PASSWORD, DB_HOST
+from src.config import MONGO_URI, DB_NAME, COLLECTION_NAME, DB_USER, DB_PASSWORD, DB_HOST
 import urllib.parse
 from utils import generate_biome_name_from_prompt
 structure_collection = ["structures"]
