@@ -1,4 +1,4 @@
-# src/merged_gradio_app.py
+# merged_gradio_app_1.py
 import os
 import time
 import uuid
@@ -7,6 +7,7 @@ import argparse
 import logging
 import gradio as gr
 import numpy as np
+import torch # Keep torch as it's used by numpy for array conversion in some places, even without direct model loading
 from PIL import Image, ImageDraw, ImageFont 
 from pathlib import Path
 from fastapi import FastAPI
@@ -14,7 +15,6 @@ from fastapi.staticfiles import StaticFiles
 import json 
 import httpx 
 import base64 
-import re # For robust JSON extraction
 
 try:
     import uvicorn
@@ -39,25 +39,57 @@ from pipeline.grid_processor import GridProcessor
 from pipeline.pipeline import Pipeline 
 from terrain.grid_parser import GridParser 
 from utils.image_utils import save_image, create_image_grid 
-from text_grid import llm as llm_module # Re-added for LLM calls
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Explicitly set 3D support to False as per user request
-HAS_3D_SUPPORT = False 
+# Removed 3D-related imports and flag initialization
+# HAS_3D_SUPPORT = False 
+# try:
+#     from hy3dgen.shapegen.utils import logger as hy3d_logger
+#     from hy3dgen.rembg import BackgroundRemover
+#     from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline, FaceReducer
+#     from hy3dgen.shapegen.pipelines import export_to_trimesh
+#     HAS_3D_SUPPORT = True 
+# except ImportError as e:
+#     logger.warning(f"3D generation modules could not be imported: {str(e)}")
+#     logger.warning("To enable 3D generation, install required system packages:")
+#     logger.warning("For Ubuntu/Debian: sudo apt-get install libgl1-mesa-glx xvfb")
+#     logger.warning("For CentOS/RHEL: sudo yum install mesa-libGL")
+#     HAS_3D_SUPPORT = False 
 
-# Constants
+# Constants - Reduced to only those still in use
+# SAVE_DIR = "gradio_cache" # Not used since 3D is removed
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__)) 
+
+# Removed 3D-related constants
+# MAX_SEED = int(1e7)
+# HTML_HEIGHT = 650
+# HTML_WIDTH = 500
+# HTML_OUTPUT_PLACEHOLDER = f"""
+# <div style='height: {650}px; width: 100%; border-radius: 8px; border-color: #e5e7eb; border-style: solid; border-width: 1px; display: flex; justify-content: center; align-items: center;'>
+#   <div style='text-align: center; font-size: 16px; color: #6b7280;'>
+#     <p style="color: #8d8d8d;">Welcome to the Integrated Pipeline!</p>
+#     <p style="color: #8d8d8d;">No mesh here yet. Generate an image first, then create a 3D model.</p>
+#   </div>
+# </div>
+# """
 
 # Create output directories (keeping OUTPUT_DIR)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+# Removed: os.makedirs(SAVE_DIR, exist_ok=True)
 
 # Initialize global variables for processors and pipeline
 text_processor = None
 grid_processor = None
 pipeline = None
+# Removed 3D-related global variables
+# rmbg_worker = None
+# i23d_worker = None
+# face_reduce_worker = None
+# texgen_worker = None
+# HAS_TEXTUREGEN = False 
 
 def initialize_processors():
     """Initialize the 2D processors and pipeline with default models"""
@@ -67,6 +99,10 @@ def initialize_processors():
     grid_processor = GridProcessor(model_type=DEFAULT_GRID_MODEL) 
     pipeline = Pipeline(text_processor, grid_processor)
     logger.info("2D processors initialized.")
+
+# Removed initialize_3d_processors function entirely
+# def initialize_3d_processors(...):
+#     ...
 
 # Initialize 2D processors on startup
 initialize_processors()
@@ -289,9 +325,9 @@ def create_sample_grid():
     """
     return sample_grid
 
-# Removed all 3D Generation Functions
+# Removed all 3D Generation Functions (gen_save_folder, export_mesh, build_model_viewer_html, randomize_seed_fn, generate_3d_from_image)
 
-# MongoDB Integration Functions 
+# MongoDB Integration Functions (adapted to use MONGO_DB_NAME and MONGO_BIOME_COLLECTION from config)
 def get_prompts_from_mongodb(db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_COLLECTION, limit=100):
     """Retrieve prompts from MongoDB collection"""
     try:
@@ -529,6 +565,10 @@ def batch_process_mongodb_prompts(db_name=MONGO_DB_NAME, collection_name=MONGO_B
         logger.error(f"Error in batch processing: {str(e)}")
         return f"Error: {str(e)}"
 
+# Removed: process_detailed_text_to_grid function entirely
+# async def process_detailed_text_to_grid(...):
+#     ...
+
 # Create the Gradio Interface
 def build_app():
     custom_css = """
@@ -549,9 +589,13 @@ def build_app():
     with gr.Blocks(theme=gr.themes.Base(), title='2D Pipeline', css=custom_css) as demo:
         gr.HTML(title_html)
         
-        # Only include the specified tabs: Biome Inspector, Text to Image, Grid to Image, File Upload, MongoDB
+        # Removed 3D-related note
+        # if not HAS_3D_SUPPORT:
+        #     gr.HTML(...)
+        
+        # Set selected="tab_biome_inspector" as the new default
         with gr.Tabs(selected="tab_biome_inspector") as tabs: 
-            # Biome Inspector Tab
+            # Biome Inspector Tab (Now first position in UI)
             with gr.TabItem("Biome Inspector", id="tab_biome_inspector"):
                 gr.Markdown("# Biome Generation Pipeline Inspector")
 
@@ -599,6 +643,43 @@ def build_app():
                     value=initial_biome_display_value
                 )
 
+
+            # Existing Text to Biome (Grid) Tab (This is distinct from Biome Inspector, renamed to Text to Biome for clarity)
+            # with gr.TabItem("Text to Biome", id="tab_biome_grid"): # Renamed for clarity
+            #     with gr.Row():
+            #         with gr.Column(scale=3):
+            #             biome_prompt_input = gr.Textbox(
+            #                 label="Biome Theme Prompt",
+            #                 placeholder="e.g., 'A dense cyberpunk city with neon lights'",
+            #                 lines=3
+            #             )
+            #             biome_structure_types_input = gr.Dropdown(
+            #                 label="Select Structure Type Category",
+            #                 choices=list(STRUCTURE_TYPES.keys()),
+            #                 value=list(STRUCTURE_TYPES.keys())[0], # Default to first category
+            #                 interactive=True
+            #             )
+            #             biome_selected_structures_display = gr.Textbox(
+            #                 label="Selected/Custom Structure Types (comma-separated)",
+            #                 placeholder="e.g., 'Skyscraper, Entertainment Venue'",
+            #                 lines=2,
+            #                 interactive=True
+            #             )
+            #             biome_generate_btn = gr.Button("Generate Biome Grid")
+            #             biome_generation_status = gr.Textbox(label="Generation Status", interactive=False)
+                    
+            #         with gr.Column(scale=2):
+            #             biome_grid_output = gr.Textbox(
+            #                 label="Generated Biome Grid Layout (text)",
+            #                 interactive=False,
+            #                 lines=15,
+            #                 placeholder="The 2D grid of your generated biome will appear here."
+            #             )
+            #             biome_grid_viz_output = gr.Image(label="Generated Biome Grid Visualization", interactive=False)
+            #             biome_grid_to_image_btn = gr.Button("Visualize Grid as Image", visible=False)
+            #             # Removed: biome_grid_to_3d_btn = gr.Button("Convert Biome Grid to 3D", visible=False)
+
+
             # Text to Image Tab
             with gr.TabItem("Text to Image", id="tab_text_image"):
                 with gr.Row():
@@ -614,6 +695,7 @@ def build_app():
                     with gr.Column(scale=2):
                         text_output = gr.Image(label="Generated Image")
                         text_message = gr.Textbox(label="Status", interactive=False)
+                        # Removed: text_to_3d_btn = gr.Button("Convert to 3D", visible=False)
             
             # Grid to Image Tab
             with gr.TabItem("Grid to Image", id="tab_grid_image"):
@@ -647,6 +729,7 @@ def build_app():
                             grid_output = gr.Image(label="Generated Terrain")
                             grid_viz = gr.Image(label="Grid Visualization")
                         grid_message = gr.Textbox(label="Status", interactive=False)
+                        # Removed: grid_to_3d_btn = gr.Button("Convert to 3D", visible=False)
             
             # File Upload Tab
             with gr.TabItem("File Upload", id="tab_file"):
@@ -668,6 +751,12 @@ def build_app():
                             file_output = gr.Image(label="Generated Image")
                             file_grid_viz = gr.Image(label="Grid Visualization (if applicable)")
                         file_message = gr.Textbox(label="Status", interactive=False)
+                        # Removed: file_to_3d_btn = gr.Button("Convert to 3D", visible=False)
+            
+            # Removed 3D Generation Tab - Only create if HAS_3D_SUPPORT is True
+            # if HAS_3D_SUPPORT:
+            #     with gr.TabItem("3D Generation", id="tab_3d"):
+            #         ...
             
             # MongoDB Prompts Tab
             with gr.TabItem("MongoDB", id="tab_mongodb"):
@@ -690,6 +779,7 @@ def build_app():
                             mongo_status = gr.Textbox(label="Status", interactive=False)
                             mongo_output = gr.Image(label="Generated Image")
                             mongo_message = gr.Textbox(label="Generation Status", interactive=False)
+                            # Removed: mongo_to_3d_btn = gr.Button("Convert to 3D", visible=False)
                         
                     with gr.Accordion("Batch Processing", open=False):
                         with gr.Row():
@@ -717,10 +807,17 @@ def build_app():
                             grid_output = gr.Image(label="Generated Image")
                             grid_visualization = gr.Image(label="Grid Visualization")
                             grid_message = gr.Textbox(label="Generation Status", interactive=False)
+                            # Removed: grid_to_3d_btn = gr.Button("Convert to 3D", visible=False)
 
         # --- Event Handlers ---
 
-        # Biome Inspector Tab
+        # Removed LLM-based Text to Detailed Grid Tab event handlers and related buttons
+        # llm_generate_button.click(...)
+        # llm_to_grid_image_btn.click(...)
+        # if HAS_3D_SUPPORT: llm_to_3d_btn.click(...)
+
+
+        # Text to Biome (Grid) Tab (This is the new "Biome Inspector" functionality)
         biome_inspector_generate_button.click(
             fn=handle_biome_generation_request, 
             inputs=[biome_inspector_theme_input, biome_inspector_structure_types_input],
@@ -733,41 +830,44 @@ def build_app():
             outputs=biome_inspector_display
         )
 
-        # Text to Biome (Grid) Tab (This is actually the "Text to Biome" functionality)
+        # Text to Biome (Grid) Tab (Existing "Text to Biome" from prev merged_gradio_app.py)
         def update_selected_structures(category):
             return ", ".join(STRUCTURE_TYPES.get(category, []))
 
-        # This tab is now just 'Text to Biome'
-        tabs.select(
-            fn=lambda x: update_selected_structures(biome_structure_types_input.value) if x == "tab_biome_grid" else "",
-            inputs=[tabs],
-            outputs=[biome_selected_structures_display]
-        )
+        # biome_structure_types_input.change(
+        #     update_selected_structures,
+        #     inputs=[biome_structure_types_input],
+        #     outputs=[biome_selected_structures_display]
+        # )
 
-        biome_structure_types_input.change(
-            update_selected_structures,
-            inputs=[biome_structure_types_input],
-            outputs=[biome_selected_structures_display]
-        )
+        # biome_generate_btn.click(
+        #     generate_biome_direct, 
+        #     inputs=[biome_prompt_input, biome_selected_structures_display], 
+        #     outputs=[biome_generation_status, biome_grid_output, biome_grid_viz_output, biome_prompt_input]
+        # ).then(
+        #     lambda grid_str: gr.update(visible=True) if grid_str else gr.update(visible=False),
+        #     inputs=[biome_grid_output],
+        #     outputs=[biome_grid_to_image_btn]
+        # )
+        # # Removed 3D related chain for biome_generate_btn
+        # # .then(
+        # #     lambda: gr.update(visible=HAS_3D_SUPPORT), 
+        # #     outputs=[biome_grid_to_3d_btn]
+        # # )
 
-        biome_generate_btn.click(
-            generate_biome_direct, 
-            inputs=[biome_prompt_input, biome_selected_structures_display], 
-            outputs=[biome_generation_status, biome_grid_output, biome_grid_viz_output, biome_prompt_input]
-        ).then(
-            lambda grid_str: gr.update(visible=True) if grid_str else gr.update(visible=False),
-            inputs=[biome_grid_output],
-            outputs=[biome_grid_to_image_btn]
-        )
+        # biome_grid_to_image_btn.click(
+        #     lambda grid_str: process_grid_input(grid_str, DEFAULT_IMAGE_WIDTH, DEFAULT_IMAGE_HEIGHT, DEFAULT_NUM_IMAGES, "stability"),
+        #     inputs=[biome_grid_output],
+        #     outputs=[grid_output, grid_viz, grid_message] 
+        # ).then(
+        #     lambda: gr.update(selected="tab_grid_image"), 
+        #     outputs=[tabs]
+        # )
 
-        biome_grid_to_image_btn.click(
-            lambda grid_str: process_grid_input(grid_str, DEFAULT_IMAGE_WIDTH, DEFAULT_IMAGE_HEIGHT, DEFAULT_NUM_IMAGES, "stability"),
-            inputs=[biome_grid_output],
-            outputs=[grid_output, grid_viz, grid_message] 
-        ).then(
-            lambda: gr.update(selected="tab_grid_image"), 
-            outputs=[tabs]
-        )
+        # Removed 3D related chain for biome_grid_to_3d_btn
+        # if HAS_3D_SUPPORT:
+        #     biome_grid_to_3d_btn.click(...)
+
 
         # MongoDB Prompt tab event handlers
         mongo_fetch_btn.click(
@@ -787,6 +887,12 @@ def build_app():
             ],
             outputs=[mongo_output, mongo_message]
         )
+        # Removed 3D related chain for mongo_process_btn
+        # .then(
+        #     lambda img_output: gr.update(visible=HAS_3D_SUPPORT and img_output is not None), 
+        #     inputs=[mongo_output],
+        #     outputs=[mongo_to_3d_btn]
+        # )
 
         batch_process_btn.click(
             batch_process_mongodb_prompts,
@@ -815,6 +921,17 @@ def build_app():
             ],
             outputs=[grid_output, grid_visualization, grid_message]
         )
+        # Removed 3D related chain for grid_process_btn
+        # .then(
+        #     lambda img_output: gr.update(visible=HAS_3D_SUPPORT and img_output is not None),
+        #     inputs=[grid_output],
+        #     outputs=[grid_to_3d_btn]
+        # )
+
+        # Removed Connect MongoDB outputs to 3D generation (Conditional)
+        # if HAS_3D_SUPPORT:
+        #     mongo_to_3d_btn.click(...)
+        #     grid_to_3d_btn.click(...)
         
         # Set up event handlers for 2D tabs
         text_submit.click(
@@ -822,24 +939,49 @@ def build_app():
             inputs=[text_input, text_width, text_height, text_num_images, text_model],
             outputs=[text_output, text_message]
         )
+        # Removed 3D related chain for text_submit
+        # .then(
+        #     lambda img_output: gr.update(visible=HAS_3D_SUPPORT and img_output is not None),
+        #     inputs=[text_output],
+        #     outputs=[text_to_3d_btn]
+        # )
         
         grid_submit.click(
             process_grid_input,
             inputs=[grid_input, grid_width, grid_height, grid_num_images, grid_model],
             outputs=[grid_output, grid_viz, grid_message]
         )
+        # Removed 3D related chain for grid_submit
+        # .then(
+        #     lambda img_output: gr.update(visible=HAS_3D_SUPPORT and img_output is not None),
+        #     inputs=[grid_output],
+        #     outputs=[grid_to_3d_btn]
+        # )
         
         file_submit.click(
             process_file_upload,
             inputs=[file_upload, file_width, file_height, file_num_images, file_text_model, file_grid_model],
             outputs=[file_output, file_grid_viz, file_message]
         )
+        # Removed 3D related chain for file_submit
+        # .then(
+        #     lambda img_output: gr.update(visible=HAS_3D_SUPPORT and img_output is not None),
+        #     inputs=[file_output],
+        #     outputs=[file_to_3d_btn]
+        # )
         
         sample_button.click(
             lambda: create_sample_grid(),
             inputs=[],
             outputs=[grid_input]
         )
+        
+        # Removed Connect 2D outputs to 3D generation (Conditional)
+        # if HAS_3D_SUPPORT:
+        #     text_to_3d_btn.click(...)
+        #     grid_to_3d_btn.click(...)
+        #     file_to_3d_btn.click(...)
+        #     gen_3d_btn.click(...)
     
     return demo
 
@@ -847,28 +989,73 @@ def create_fastapi_app(gradio_app):
     # Create a FastAPI app
     app = FastAPI()
     
+    # Create a static directory to store the static files
+    # No longer needed as no 3D files are mounted, but keeping as a placeholder if needed later
+    # static_dir = Path(SAVE_DIR).absolute() 
+    # static_dir.mkdir(parents=True, exist_ok=True)
+    # app.mount("/static", StaticFiles(directory=static_dir, html=True), name="static")
+    
+    # Removed 3D asset copying logic
+    # env_maps_src = os.path.join(os.path.dirname(CURRENT_DIR), 'Hunyuan3D-2', 'assets', 'env_maps')
+    # env_maps_dest = os.path.join(static_dir, 'env_maps')
+    # os.makedirs(env_maps_dest, exist_ok=True)
+    # if os.path.exists(env_maps_src):
+    #     for file in os.listdir(env_maps_src):
+    #         src_file = os.path.join(env_maps_src, file)
+    #         dst_file = os.path.join(env_maps_dest, file)
+    #         if os.path.isfile(src_file) and (not os.path.exists(dst_file) or os.stat(src_file).st_mtime > os.stat(dst_file).st_mtime):
+    #             shutil.copy2(src_file, dst_file)
+    #             logger.info(f"Copied environment map: {file}")
+    #         else:
+    #             logger.debug(f"Skipped copying {file} (already exists or not a file).")
+    # else:
+    #     logger.warning(f"Environment maps source directory not found: {env_maps_src}")
+
     # Mount the Gradio app
     app = gr.mount_gradio_app(app, gradio_app, path="/")
     return app
 
-# Main execution block
+# Main execution block - This block is typically what's run by `python src/merged_gradio_app.py`
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    # Removed 3D related arguments
+    # parser.add_argument("--model_path", type=str, default='tencent/Hunyuan3D-2mini')
+    # parser.add_argument("--subfolder", type=str, default='hunyuan3d-dit-v2-mini-turbo')
+    # parser.add_argument("--texgen_model_path", type=str, default='tencent/Hunyuan3D-2') 
     parser.add_argument('--port', type=int, default=8080)
     parser.add_argument('--host', type=str, default='0.0.0.0')
     parser.add_argument('--share', action='store_true', help='Share the Gradio app')
+    # Removed 3D related arguments
+    # parser.add_argument('--device', type=str, default='cuda')
+    # parser.add_argument('--disable_3d', action='store_true', help='Disable 3D generation functionality')
     args = parser.parse_args()
     
-    # HAS_3D_SUPPORT is permanently False, no need to update from args
-    logger.info("merged_gradio_app.py: 3D generation features are permanently disabled as per current configuration.")
+    # Removed HAS_3D_SUPPORT updates
+    # HAS_3D_SUPPORT = not args.disable_3d
+    # logger.info(f"merged_gradio_app.py: Initial HAS_3D_SUPPORT set to {HAS_3D_SUPPORT} based on --disable_3d.")
 
     try:
         initialize_processors() 
         logger.info("merged_gradio_app.py: 2D processors initialized.")
         
+        # Removed 3D initialization block
+        # has_3d_initialized_successfully = False
+        # if HAS_3D_SUPPORT: 
+        #     logger.info("merged_gradio_app.py: HAS_3D_SUPPORT is True. Attempting to initialize 3D processors...")
+        #     has_3d_initialized_successfully = initialize_3d_processors(args.model_path, args.subfolder, args.device)
+        #     HAS_3D_SUPPORT = has_3d_initialized_successfully 
+        #     logger.info(f"merged_gradio_app.py: 3D processors initialization result: {has_3d_initialized_successfully}. HAS_3D_SUPPORT is now {HAS_3D_SUPPORT}")
+        # else:
+        #     logger.info("merged_gradio_app.py: HAS_3D_SUPPORT is False (or was disabled). Skipping 3D processor initialization.")
+        
         logger.info("merged_gradio_app.py: Building Gradio app interface...")
         demo = build_app() 
         logger.info("merged_gradio_app.py: Gradio app interface built.")
+        
+        # Removed 3D-related warnings
+        # if not HAS_3D_SUPPORT:
+        #     logger.warning("merged_gradio_app.py: Running in 2D-only mode. 3D generation features will be disabled.")
+        #     logger.warning("merged_gradio_app.py: To enable 3D features, install the required system packages (e.g., libgl1-mesa-glx xvfb) and ensure CUDA/PyTorch setup is correct.")
         
         logger.info("merged_gradio_app.py: Attempting to launch application server (FastAPI/Uvicorn or Gradio built-in)...")
         logger.info(f"merged_gradio_app.py: Gradio application will be accessible on port: {args.port}")
@@ -885,6 +1072,9 @@ if __name__ == "__main__":
     except Exception as e:
         logger.critical(f"merged_gradio_app.py: A critical error occurred during application startup: {str(e)}", exc_info=True)
         print(f"\nFATAL ERROR: Application could not start. Details: {e}")
+        print("Please check your environment setup and dependencies (e.g., CUDA, system libraries for 3D).")
+        # Removed suggestion to try running with '--disable_3d' since it's removed
+        # print("If 3D generation is not required, try running with '--disable_3d'.")
         
         # Fallback UI (simplified to only 2D image/grid processing)
         try:
@@ -980,6 +1170,8 @@ if __name__ == "__main__":
                             inputs=[fallback_grid_input, fallback_grid_width, fallback_grid_height, fallback_grid_num_images, fallback_grid_model], 
                             outputs=[fallback_grid_output, fallback_grid_viz, fallback_grid_message]
                         )
+                    # Removed fallback for MongoDB or File Upload tabs, as they were not explicitly mentioned for fallback
+                    # This fallback should only contain the minimum necessary functionality if the main app crashes.
             logger.info("merged_gradio_app.py: Attempting to launch minimal 2D-only fallback app...")
             logger.info(f"merged_gradio_app.py: Fallback app will be accessible on port: {args.port}")
             fallback_demo_app.launch(server_name=args.host, server_port=args.port, share=args.share)

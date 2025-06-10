@@ -1,28 +1,34 @@
+# src/text_grid/placement_suggestor.py
 import random
-from llm import call_structure_generator
-from utils import get_suggestion_prompt, extract_first_json_block
 import json
+from . import llm # Relative import
+from . import utils # Relative import
 
-from structure_registry import get_matching_structures
-# placement_suggestor.py
+# This file is now responsible for getting *hints* from the LLM, not the final layout.
 
+def get_biome_generation_hints(structure_definitions, theme_prompt):
+    """
+    Asks the LLM for high-level grid placement hints and a biome name suggestion.
+    
+    Args:
+        structure_definitions (dict): A dictionary of structure IDs mapped to their definitions.
+                                      This is passed to the prompt so LLM knows what structures exist.
+        theme_prompt (str): The theme of the biome.
 
-def suggest_structure_placement(structure_definitions, theme_prompt):
-    prompt = get_suggestion_prompt(list(structure_definitions.keys()), theme_prompt)
+    Returns:
+        tuple: (dict: parsed LLM hints, str: biome name suggestion)
+    """
+    prompt = utils.get_grid_placement_hints_prompt(structure_definitions, theme_prompt) 
+    
+    llm_response = llm.call_online_llm(prompt) 
 
-    suggestion = call_structure_generator(prompt)  # your LLM call
+    if not llm_response: # Check for None explicitly or empty string
+        raise ValueError("[ERROR] LLM returned an empty or error response for hints.")
 
-    if not suggestion.strip():
-        raise ValueError("[ERROR] LLM returned an empty response")
+    llm_hints = utils.parse_llm_hints(llm_response) 
 
-    try:
-        cleaned = extract_first_json_block(suggestion)
-        if not cleaned:
-            raise ValueError("No JSON block found in LLM response")
-        parsed = json.loads(cleaned)
-    except Exception as e:
-        raise ValueError(f"[ERROR] Failed to parse LLM response: {e}\nRaw: {suggestion}")
+    # The biome name suggestion will now come from the LLM hints
+    biome_name_suggestion = llm_hints.get("biome_name_suggestion", "Unnamed Biome")
 
-    layout = parsed.get("layout", [])
-    biome_name = parsed.get("biome_name", "Unnamed Biome")
-    return layout, biome_name
+    return llm_hints, biome_name_suggestion
+
