@@ -275,7 +275,7 @@ async def generate(request: Request):
 
 
 @app.post("/send")
-async def generate(request: Request):
+async def send_data(request: Request):
     logger.info("Worker send...")
     params = await request.json()
     uid = uuid.uuid4()
