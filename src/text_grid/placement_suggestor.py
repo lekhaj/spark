@@ -6,7 +6,8 @@ from . import utils # Relative import
 
 # This file is now responsible for getting *hints* from the LLM, not the final layout.
 
-def get_biome_generation_hints(structure_definitions, theme_prompt):
+# CRITICAL FIX: Make this function async and await the LLM call
+async def get_biome_generation_hints(structure_definitions, theme_prompt):
     """
     Asks the LLM for high-level grid placement hints and a biome name suggestion.
     
@@ -20,9 +21,11 @@ def get_biome_generation_hints(structure_definitions, theme_prompt):
     """
     prompt = utils.get_grid_placement_hints_prompt(structure_definitions, theme_prompt) 
     
-    llm_response = llm.call_online_llm(prompt) 
+    # CRITICAL FIX: AWAIT the async call to the LLM
+    llm_response = await llm.call_online_llm(prompt) 
 
     if not llm_response: # Check for None explicitly or empty string
+        # Re-raise as ValueError to be caught by generate_biome for fallback
         raise ValueError("[ERROR] LLM returned an empty or error response for hints.")
 
     llm_hints = utils.parse_llm_hints(llm_response) 

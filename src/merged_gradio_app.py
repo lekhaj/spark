@@ -1,13 +1,12 @@
-# merged_gradio_app_1.py
+# merged_gradio_app.py - Frontend Gradio Application with Development/Production Toggle
+
 import os
 import time
-import uuid
-import shutil
+import uuid 
+import shutil 
 import argparse
 import logging
 import gradio as gr
-import numpy as np
-import torch # Keep torch as it's used by numpy for array conversion in some places, even without direct model loading
 from PIL import Image, ImageDraw, ImageFont 
 from pathlib import Path
 from fastapi import FastAPI
@@ -15,298 +14,267 @@ from fastapi.staticfiles import StaticFiles
 import json 
 import httpx 
 import base64 
+import pymongo # For ObjectId in MongoDB operations (local DB access)
 
 try:
     import uvicorn
 except ImportError:
     pass
-import pymongo
 from datetime import datetime
 
 # --- ALL IMPORTS NOW REFER TO THE NEW CONSOLIDATED STRUCTURE ---
+# Ensure config.py is correctly set up with these constants
 from config import ( 
     DEFAULT_TEXT_MODEL, DEFAULT_GRID_MODEL, 
     DEFAULT_IMAGE_WIDTH, DEFAULT_IMAGE_HEIGHT, DEFAULT_NUM_IMAGES,
-    OUTPUT_DIR, MONGO_DB_NAME, MONGO_BIOME_COLLECTION, STRUCTURE_TYPES, GRID_DIMENSIONS,
-    MONGO_URI, 
-    OPENROUTER_API_KEY, OPENROUTER_BASE_URL 
+    OUTPUT_DIR, OUTPUT_IMAGES_DIR, OUTPUT_3D_ASSETS_DIR, 
+    MONGO_DB_NAME, MONGO_BIOME_COLLECTION,
+    REDIS_BROKER_URL, # Imported, but only used if USE_CELERY is True and app.backend is used for result fetching
+    USE_CELERY # <--- NEW: Flag to control Celery usage
 )
 from db_helper import MongoDBHelper 
-from text_grid.structure_registry import get_biome_names, fetch_biome 
-from text_grid.grid_generator import generate_biome 
-from pipeline.text_processor import TextProcessor 
-from pipeline.grid_processor import GridProcessor 
-from pipeline.pipeline import Pipeline 
-from terrain.grid_parser import GridParser 
-from utils.image_utils import save_image, create_image_grid 
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+_biome_logger = logging.getLogger("BiomeInspector") # Defined globally and early
 
-# Removed 3D-related imports and flag initialization
-# HAS_3D_SUPPORT = False 
-# try:
-#     from hy3dgen.shapegen.utils import logger as hy3d_logger
-#     from hy3dgen.rembg import BackgroundRemover
-#     from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline, FaceReducer
-#     from hy3dgen.shapegen.pipelines import export_to_trimesh
-#     HAS_3D_SUPPORT = True 
-# except ImportError as e:
-#     logger.warning(f"3D generation modules could not be imported: {str(e)}")
-#     logger.warning("To enable 3D generation, install required system packages:")
-#     logger.warning("For Ubuntu/Debian: sudo apt-get install libgl1-mesa-glx xvfb")
-#     logger.warning("For CentOS/RHEL: sudo yum install mesa-libGL")
-#     HAS_3D_SUPPORT = False 
+# --- Conditional Imports based on USE_CELERY ---
+if USE_CELERY:
+    logger.info("Running in PRODUCTION mode (Celery Enabled).")
+    # Import Celery task functions to call .delay() on them
+    from tasks import generate_text_image as celery_generate_text_image, \
+                      generate_grid_image as celery_generate_grid_image, \
+                      run_biome_generation as celery_run_biome_generation, \
+                      batch_process_mongodb_prompts_task as celery_batch_process_mongodb_prompts_task
+    # No direct model processor imports needed here, as they run on the worker.
+    # from celery import Celery # Might need this if you want to track task results directly
+    # from tasks import app as celery_app_instance # if you need to access backend results
+else:
+    logger.info("Running in DEVELOPMENT mode (Direct Processing).")
+    # Import direct processing functions and their dependencies
+    from pipeline.text_processor import TextProcessor 
+    from pipeline.grid_processor import GridProcessor 
+    from pipeline.pipeline import Pipeline 
+    from utils.image_utils import save_image, create_image_grid 
+    from text_grid.grid_generator import generate_biome # Direct call for biome generation
 
-# Constants - Reduced to only those still in use
-# SAVE_DIR = "gradio_cache" # Not used since 3D is removed
+    # Global variables for processors in DEV mode
+    _dev_text_processor = None
+    _dev_grid_processor = None
+    _dev_pipeline = None
+
+    def initialize_dev_processors():
+        """Initialize the 2D processors and pipeline for direct execution in DEV mode."""
+        global _dev_text_processor, _dev_grid_processor, _dev_pipeline
+        logger.info("Initializing 2D processors for direct execution (DEV mode)...")
+        _dev_text_processor = TextProcessor(model_type=DEFAULT_TEXT_MODEL)
+        _dev_grid_processor = GridProcessor(model_type=DEFAULT_GRID_MODEL) 
+        _dev_pipeline = Pipeline(_dev_text_processor, _dev_grid_processor)
+        logger.info("2D processors initialized for direct execution.")
+
+
+# --- Imports for functions that remain local (e.g., UI display, helper functions) ---
+# These are functions that do not perform heavy computation and can run on the FastAPI server
+# They also provide mocks if the actual modules are not found (for standalone testing)
+try:
+    from text_grid.structure_registry import get_biome_names, fetch_biome 
+    _biome_logger.info("INFO: Loaded actual text_grid.structure_registry.")
+except ImportError:
+    _biome_logger.warning("WARNING: Could not import text_grid.structure_registry. Using mock functions.")
+    
+    _mock_biomes_db = {
+        "A_mock_forest": {
+            "theme": "A lush forest with ancient ruins",
+            "structures": ["Tree", "Stone Arch"],
+            "grid_data": [[0,1,0],[1,1,1],[0,1,0]],
+            "details": "This is a mock forest biome detail."
+        },
+        "A_mock_desert": {
+            "theme": "A vast, arid desert with hidden oases",
+            "structures": ["Sand Dune", "Cactus"],
+            "grid_data": [[4,4,4],[4,0,4],[4,4,4]],
+            "details": "This is a mock desert biome detail."
+        }
+    }
+
+    def get_biome_names(db_name, collection_name): 
+        return list(_mock_biomes_db.keys())
+
+    def fetch_biome(db_name, collection_name, name: str): 
+        return _mock_biomes_db.get(name)
+
+    # Mock for generate_biome if running in DEV mode without actual text_grid.grid_generator
+    # This mock is for when the *mock* import fails for the `text_grid.grid_generator`
+    # and not used directly by the main app in dev mode.
+    # The actual `generate_biome` used in DEV mode comes from `text_grid.grid_generator` directly.
+    async def generate_biome_mock(theme: str, structure_type_list: list[str]): 
+        new_biome_name = f"Generated_Biome_{len(_mock_biomes_db) + 1}"
+        _mock_biomes_db[new_biome_name] = {
+            "theme": theme,
+            "structures": structure_type_list,
+            "details": f"Mock details for a biome generated with theme: '{theme}' and structures: {structure_type_list}.",
+            "grid_data": [[0,0,0],[0,0,0],[0,0,0]] 
+        }
+        return f"✅ Mock Biome '{new_biome_name}' generated successfully!"
+
+
+# Constants
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__)) 
 
-# Removed 3D-related constants
-# MAX_SEED = int(1e7)
-# HTML_HEIGHT = 650
-# HTML_WIDTH = 500
-# HTML_OUTPUT_PLACEHOLDER = f"""
-# <div style='height: {650}px; width: 100%; border-radius: 8px; border-color: #e5e7eb; border-style: solid; border-width: 1px; display: flex; justify-content: center; align-items: center;'>
-#   <div style='text-align: center; font-size: 16px; color: #6b7280;'>
-#     <p style="color: #8d8d8d;">Welcome to the Integrated Pipeline!</p>
-#     <p style="color: #8d8d8d;">No mesh here yet. Generate an image first, then create a 3D model.</p>
-#   </div>
-# </div>
-# """
-
-# Create output directories (keeping OUTPUT_DIR)
+# Create output directories (ensure they exist early on the frontend machine)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-# Removed: os.makedirs(SAVE_DIR, exist_ok=True)
+os.makedirs(OUTPUT_IMAGES_DIR, exist_ok=True) 
+os.makedirs(OUTPUT_3D_ASSETS_DIR, exist_ok=True) 
 
-# Initialize global variables for processors and pipeline
-text_processor = None
-grid_processor = None
-pipeline = None
-# Removed 3D-related global variables
-# rmbg_worker = None
-# i23d_worker = None
-# face_reduce_worker = None
-# texgen_worker = None
-# HAS_TEXTUREGEN = False 
+# --- Biome Inspector Functions ---
+def _format_data_for_display(data, indent_level=0):
+    indent_str = "  " * indent_level
+    if isinstance(data, dict):
+        formatted_items = []
+        for k, v in data.items():
+            formatted_value = _format_data_for_display(v, indent_level + 1)
+            if isinstance(v, (dict, list)) and '\n' in formatted_value:
+                formatted_items.append(f"{indent_str}{k}:\n{formatted_value}")
+            else:
+                formatted_items.append(f"{indent_str}{k}: {formatted_value}")
+        return "\n".join(formatted_items)
+    elif isinstance(data, list):
+        if all(isinstance(item, list) for item in data) and len(data) > 0 and \
+           all(all(isinstance(sub_item, (int, float, str)) for sub_item in sublist) for sublist in data):
+            grid_lines = []
+            for row in data:
+                grid_lines.append(" ".join(map(str, row)))
+            return "\n" + "\n".join([f"{indent_str}  {line}" for line in grid_lines])
+        else:
+            list_items = []
+            for item in data:
+                list_items.append(f"{indent_str}- {_format_data_for_display(item, 0)}") 
+            return "\n" + "\n".join(list_items)
+    else:
+        return str(data)
 
-def initialize_processors():
-    """Initialize the 2D processors and pipeline with default models"""
-    global text_processor, grid_processor, pipeline
-    logger.info("Initializing 2D processors...")
-    text_processor = TextProcessor(model_type=DEFAULT_TEXT_MODEL)
-    grid_processor = GridProcessor(model_type=DEFAULT_GRID_MODEL) 
-    pipeline = Pipeline(text_processor, grid_processor)
-    logger.info("2D processors initialized.")
+def display_selected_biome(db_name: str, collection_name: str, name: str) -> str: 
+    if not name:
+        _biome_logger.info("No biome selected for display.")
+        return "" 
+    
+    _biome_logger.info(f"Fetching biome details for: '{name}' from DB: '{db_name}', Collection: '{collection_name}'")
+    biome = fetch_biome(db_name, collection_name, name) 
+    if biome:
+        _biome_logger.info(f"Successfully fetched biome '{name}'.")
+        return _format_data_for_display(biome)
+    else:
+        _biome_logger.warning(f"Biome '{name}' not found in registry for DB '{db_name}' and Collection '{collection_name}'.")
+        return f"Biome '{name}' not found in the registry for DB '{db_name}' and Collection '{collection_name}'."
 
-# Removed initialize_3d_processors function entirely
-# def initialize_3d_processors(...):
-#     ...
-
-# Initialize 2D processors on startup
-initialize_processors()
-
-# --- Functions from grid_generator for direct biome generation (moved from viewer.py and adapted) ---
-async def handle_biome_generation_request(theme: str, structure_types_str: str) -> tuple[str, gr.Dropdown]:
+async def handler(theme: str, structure_types_str: str, db_name: str, collection_name: str) -> tuple[str, gr.Dropdown]: 
     """
-    Handles the biome generation request from the UI.
-    Parses the comma-separated structure types and calls generate_biome.
+    Handles biome generation, either directly or via Celery.
     """
-    logger.info(f"Received request for theme: '{theme}', structures: '{structure_types_str}'")
+    _biome_logger.info(f"Received biome generation request for theme: '{theme}', structures: '{structure_types_str}'")
     structure_type_list = [s.strip() for s in structure_types_str.split(',') if s.strip()]
-    
-    if not structure_type_list:
-        logger.warning("No structure types provided by user.")
-        return "❌ Error: Please provide at least one structure type for biome generation.", \
-               gr.update(choices=get_biome_names(MONGO_DB_NAME, MONGO_BIOME_COLLECTION), value=None)
 
-    msg = await generate_biome(theme, structure_type_list)
-    logger.info(f"Biome generation finished with message: {msg}")
+    if not structure_type_list:
+        _biome_logger.warning("No structure types provided for biome generation.")
+        return "❌ Error: Please provide at least one structure type for biome generation.", \
+               gr.update(choices=get_biome_names(db_name, collection_name), value=None) 
     
-    updated_biome_names = get_biome_names(MONGO_DB_NAME, MONGO_BIOME_COLLECTION)
+    if USE_CELERY:
+        # Submit task to Celery
+        task = celery_run_biome_generation.delay(theme, structure_types_str) 
+        msg = f"✅ Biome generation task submitted (ID: {task.id}). Please refresh 'View Generated Biomes' after a moment to see the new entry."
+    else:
+        # Direct call for development
+        try:
+            msg = await generate_biome(theme, structure_type_list) # Directly call the actual function
+            _biome_logger.info(f"Biome generation finished directly with message: {msg}")
+        except Exception as e:
+            _biome_logger.error(f"Error during direct biome generation: {e}", exc_info=True)
+            msg = f"❌ Error during direct biome generation: {e}"
+
+    updated_biome_names = get_biome_names(db_name, collection_name) 
     selected_value = updated_biome_names[-1] if updated_biome_names else None
     
     return msg, gr.update(choices=updated_biome_names, value=selected_value)
 
-def display_selected_biome_details(name: str) -> dict:
+# --- Wrapper functions for image generation (Conditional logic) ---
+def process_image_generation_task(prompt_or_grid_content, width, height, num_images, model_type, is_grid_input=False):
     """
-    Fetches and displays the details of a selected biome.
-    fetch_biome is from src.text_grid.structure_registry
+    Generic function to handle image generation, routing to Celery or direct processing.
+    Returns (image_output, grid_viz_output, message)
     """
-    if not name:
-        logger.info("No biome selected for display.")
-        return {} 
-    
-    logger.info(f"Fetching biome details for: '{name}'")
-    biome = fetch_biome(MONGO_DB_NAME, MONGO_BIOME_COLLECTION, name)
-    if biome:
-        logger.info(f"Successfully fetched biome '{name}'.")
-    else:
-        logger.warning(f"Biome '{name}' not found in registry.")
-    return biome
-
-async def generate_biome_direct(theme_prompt_text, structure_types_str, save_to_db=True):
-    """
-    Generates biome data (grid and structures) directly and saves to MongoDB.
-    Returns status, generated grid string, and grid visualization.
-    """
-    if not theme_prompt_text:
-        return "Error: Theme prompt cannot be empty.", "", None, None
-    if not structure_types_str:
-        return "Error: Structure types cannot be empty.", "", None, None
-
-    structure_types = [s.strip() for s in structure_types_str.split(',') if s.strip()]
-    if not structure_types:
-        return "Error: Please specify at least one structure type.", "", None, None
-
-    try:
-        logger.info(f"Generating biome directly for prompt: '{theme_prompt_text}' with types: {structure_types}")
-        
-        status_message = await generate_biome(theme_prompt_text, structure_types)
-        
-        mongo_helper = MongoDBHelper()
-        latest_biome = mongo_helper.find_one(MONGO_BIOME_COLLECTION,
-                                             {"theme_prompt": theme_prompt_text}, 
-                                             sort_by=[("created_at", pymongo.DESCENDING)])
-        
-        grid_str = ""
-        grid_viz_image = None
-
-        if latest_biome:
-            layout_data = latest_biome.get("possible_grids", [{}])[0].get("layout")
-            if layout_data and isinstance(layout_data, list):
-                grid_str = "\n".join([" ".join(map(str, row)) for row in layout_data])
-                
-                grid_parser = GridParser()
-                grid_array = np.array(layout_data, dtype=np.int32)
-                
-                colors = {
-                    0: (128, 128, 128),  # Grey for plain
-                    1: (34, 139, 34),    # Green for forest
-                    2: (139, 69, 19),    # Brown for mountain
-                    3: (30, 144, 255),   # Blue for water
-                    4: (255, 223, 0),    # Yellow for desert
-                    5: (220, 220, 220), # Snow
-                    6: (100, 140, 100), # Swamp
-                    7: (170, 180, 90), # Hills
-                    8: (80, 80, 80), # Urban
-                    9: (150, 120, 90) # Ruins
-                }
-                h, w = grid_array.shape
-                scale_factor = 20
-                viz_image_array = np.zeros((h * scale_factor, w * scale_factor, 3), dtype=np.uint8)
-                for r in range(h):
-                    for c in range(w):
-                        color = colors.get(grid_array[r, c], (0,0,0)) # Default to black if unknown
-                        viz_image_array[r*scale_factor:(r+1)*scale_factor, c*scale_factor:(c+1)*scale_factor] = color
-                grid_viz_image = Image.fromarray(viz_image_array)
-
-            return status_message, grid_str, grid_viz_image, theme_prompt_text
+    if USE_CELERY:
+        if is_grid_input:
+            task = celery_generate_grid_image.delay(prompt_or_grid_content, width, height, num_images, model_type)
+            return None, None, f"Task submitted (ID: {task.id}). Image will be saved to '{OUTPUT_IMAGES_DIR}' on the worker."
         else:
-            return status_message + " (Could not retrieve generated biome from DB).", "", None, None
+            task = celery_generate_text_image.delay(prompt_or_grid_content, width, height, num_images, model_type)
+            return None, f"Task submitted (ID: {task.id}). Image will be saved to '{OUTPUT_IMAGES_DIR}' on the worker."
+    else:
+        # Direct processing in DEV mode
+        if _dev_pipeline is None: # Initialize if not already
+            initialize_dev_processors()
 
-    except Exception as e:
-        logger.error(f"Error in generate_biome_direct: {e}")
-        return f"Error: {e}", "", None, None
+        try:
+            if is_grid_input:
+                logger.info(f"Directly processing grid: {prompt_or_grid_content[:50]}...")
+                images, grid_viz = _dev_pipeline.process_grid(prompt_or_grid_content)
+                if not images:
+                    return None, None, "No images generated directly."
+                
+                # Save and return the image for direct display
+                img_path = save_image(images[0], f"terrain_direct_{int(time.time())}", "images")
+                viz_path = save_image(grid_viz, f"grid_viz_direct_{int(time.time())}", "images")
+                return images[0], grid_viz, f"Generated image directly. Saved to {img_path}"
+            else:
+                logger.info(f"Directly processing text prompt: {prompt_or_grid_content[:50]}...")
+                images = _dev_pipeline.process_text(prompt_or_grid_content)
+                if not images:
+                    return None, "No images generated directly."
 
-def process_text_prompt(prompt, width=DEFAULT_IMAGE_WIDTH, height=DEFAULT_IMAGE_HEIGHT, num_images=DEFAULT_NUM_IMAGES, model_type=DEFAULT_TEXT_MODEL):
-    """Process text prompt and generate images"""
-    global text_processor, pipeline
-    
+                # Save and return the image for direct display
+                img_path = save_image(images[0], f"text_direct_{int(time.time())}", "images")
+                return images[0], f"Generated image directly. Saved to {img_path}"
+        except Exception as e:
+            logger.error(f"Error during direct image generation: {e}", exc_info=True)
+            if is_grid_input:
+                return None, None, f"Error: {e}"
+            else:
+                return None, f"Error: {e}"
+
+# Specific wrapper functions for Gradio interface
+def submit_text_prompt_task(prompt, width, height, num_images, model_type):
     if not prompt:
         return None, "Error: No prompt provided"
-    
-    if text_processor is None or text_processor.model_type != model_type:
-        try:
-            text_processor = TextProcessor(model_type=model_type)
-            pipeline = Pipeline(text_processor, grid_processor)
-        except Exception as e:
-            return None, f"Error initializing {model_type} model: {str(e)}"
-    
-    try:
-        logger.info(f"Processing text prompt: {prompt}")
-        images = pipeline.process_text(prompt)
-        
-        if not images or len(images) == 0:
-            return None, "No images were generated"
-        
-        logger.info(f"Generated {len(images)} images from text prompt")
-        
-        if len(images) > 1:
-            grid_image = create_image_grid(images)
-            save_image(grid_image, f"text_grid_{prompt[:20]}")
-            return grid_image, f"Generated {len(images)} images from text prompt"
-        else:
-            save_image(images[0], f"text_image_{prompt[:20]}")
-            return images[0], "Generated 1 image from text prompt"
-    
-    except Exception as e:
-        logger.error(f"Error processing text: {str(e)}")
-        return None, f"Error: {str(e)}"
+    return process_image_generation_task(prompt, width, height, num_images, model_type, is_grid_input=False)
 
-def process_grid_input(grid_string, width=DEFAULT_IMAGE_WIDTH, height=DEFAULT_IMAGE_HEIGHT, num_images=DEFAULT_NUM_IMAGES, model_type="stability"):
-    """Process grid data and generate terrain images"""
-    global grid_processor, pipeline
-    
+def submit_grid_input_task(grid_string, width, height, num_images, model_type):
     if not grid_string:
         return None, None, "Error: No grid provided"
-    
-    if grid_processor is None or grid_processor.model_type != model_type:
-        try:
-            grid_processor = GridProcessor(model_type=model_type)
-            pipeline = Pipeline(text_processor, grid_processor)
-        except Exception as e:
-            return None, None, f"Error initializing {model_type} model: {str(e)}"
-    
-    try:
-        logger.info(f"Processing grid")
-        images, grid_viz = pipeline.process_grid(grid_string)
-        
-        if not images or len(images) == 0:
-            return None, None, "No images were generated"
-        
-        logger.info(f"Generated {len(images)} images from grid")
-        
-        if len(images) > 1:
-            grid_image = create_image_grid(images)
-            save_image(grid_image, "terrain_grid")
-            return grid_image, grid_viz, f"Generated {len(images)} images from grid"
-        else:
-            save_image(images[0], "terrain_image")
-            return images[0], grid_viz, "Generated 1 image from grid"
-    
-    except Exception as e:
-        logger.error(f"Error processing grid: {str(e)}")
-        return None, None, f"Error: {str(e)}"
+    return process_image_generation_task(grid_string, width, height, num_images, model_type, is_grid_input=True)
 
-def process_file_upload(file_obj, width=DEFAULT_IMAGE_WIDTH, height=DEFAULT_IMAGE_HEIGHT, num_images=DEFAULT_NUM_IMAGES, text_model_type=DEFAULT_TEXT_MODEL, grid_model_type="stability"):
-    """Process an uploaded file containing text or grid data"""
-    if file_obj is None:
+def submit_file_upload_task(file_obj_path, width, height, num_images, text_model_type, grid_model_type):
+    if file_obj_path is None:
         return None, None, "Error: No file uploaded"
     
     try:
-        if isinstance(file_obj, str):
-            with open(file_obj, 'rb') as f:
-                content = f.read().decode("utf-8").strip()
-        else:
-            content = file_obj.decode("utf-8").strip()
+        with open(file_obj_path, 'r', encoding='utf-8') as f:
+            content = f.read().strip()
         
         is_grid = True
-        non_grid_chars_count = sum(1 for char in content if not (char.isdigit() or char.isspace() or char in '[],'))
+        non_grid_chars_count = sum(1 for char in content if not (char.isdigit() or char.isspace() or char in '.,-[]'))
         if non_grid_chars_count > len(content) * 0.1: 
             is_grid = False
         
         if is_grid:
-            logger.info("File content detected as grid data")
-            return process_grid_input(content, width, height, num_images, grid_model_type)
+            return process_image_generation_task(content, width, height, num_images, grid_model_type, is_grid_input=True)
         else:
-            logger.info("File content detected as text prompt")
-            image, message = process_text_prompt(content, width, height, num_images, text_model_type)
-            return image, None, message
-            
+            text_result, text_message = process_image_generation_task(content, width, height, num_images, text_model_type, is_grid_input=False)
+            return text_result, None, text_message # grid_viz is None for text processing
+
     except Exception as e:
-        logger.error(f"Error processing file: {str(e)}")
+        logger.error(f"Error processing file upload: {str(e)}")
         return None, None, f"Error processing file: {str(e)}"
 
 def create_sample_grid():
@@ -325,168 +293,104 @@ def create_sample_grid():
     """
     return sample_grid
 
-# Removed all 3D Generation Functions (gen_save_folder, export_mesh, build_model_viewer_html, randomize_seed_fn, generate_3d_from_image)
-
-# MongoDB Integration Functions (adapted to use MONGO_DB_NAME and MONGO_BIOME_COLLECTION from config)
+# MongoDB Integration Functions (These remain local as they query DB directly, not heavy GPU work)
 def get_prompts_from_mongodb(db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_COLLECTION, limit=100):
     """Retrieve prompts from MongoDB collection"""
     try:
         mongo_helper = MongoDBHelper()
-        
         query = {"$or": [
             {"theme_prompt": {"$exists": True}},
             {"description": {"$exists": True}}
         ]}
-        
-        documents = mongo_helper.find_many(collection_name, query=query, limit=limit)
-        
+        documents = mongo_helper.find_many(collection_name, query=query, limit=limit) 
         if not documents:
             return [], "No prompts found in the specified collection."
-        
         prompt_items = []
         for doc in documents:
             doc_id = str(doc.get("_id"))
-            prompt = None
-            if "theme_prompt" in doc:
-                prompt = doc["theme_prompt"]
-            elif "description" in doc:
-                prompt = doc["description"]
-            
-            if not prompt and "possible_structures" in doc:
-                structures = doc.get("possible_structures", {})
-                for category_key in structures:
-                    category = structures[category_key]
-                    for item_key in category:
-                        item = category[item_key]
-                        if "description" in item:
-                            if not prompt:
-                                prompt = item["description"]
+            prompt = doc.get("theme_prompt") or doc.get("description")
+            if not prompt and "possible_structures" in doc: 
+                for category_key in doc["possible_structures"]:
+                    for item_key in doc["possible_structures"][category_key]:
+                        if "description" in doc["possible_structures"][category_key][item_key]:
+                            prompt = doc["possible_structures"][category_key][item_key]["description"]
                             break
-                    if prompt:
-                        break
-            
-            if prompt:
-                prompt_items.append((doc_id, prompt))
-        
+                    if prompt: break
+            if prompt: prompt_items.append((doc_id, prompt))
         return prompt_items, f"Found {len(prompt_items)} prompts"
     except Exception as e:
-        logger.error(f"MongoDB connection error: {str(e)}")
+        logger.error(f"MongoDB connection error fetching prompts: {str(e)}")
         return [], f"Error connecting to MongoDB: {str(e)}"
 
-def process_mongodb_prompt(prompt_id, db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_COLLECTION, width=DEFAULT_IMAGE_WIDTH, height=DEFAULT_IMAGE_HEIGHT, 
+# This function will now submit a task or process directly
+def submit_mongodb_prompt_task(prompt_id, db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_COLLECTION, width=DEFAULT_IMAGE_WIDTH, height=DEFAULT_IMAGE_HEIGHT, 
                              num_images=DEFAULT_NUM_IMAGES, model_type=DEFAULT_TEXT_MODEL):
-    """Process a prompt from MongoDB by ID"""
-    global text_processor, pipeline
+    """Submits a MongoDB prompt processing task to Celery OR processes directly."""
+    logger.info(f"Processing MongoDB prompt task for ID: {prompt_id}")
     
+    prompt_content = ""
     try:
         mongo_helper = MongoDBHelper()
-        # Use find_one with ObjectId for direct lookup
-        document = mongo_helper.find_one(collection_name, {"_id": pymongo.results.ObjectId(prompt_id)}) 
-        
-        if not document:
-            return None, "Error: Document not found"
-        
-        prompt = None
-        if "theme_prompt" in document:
-            prompt = document["theme_prompt"]
-        elif "description" in document:
-            prompt = document["description"]
-        
-        if not prompt and "possible_structures" in document:
-            structures = document.get("possible_structures", {})
-            for category_key in structures:
-                category = structures[category_key]
-                for item_key in category:
-                    item = category[item_key]
-                    if "description" in item:
-                        if not prompt:
-                            prompt = item["description"]
-                        break
-                if prompt:
-                    break
-        
-        if not prompt:
-            return None, "Error: No prompt found in the document"
-        
-        image, message = process_text_prompt(prompt, width, height, num_images, model_type)
-        
-        if image is not None and "Error" not in message:
-            update = {
-                "$set": {
-                    "processed": True,
-                    "processed_at": datetime.now(),
-                    "model_used": model_type
-                }
-            }
-            mongo_helper.update_by_id(collection_name, prompt_id, update)
-        
-        return image, message
-        
+        document = mongo_helper.find_one(collection_name, {"_id": pymongo.results.ObjectId(prompt_id)})
+        if document:
+            prompt_content = document.get("theme_prompt") or document.get("description") or \
+                             (next((item["description"] for category in document.get("possible_structures", {}).values() for item in category.values() if "description" in item), None))
+        if not prompt_content:
+            return None, f"Error: No prompt content found for ID {prompt_id}."
     except Exception as e:
-        logger.error(f"Error processing MongoDB prompt: {str(e)}")
-        return None, f"Error: {str(e)}"
+        logger.error(f"Error fetching prompt content for ID {prompt_id}: {e}")
+        return None, f"Error fetching prompt content for ID {prompt_id}: {e}"
+
+    # Use the generic image generation wrapper
+    return process_image_generation_task(prompt_content, width, height, num_images, model_type, is_grid_input=False)
+
 
 def get_grids_from_mongodb(db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_COLLECTION, limit=100):
     """Retrieve grid data from MongoDB collection"""
     try:
         mongo_helper = MongoDBHelper()
-        
         query = {"$or": [
             {"grid": {"$exists": True}},
             {"possible_grids.layout": {"$exists": True}}
         ]}
-        
         documents = mongo_helper.find_many(collection_name, query=query, limit=limit)
-        
-        if not documents:
-            return [], "No grids found in the specified collection."
-        
+        if not documents: return [], "No grids found in the specified collection."
         grid_items = []
         for doc in documents:
             doc_id = str(doc.get("_id"))
-            
+            grid_str = ""
             if "grid" in doc:
-                grid = doc["grid"]
-                if isinstance(grid, list):
-                    grid_str = "\n".join([" ".join(map(str, row)) for row in grid])
-                else:
-                    grid_str = str(grid)
+                grid_content = doc["grid"]
+                grid_str = "\n".join([" ".join(map(str, row)) for row in grid_content]) if isinstance(grid_content, list) else str(grid_content)
                 grid_items.append((doc_id, grid_str))
             elif "possible_grids" in doc:
                 for grid_obj in doc["possible_grids"]:
                     if "layout" in grid_obj:
                         layout_data = grid_obj["layout"]
-                        if isinstance(layout_data, list) and all(isinstance(row, list) for row in layout_data):
-                            grid_str = "\n".join([" ".join(map(str, row_cell)) for row_cell in layout_data])
-                        else:
-                            grid_str = str(layout_data)
+                        grid_str = "\n".join([" ".join(map(str, row_cell)) for row_cell in layout_data]) if isinstance(layout_data, list) and all(isinstance(row, list) for row in layout_data) else str(layout_data)
                         grid_items.append((f"{doc_id}_{grid_obj.get('grid_id', 'grid')}", grid_str))
-            
         return grid_items, f"Found {len(grid_items)} grids"
     except Exception as e:
-        logger.error(f"MongoDB connection error: {str(e)}")
+        logger.error(f"MongoDB connection error fetching grids: {str(e)}")
         return [], f"Error connecting to MongoDB: {str(e)}"
 
-def process_mongodb_grid(grid_item, db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_COLLECTION, width=DEFAULT_IMAGE_WIDTH, height=DEFAULT_IMAGE_HEIGHT, 
+# This function will now submit a task or process directly
+def submit_mongodb_grid_task(grid_item_id, db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_COLLECTION, width=DEFAULT_IMAGE_WIDTH, height=DEFAULT_IMAGE_HEIGHT, 
                              num_images=DEFAULT_NUM_IMAGES, model_type="stability"):
-    """Process a grid from MongoDB by ID"""
-    global grid_processor, pipeline
+    """Submits a MongoDB grid processing task to Celery OR processes directly."""
+    logger.info(f"Processing MongoDB grid task for item: {grid_item_id}")
     
+    grid_content_str = ""
     try:
-        parts = grid_item.split("_", 1)
+        parts = grid_item_id.split("_", 1)
         doc_id = parts[0]
-        
         mongo_helper = MongoDBHelper()
         document = mongo_helper.find_one(collection_name, {"_id": pymongo.results.ObjectId(doc_id)}) 
-        
-        if not document:
-            return None, None, "Error: Document not found"
+        if not document: return None, None, f"Error: Document with ID {doc_id} not found."
         
         grid_content = None
-        
         if len(parts) == 1 and "grid" in document:
             grid_content = document["grid"]
-        
         elif len(parts) > 1 and "possible_grids" in document:
             grid_id_suffix = parts[1]
             for grid_obj in document["possible_grids"]:
@@ -496,78 +400,91 @@ def process_mongodb_grid(grid_item, db_name=MONGO_DB_NAME, collection_name=MONGO
                         break
         
         if not grid_content:
-            return None, None, "Error: Grid not found in the document or invalid ID format."
+            return None, None, f"Error: Grid content not found for item {grid_item_id}."
         
-        if isinstance(grid_content, list) and all(isinstance(row, list) for row in grid_content):
-            grid_string_for_processor = "\n".join([" ".join(map(str, row_cell)) for row_cell in grid_content])
-        else:
-            grid_string_for_processor = str(grid_content)
-            
-        image, grid_viz, message = process_grid_input(grid_string_for_processor, width, height, num_images, model_type)
-        
-        if image is not None and grid_viz is not None:
-            update = {
-                "$set": {
-                    "processed": True,
-                    "processed_at": datetime.now(),
-                    "model_used": model_type
-                }
-            }
-            mongo_helper.update_by_id(collection_name, doc_id, {"$set": update})
-        
-        return image, grid_viz, message
+        grid_content_str = "\n".join([" ".join(map(str, row_cell)) for row_cell in grid_content]) if isinstance(grid_content, list) and all(isinstance(row, list) for row in grid_content) else str(grid_content)
         
     except Exception as e:
-        logger.error(f"Error processing MongoDB grid: {str(e)}")
-        return None, None, f"Error: {str(e)}"
+        logger.error(f"Error fetching grid content for {grid_item_id}: {e}")
+        return None, None, f"Error fetching grid content for {grid_item_id}: {e}"
 
-def batch_process_mongodb_prompts(db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_COLLECTION, limit=10, width=DEFAULT_IMAGE_WIDTH, height=DEFAULT_IMAGE_HEIGHT, 
+    # Use the generic image generation wrapper
+    return process_image_generation_task(grid_content_str, width, height, num_images, model_type, is_grid_input=True)
+
+
+# This function will now submit a batch task or process directly
+def submit_batch_process_mongodb_prompts_task_ui(db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_COLLECTION, limit=10, width=DEFAULT_IMAGE_WIDTH, height=DEFAULT_IMAGE_HEIGHT, 
                                      model_type=DEFAULT_TEXT_MODEL, update_db=False):
-    """Batch process multiple prompts from MongoDB"""
-    try:
-        mongo_helper = MongoDBHelper()
-        prompt_items, status = get_prompts_from_mongodb(db_name, collection_name, limit)
-        
-        if not prompt_items:
-            return "No prompts found to process."
-        
-        results = []
-        for doc_id, prompt in prompt_items:
-            logger.info(f"Processing prompt: {prompt}")
-            image, message = process_text_prompt(prompt, width, height, 1, model_type)
+    """Submits a batch processing task to Celery OR processes directly."""
+    logger.info(f"Processing batch processing task for {limit} prompts from {collection_name}.")
+    
+    if USE_CELERY:
+        task = celery_batch_process_mongodb_prompts_task.delay(db_name, collection_name, limit, width, height, model_type, update_db)
+        return f"Batch processing task submitted (ID: {task.id}). Results will be saved to '{OUTPUT_IMAGES_DIR}' on the worker."
+    else:
+        # Direct batch processing in DEV mode
+        try:
+            mongo_helper = MongoDBHelper()
+            query = {"$or": [
+                {"theme_prompt": {"$exists": True}},
+                {"description": {"$exists": True}}
+            ]}
+            prompt_documents = mongo_helper.find_many(collection_name, query=query, limit=limit)
             
-            if image is not None and "Error" not in message:
-                image_path = os.path.join(OUTPUT_DIR, f"mongo_batch_{doc_id}.png") 
-                try:
-                    image.save(image_path)
-                    results.append(f"Generated image for: {prompt[:30]}... -> {image_path}")
-                except Exception as save_e:
-                    logger.error(f"Error saving image for {doc_id}: {save_e}")
-                    results.append(f"Failed to save image for: {prompt[:30]}... - {save_e}")
-                    image_path = None
-                
-                if update_db:
-                    update_data = {
-                        "processed": True,
-                        "processed_at": datetime.now(),
-                        "model_used": model_type
-                    }
-                    if image_path:
-                        update_data["image_path"] = image_path
-                    
-                    mongo_helper.update_by_id(collection_name, doc_id, {"$set": update_data})
-            else:
-                results.append(f"Failed to generate image for: {prompt[:30]}... - {message}")
-        
-        return "\n".join(results)
-        
-    except Exception as e:
-        logger.error(f"Error in batch processing: {str(e)}")
-        return f"Error: {str(e)}"
+            if not prompt_documents:
+                return "No prompts found to process in batch."
+            
+            results = []
+            if _dev_pipeline is None:
+                initialize_dev_processors()
 
-# Removed: process_detailed_text_to_grid function entirely
-# async def process_detailed_text_to_grid(...):
-#     ...
+            for doc in prompt_documents:
+                doc_id = str(doc.get("_id"))
+                prompt = doc.get("theme_prompt") or doc.get("description")
+                
+                if not prompt and "possible_structures" in doc: 
+                    for category_key in doc["possible_structures"]:
+                        for item_key in doc["possible_structures"][category_key]:
+                            if "description" in doc["possible_structures"][category_key][item_key]:
+                                prompt = doc["possible_structures"][category_key][item_key]["description"]
+                                break
+                        if prompt: break
+                
+                if not prompt:
+                    results.append(f"Skipping {doc_id}: No valid prompt found.")
+                    continue
+                
+                logger.info(f"Directly batch processing prompt: '{prompt[:50]}'")
+                try:
+                    # Direct call to generate image
+                    images = _dev_pipeline.process_text(prompt)
+                    
+                    if images and images[0]: 
+                        unique_id = str(uuid.uuid4())[:8]
+                        image_filename = f"mongo_batch_{unique_id}_{doc_id[:8]}.png" 
+                        image_path = os.path.join(OUTPUT_IMAGES_DIR, image_filename)
+                        images[0].save(image_path)
+                        results.append(f"Generated image for: '{prompt[:30]}...' -> {image_filename}")
+                        
+                        if update_db:
+                            update_data = {
+                                "processed": True,
+                                "processed_at": datetime.now(),
+                                "model_used": model_type,
+                                "image_path": image_filename 
+                            }
+                            mongo_helper.update_by_id(collection_name, doc_id, update_data)
+                    else:
+                        results.append(f"Failed to generate image for: '{prompt[:30]}' - No image output.")
+                except Exception as e:
+                    logger.error(f"Error in direct batch processing for {doc_id}: {e}", exc_info=True)
+                    results.append(f"Failed to process '{prompt[:30]}...' - Error: {e}")
+                    
+            return "\n".join(results)
+        except Exception as e:
+            logger.error(f"Error in overall direct batch processing: {e}", exc_info=True)
+            return f"Error during direct batch processing: {e}"
+
 
 # Create the Gradio Interface
 def build_app():
@@ -579,25 +496,32 @@ def build_app():
     
     title_html = f"""
     <div style="font-size: 2em; font-weight: bold; text-align: center; margin-bottom: 5px">
-    Integrated 2D Generation Pipeline
+    Integrated 2D Generation Pipeline ({'Celery Enabled' if USE_CELERY else 'Development Mode'})
     </div>
     <div align="center">
-    Generate 2D images for terrain and biomes
+    Generate 2D images for terrain and biomes. {'Heavy tasks are offloaded to Celery workers.' if USE_CELERY else 'Tasks are processed directly on this server.'}
     </div>
     """
     
     with gr.Blocks(theme=gr.themes.Base(), title='2D Pipeline', css=custom_css) as demo:
         gr.HTML(title_html)
         
-        # Removed 3D-related note
-        # if not HAS_3D_SUPPORT:
-        #     gr.HTML(...)
-        
-        # Set selected="tab_biome_inspector" as the new default
         with gr.Tabs(selected="tab_biome_inspector") as tabs: 
-            # Biome Inspector Tab (Now first position in UI)
+            # Biome Inspector Tab 
             with gr.TabItem("Biome Inspector", id="tab_biome_inspector"):
                 gr.Markdown("# Biome Generation Pipeline Inspector")
+
+                with gr.Row():
+                    biome_db_name = gr.Textbox(
+                        label="Database Name",
+                        value=MONGO_DB_NAME, 
+                        placeholder="Enter database name"
+                    )
+                    biome_collection_name = gr.Textbox(
+                        label="Collection Name",
+                        value=MONGO_BIOME_COLLECTION, 
+                        placeholder="Enter collection name"
+                    )
 
                 with gr.Row():
                     biome_inspector_theme_input = gr.Textbox(
@@ -620,9 +544,9 @@ def build_app():
 
                 initial_biome_names = []
                 try:
-                    initial_biome_names = get_biome_names(MONGO_DB_NAME, MONGO_BIOME_COLLECTION)
+                    initial_biome_names = get_biome_names(biome_db_name.value, biome_collection_name.value)
                 except Exception as e:
-                    logger.error(f"Error fetching initial biome names: {e}")
+                    _biome_logger.error(f"Error fetching initial biome names for inspector: {e}")
                 
                 biome_inspector_selector = gr.Dropdown(
                     choices=initial_biome_names,
@@ -631,55 +555,22 @@ def build_app():
                     value=initial_biome_names[-1] if initial_biome_names else None
                 )
                 
-                initial_biome_display_value = {}
+                initial_biome_display_text = ""
                 try:
                     if biome_inspector_selector.value: 
-                        initial_biome_display_value = display_selected_biome_details(biome_inspector_selector.value)
+                        initial_biome_display_text = display_selected_biome(biome_db_name.value, biome_collection_name.value, biome_inspector_selector.value)
                 except Exception as e:
-                    logger.error(f"Error fetching initial biome display details: {e}")
+                    _biome_logger.error(f"Error fetching initial biome display details for inspector: {e}")
 
-                biome_inspector_display = gr.JSON(
-                    label="Biome Details", 
-                    value=initial_biome_display_value
+                biome_inspector_display = gr.Textbox(
+                    label="Biome Details",
+                    value=initial_biome_display_text, 
+                    interactive=False, 
+                    lines=20, 
+                    max_lines=50, 
+                    show_copy_button=True
                 )
-
-
-            # Existing Text to Biome (Grid) Tab (This is distinct from Biome Inspector, renamed to Text to Biome for clarity)
-            # with gr.TabItem("Text to Biome", id="tab_biome_grid"): # Renamed for clarity
-            #     with gr.Row():
-            #         with gr.Column(scale=3):
-            #             biome_prompt_input = gr.Textbox(
-            #                 label="Biome Theme Prompt",
-            #                 placeholder="e.g., 'A dense cyberpunk city with neon lights'",
-            #                 lines=3
-            #             )
-            #             biome_structure_types_input = gr.Dropdown(
-            #                 label="Select Structure Type Category",
-            #                 choices=list(STRUCTURE_TYPES.keys()),
-            #                 value=list(STRUCTURE_TYPES.keys())[0], # Default to first category
-            #                 interactive=True
-            #             )
-            #             biome_selected_structures_display = gr.Textbox(
-            #                 label="Selected/Custom Structure Types (comma-separated)",
-            #                 placeholder="e.g., 'Skyscraper, Entertainment Venue'",
-            #                 lines=2,
-            #                 interactive=True
-            #             )
-            #             biome_generate_btn = gr.Button("Generate Biome Grid")
-            #             biome_generation_status = gr.Textbox(label="Generation Status", interactive=False)
-                    
-            #         with gr.Column(scale=2):
-            #             biome_grid_output = gr.Textbox(
-            #                 label="Generated Biome Grid Layout (text)",
-            #                 interactive=False,
-            #                 lines=15,
-            #                 placeholder="The 2D grid of your generated biome will appear here."
-            #             )
-            #             biome_grid_viz_output = gr.Image(label="Generated Biome Grid Visualization", interactive=False)
-            #             biome_grid_to_image_btn = gr.Button("Visualize Grid as Image", visible=False)
-            #             # Removed: biome_grid_to_3d_btn = gr.Button("Convert Biome Grid to 3D", visible=False)
-
-
+            
             # Text to Image Tab
             with gr.TabItem("Text to Image", id="tab_text_image"):
                 with gr.Row():
@@ -693,9 +584,8 @@ def build_app():
                         text_submit = gr.Button("Generate Image from Text")
                     
                     with gr.Column(scale=2):
-                        text_output = gr.Image(label="Generated Image")
+                        text_output = gr.Image(label=f"Generated Image (Check '{OUTPUT_IMAGES_DIR}')", interactive=False) 
                         text_message = gr.Textbox(label="Status", interactive=False)
-                        # Removed: text_to_3d_btn = gr.Button("Convert to 3D", visible=False)
             
             # Grid to Image Tab
             with gr.TabItem("Grid to Image", id="tab_grid_image"):
@@ -726,16 +616,15 @@ def build_app():
                     
                     with gr.Column(scale=2):
                         with gr.Row():
-                            grid_output = gr.Image(label="Generated Terrain")
-                            grid_viz = gr.Image(label="Grid Visualization")
+                            grid_output = gr.Image(label=f"Generated Terrain (Check '{OUTPUT_IMAGES_DIR}')", interactive=False)
+                            grid_viz = gr.Image(label=f"Grid Visualization (Check '{OUTPUT_IMAGES_DIR}')", interactive=False)
                         grid_message = gr.Textbox(label="Status", interactive=False)
-                        # Removed: grid_to_3d_btn = gr.Button("Convert to 3D", visible=False)
             
             # File Upload Tab
             with gr.TabItem("File Upload", id="tab_file"):
                 with gr.Row():
                     with gr.Column(scale=3):
-                        file_upload = gr.File(label="Upload a text file or grid file")
+                        file_upload = gr.File(label="Upload a text file or grid file", type="filepath") 
                         gr.Markdown("System will automatically detect if the file contains text or grid data")
                         with gr.Row():
                             file_width = gr.Slider(minimum=256, maximum=1024, value=DEFAULT_IMAGE_WIDTH, step=64, label="Width")
@@ -748,15 +637,9 @@ def build_app():
                     
                     with gr.Column(scale=2):
                         with gr.Row():
-                            file_output = gr.Image(label="Generated Image")
-                            file_grid_viz = gr.Image(label="Grid Visualization (if applicable)")
+                            file_output = gr.Image(label=f"Generated Image (Check '{OUTPUT_IMAGES_DIR}')", interactive=False)
+                            file_grid_viz = gr.Image(label=f"Grid Visualization (if applicable, Check '{OUTPUT_IMAGES_DIR}')", interactive=False)
                         file_message = gr.Textbox(label="Status", interactive=False)
-                        # Removed: file_to_3d_btn = gr.Button("Convert to 3D", visible=False)
-            
-            # Removed 3D Generation Tab - Only create if HAS_3D_SUPPORT is True
-            # if HAS_3D_SUPPORT:
-            #     with gr.TabItem("3D Generation", id="tab_3d"):
-            #         ...
             
             # MongoDB Prompts Tab
             with gr.TabItem("MongoDB", id="tab_mongodb"):
@@ -777,9 +660,8 @@ def build_app():
                         with gr.Column(scale=2):
                             mongo_prompts = gr.Dropdown(label="Select a Prompt", choices=[], interactive=False, allow_custom_value=True)
                             mongo_status = gr.Textbox(label="Status", interactive=False)
-                            mongo_output = gr.Image(label="Generated Image")
+                            mongo_output = gr.Image(label=f"Generated Image (Check '{OUTPUT_IMAGES_DIR}')", interactive=False)
                             mongo_message = gr.Textbox(label="Generation Status", interactive=False)
-                            # Removed: mongo_to_3d_btn = gr.Button("Convert to 3D", visible=False)
                         
                     with gr.Accordion("Batch Processing", open=False):
                         with gr.Row():
@@ -804,171 +686,45 @@ def build_app():
                         with gr.Column(scale=2):
                             grid_items = gr.Dropdown(label="Select a Grid", choices=[], interactive=False, allow_custom_value=True)
                             grid_status = gr.Textbox(label="Status", interactive=False)
-                            grid_output = gr.Image(label="Generated Image")
-                            grid_visualization = gr.Image(label="Grid Visualization")
+                            grid_output = gr.Image(label=f"Generated Image (Check '{OUTPUT_IMAGES_DIR}')", interactive=False)
+                            grid_visualization = gr.Image(label=f"Grid Visualization (Check '{OUTPUT_IMAGES_DIR}')", interactive=False)
                             grid_message = gr.Textbox(label="Generation Status", interactive=False)
-                            # Removed: grid_to_3d_btn = gr.Button("Convert to 3D", visible=False)
 
         # --- Event Handlers ---
 
-        # Removed LLM-based Text to Detailed Grid Tab event handlers and related buttons
-        # llm_generate_button.click(...)
-        # llm_to_grid_image_btn.click(...)
-        # if HAS_3D_SUPPORT: llm_to_3d_btn.click(...)
-
-
-        # Text to Biome (Grid) Tab (This is the new "Biome Inspector" functionality)
+        # Biome Inspector Tab Event Handlers
         biome_inspector_generate_button.click(
-            fn=handle_biome_generation_request, 
-            inputs=[biome_inspector_theme_input, biome_inspector_structure_types_input],
+            fn=handler, 
+            inputs=[biome_inspector_theme_input, biome_inspector_structure_types_input, biome_db_name, biome_collection_name],
             outputs=[biome_inspector_output_message, biome_inspector_selector]
         )
         
         biome_inspector_selector.change(
-            fn=display_selected_biome_details,
-            inputs=biome_inspector_selector,
+            fn=display_selected_biome, 
+            inputs=[biome_db_name, biome_collection_name, biome_inspector_selector],
             outputs=biome_inspector_display
         )
 
-        # Text to Biome (Grid) Tab (Existing "Text to Biome" from prev merged_gradio_app.py)
-        def update_selected_structures(category):
-            return ", ".join(STRUCTURE_TYPES.get(category, []))
-
-        # biome_structure_types_input.change(
-        #     update_selected_structures,
-        #     inputs=[biome_structure_types_input],
-        #     outputs=[biome_selected_structures_display]
-        # )
-
-        # biome_generate_btn.click(
-        #     generate_biome_direct, 
-        #     inputs=[biome_prompt_input, biome_selected_structures_display], 
-        #     outputs=[biome_generation_status, biome_grid_output, biome_grid_viz_output, biome_prompt_input]
-        # ).then(
-        #     lambda grid_str: gr.update(visible=True) if grid_str else gr.update(visible=False),
-        #     inputs=[biome_grid_output],
-        #     outputs=[biome_grid_to_image_btn]
-        # )
-        # # Removed 3D related chain for biome_generate_btn
-        # # .then(
-        # #     lambda: gr.update(visible=HAS_3D_SUPPORT), 
-        # #     outputs=[biome_grid_to_3d_btn]
-        # # )
-
-        # biome_grid_to_image_btn.click(
-        #     lambda grid_str: process_grid_input(grid_str, DEFAULT_IMAGE_WIDTH, DEFAULT_IMAGE_HEIGHT, DEFAULT_NUM_IMAGES, "stability"),
-        #     inputs=[biome_grid_output],
-        #     outputs=[grid_output, grid_viz, grid_message] 
-        # ).then(
-        #     lambda: gr.update(selected="tab_grid_image"), 
-        #     outputs=[tabs]
-        # )
-
-        # Removed 3D related chain for biome_grid_to_3d_btn
-        # if HAS_3D_SUPPORT:
-        #     biome_grid_to_3d_btn.click(...)
-
-
-        # MongoDB Prompt tab event handlers
-        mongo_fetch_btn.click(
-            get_prompts_from_mongodb,
-            inputs=[mongo_db_name, mongo_collection],
-            outputs=[mongo_prompts, mongo_status]
-        ).then(
-            lambda: (gr.update(interactive=True), gr.update(interactive=True)),
-            outputs=[mongo_prompts, mongo_process_btn]
-        )
-
-        mongo_process_btn.click(
-            process_mongodb_prompt,
-            inputs=[
-                mongo_prompts, mongo_db_name, mongo_collection,
-                mongo_width, mongo_height, mongo_num_images, mongo_model
-            ],
-            outputs=[mongo_output, mongo_message]
-        )
-        # Removed 3D related chain for mongo_process_btn
-        # .then(
-        #     lambda img_output: gr.update(visible=HAS_3D_SUPPORT and img_output is not None), 
-        #     inputs=[mongo_output],
-        #     outputs=[mongo_to_3d_btn]
-        # )
-
-        batch_process_btn.click(
-            batch_process_mongodb_prompts,
-            inputs=[
-                mongo_db_name, mongo_collection, batch_limit,
-                mongo_width, mongo_height, mongo_model, update_db
-            ],
-            outputs=[batch_results]
-        )
-
-        # MongoDB Grid tab event handlers
-        grid_fetch_btn.click(
-            get_grids_from_mongodb,
-            inputs=[grid_db_name, grid_collection],
-            outputs=[grid_items, grid_status]
-        ).then(
-            lambda: (gr.update(interactive=True), gr.update(interactive=True)),
-            outputs=[grid_items, grid_process_btn]
-        )
-
-        grid_process_btn.click(
-            process_mongodb_grid,
-            inputs=[
-                grid_items, grid_db_name, grid_collection,
-                grid_width, grid_height, grid_num_images, grid_model
-            ],
-            outputs=[grid_output, grid_visualization, grid_message]
-        )
-        # Removed 3D related chain for grid_process_btn
-        # .then(
-        #     lambda img_output: gr.update(visible=HAS_3D_SUPPORT and img_output is not None),
-        #     inputs=[grid_output],
-        #     outputs=[grid_to_3d_btn]
-        # )
-
-        # Removed Connect MongoDB outputs to 3D generation (Conditional)
-        # if HAS_3D_SUPPORT:
-        #     mongo_to_3d_btn.click(...)
-        #     grid_to_3d_btn.click(...)
-        
-        # Set up event handlers for 2D tabs
+        # Text to Image Tab
         text_submit.click(
-            process_text_prompt,
+            submit_text_prompt_task, 
             inputs=[text_input, text_width, text_height, text_num_images, text_model],
             outputs=[text_output, text_message]
         )
-        # Removed 3D related chain for text_submit
-        # .then(
-        #     lambda img_output: gr.update(visible=HAS_3D_SUPPORT and img_output is not None),
-        #     inputs=[text_output],
-        #     outputs=[text_to_3d_btn]
-        # )
         
+        # Grid to Image Tab
         grid_submit.click(
-            process_grid_input,
+            submit_grid_input_task, 
             inputs=[grid_input, grid_width, grid_height, grid_num_images, grid_model],
             outputs=[grid_output, grid_viz, grid_message]
         )
-        # Removed 3D related chain for grid_submit
-        # .then(
-        #     lambda img_output: gr.update(visible=HAS_3D_SUPPORT and img_output is not None),
-        #     inputs=[grid_output],
-        #     outputs=[grid_to_3d_btn]
-        # )
         
+        # File Upload Tab
         file_submit.click(
-            process_file_upload,
+            submit_file_upload_task, 
             inputs=[file_upload, file_width, file_height, file_num_images, file_text_model, file_grid_model],
             outputs=[file_output, file_grid_viz, file_message]
         )
-        # Removed 3D related chain for file_submit
-        # .then(
-        #     lambda img_output: gr.update(visible=HAS_3D_SUPPORT and img_output is not None),
-        #     inputs=[file_output],
-        #     outputs=[file_to_3d_btn]
-        # )
         
         sample_button.click(
             lambda: create_sample_grid(),
@@ -976,86 +732,84 @@ def build_app():
             outputs=[grid_input]
         )
         
-        # Removed Connect 2D outputs to 3D generation (Conditional)
-        # if HAS_3D_SUPPORT:
-        #     text_to_3d_btn.click(...)
-        #     grid_to_3d_btn.click(...)
-        #     file_to_3d_btn.click(...)
-        #     gen_3d_btn.click(...)
+        # MongoDB Prompt tab event handlers
+        mongo_fetch_btn.click(
+            get_prompts_from_mongodb, 
+            inputs=[mongo_db_name, mongo_collection], 
+            outputs=[mongo_prompts, mongo_status]
+        ).then(
+            lambda: (gr.update(interactive=True), gr.update(interactive=True)),
+            outputs=[mongo_prompts, mongo_process_btn]
+        )
+
+        mongo_process_btn.click(
+            submit_mongodb_prompt_task, 
+            inputs=[
+                mongo_prompts, mongo_db_name, mongo_collection, 
+                mongo_width, mongo_height, mongo_num_images, mongo_model
+            ],
+            outputs=[mongo_output, mongo_message] 
+        )
+
+        batch_process_btn.click(
+            submit_batch_process_mongodb_prompts_task_ui, 
+            inputs=[
+                mongo_db_name, mongo_collection, batch_limit, 
+                mongo_width, mongo_height, mongo_model, update_db
+            ],
+            outputs=[batch_results] 
+        )
+
+        # MongoDB Grid tab event handlers
+        grid_fetch_btn.click(
+            get_grids_from_mongodb, 
+            inputs=[grid_db_name, grid_collection], 
+            outputs=[grid_items, grid_status]
+        ).then(
+            lambda: (gr.update(interactive=True), gr.update(interactive=True)),
+            outputs=[grid_items, grid_process_btn]
+        )
+
+        grid_process_btn.click(
+            submit_mongodb_grid_task, 
+            inputs=[
+                grid_items, grid_db_name, grid_collection, 
+                grid_width, grid_height, grid_num_images, grid_model
+            ],
+            outputs=[grid_output, grid_visualization, grid_message] 
+        )
     
     return demo
 
 def create_fastapi_app(gradio_app):
-    # Create a FastAPI app
+    """Creates a FastAPI app and mounts the Gradio app on it."""
     app = FastAPI()
-    
-    # Create a static directory to store the static files
-    # No longer needed as no 3D files are mounted, but keeping as a placeholder if needed later
-    # static_dir = Path(SAVE_DIR).absolute() 
-    # static_dir.mkdir(parents=True, exist_ok=True)
-    # app.mount("/static", StaticFiles(directory=static_dir, html=True), name="static")
-    
-    # Removed 3D asset copying logic
-    # env_maps_src = os.path.join(os.path.dirname(CURRENT_DIR), 'Hunyuan3D-2', 'assets', 'env_maps')
-    # env_maps_dest = os.path.join(static_dir, 'env_maps')
-    # os.makedirs(env_maps_dest, exist_ok=True)
-    # if os.path.exists(env_maps_src):
-    #     for file in os.listdir(env_maps_src):
-    #         src_file = os.path.join(env_maps_src, file)
-    #         dst_file = os.path.join(env_maps_dest, file)
-    #         if os.path.isfile(src_file) and (not os.path.exists(dst_file) or os.stat(src_file).st_mtime > os.stat(dst_file).st_mtime):
-    #             shutil.copy2(src_file, dst_file)
-    #             logger.info(f"Copied environment map: {file}")
-    #         else:
-    #             logger.debug(f"Skipped copying {file} (already exists or not a file).")
-    # else:
-    #     logger.warning(f"Environment maps source directory not found: {env_maps_src}")
-
-    # Mount the Gradio app
     app = gr.mount_gradio_app(app, gradio_app, path="/")
     return app
 
-# Main execution block - This block is typically what's run by `python src/merged_gradio_app.py`
+# Main execution block
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    # Removed 3D related arguments
-    # parser.add_argument("--model_path", type=str, default='tencent/Hunyuan3D-2mini')
-    # parser.add_argument("--subfolder", type=str, default='hunyuan3d-dit-v2-mini-turbo')
-    # parser.add_argument("--texgen_model_path", type=str, default='tencent/Hunyuan3D-2') 
     parser.add_argument('--port', type=int, default=8080)
     parser.add_argument('--host', type=str, default='0.0.0.0')
     parser.add_argument('--share', action='store_true', help='Share the Gradio app')
-    # Removed 3D related arguments
-    # parser.add_argument('--device', type=str, default='cuda')
-    # parser.add_argument('--disable_3d', action='store_true', help='Disable 3D generation functionality')
     args = parser.parse_args()
     
-    # Removed HAS_3D_SUPPORT updates
-    # HAS_3D_SUPPORT = not args.disable_3d
-    # logger.info(f"merged_gradio_app.py: Initial HAS_3D_SUPPORT set to {HAS_3D_SUPPORT} based on --disable_3d.")
-
+    # Create output directories (ensure they exist on the frontend machine)
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    os.makedirs(OUTPUT_IMAGES_DIR, exist_ok=True)
+    os.makedirs(OUTPUT_3D_ASSETS_DIR, exist_ok=True) 
+    
     try:
-        initialize_processors() 
-        logger.info("merged_gradio_app.py: 2D processors initialized.")
-        
-        # Removed 3D initialization block
-        # has_3d_initialized_successfully = False
-        # if HAS_3D_SUPPORT: 
-        #     logger.info("merged_gradio_app.py: HAS_3D_SUPPORT is True. Attempting to initialize 3D processors...")
-        #     has_3d_initialized_successfully = initialize_3d_processors(args.model_path, args.subfolder, args.device)
-        #     HAS_3D_SUPPORT = has_3d_initialized_successfully 
-        #     logger.info(f"merged_gradio_app.py: 3D processors initialization result: {has_3d_initialized_successfully}. HAS_3D_SUPPORT is now {HAS_3D_SUPPORT}")
-        # else:
-        #     logger.info("merged_gradio_app.py: HAS_3D_SUPPORT is False (or was disabled). Skipping 3D processor initialization.")
+        # Initialize processors only if in DEV mode
+        if not USE_CELERY:
+            initialize_dev_processors() # <--- NEW: Call this in DEV mode
+        else:
+            logger.info("merged_gradio_app.py: FastAPI/Gradio app starting (CPU-only, submitting tasks to Celery).")
         
         logger.info("merged_gradio_app.py: Building Gradio app interface...")
         demo = build_app() 
         logger.info("merged_gradio_app.py: Gradio app interface built.")
-        
-        # Removed 3D-related warnings
-        # if not HAS_3D_SUPPORT:
-        #     logger.warning("merged_gradio_app.py: Running in 2D-only mode. 3D generation features will be disabled.")
-        #     logger.warning("merged_gradio_app.py: To enable 3D features, install the required system packages (e.g., libgl1-mesa-glx xvfb) and ensure CUDA/PyTorch setup is correct.")
         
         logger.info("merged_gradio_app.py: Attempting to launch application server (FastAPI/Uvicorn or Gradio built-in)...")
         logger.info(f"merged_gradio_app.py: Gradio application will be accessible on port: {args.port}")
@@ -1072,40 +826,45 @@ if __name__ == "__main__":
     except Exception as e:
         logger.critical(f"merged_gradio_app.py: A critical error occurred during application startup: {str(e)}", exc_info=True)
         print(f"\nFATAL ERROR: Application could not start. Details: {e}")
-        print("Please check your environment setup and dependencies (e.g., CUDA, system libraries for 3D).")
-        # Removed suggestion to try running with '--disable_3d' since it's removed
-        # print("If 3D generation is not required, try running with '--disable_3d'.")
+        print("Please check your environment setup and dependencies.")
         
-        # Fallback UI (simplified to only 2D image/grid processing)
+        # Fallback UI (simplified to only 2D image/grid processing with messages)
         try:
+            import gradio as gr
             from PIL import Image, ImageDraw, ImageFont
             import numpy as np
-            import gradio as gr 
 
-            def fallback_text_processor_dummy(prompt, width, height, num_images, model_type):
-                dummy_image = Image.new('RGB', (width, height), color=(70, 130, 180)) # SteelBlue
+            # Dummy functions for fallback UI, indicating tasks are not truly run
+            def fallback_dummy_task_submit(input_data, *args):
+                dummy_image = Image.new('RGB', (256, 256), color=(100, 100, 100))
                 draw = ImageDraw.Draw(dummy_image)
                 try:
-                    font = ImageFont.truetype("arial.ttf", 24)
+                    font = ImageFont.truetype("arial.ttf", 20)
                 except IOError:
                     font = ImageFont.load_default()
-                text = f"Fallback Image for:\n'{prompt[:40]}...'\n(Full app failed to load)"
-                text_width, text_height = draw.textsize(text, font=font)
-                draw.text(((width - text_width) / 2, (height - text_height) / 2), text, (255, 255, 255), font=font)
-                return dummy_image, "Error: Main app failed. Displaying fallback."
+                text = "Task cannot be submitted.\nFull app failed to load."
+                text_bbox = draw.textbbox((0,0), text, font=font)
+                text_width = text_bbox[2] - text_bbox[0]
+                text_height = text_bbox[3] - text_bbox[1]
+                draw.text(((256 - text_width) / 2, (256 - text_height) / 2), text, (255, 255, 255), font=font)
+                return dummy_image, "Fallback: App initialization failed. Tasks cannot be processed."
 
-            def fallback_grid_processor_dummy(grid_string, width, height, num_images, model_type):
-                dummy_image = Image.new('RGB', (width, height), color=(180, 70, 70)) # IndianRed
+            def fallback_dummy_grid_submit(input_data, *args):
+                dummy_image = Image.new('RGB', (256, 256), color=(150, 100, 100))
                 draw = ImageDraw.Draw(dummy_image)
                 try:
-                    font = ImageFont.truetype("arial.ttf", 24)
+                    font = ImageFont.truetype("arial.ttf", 20)
                 except IOError:
                     font = ImageFont.load_default()
-                text = f"Fallback Grid Viz for:\n'{grid_string[:40]}...'\n(Full app failed to load)"
-                text_width, text_height = draw.textsize(text, font=font)
-                draw.text(((width - text_width) / 2, (height - text_height) / 2), text, (255, 255, 255), font=font)
-                return dummy_image, dummy_image, "Error: Main app failed. Displaying fallback."
+                text = "Grid Task cannot be submitted.\nFull app failed to load."
+                text_bbox = draw.textbbox((0,0), text, font=font)
+                text_width = text_bbox[2] - text_bbox[0]
+                text_height = text_bbox[3] - text_bbox[1]
+                draw.text(((256 - text_width) / 2, (256 - text_height) / 2), text, (255, 255, 255), font=font)
+                return dummy_image, dummy_image, "Fallback: App initialization failed. Tasks cannot be processed."
 
+            def fallback_dummy_biome_generate(theme, structures):
+                 return "Fallback: Biome generation not available. App initialization failed.", gr.update(choices=[], value=None)
 
             fallback_demo_app = gr.Blocks(theme=gr.themes.Base())
             with fallback_demo_app:
@@ -1117,14 +876,13 @@ if __name__ == "__main__":
                 Full application startup failed due to: {str(e)}
                 </div>
                 <div align="center">
-                <p>This is a simplified interface. For full features, resolve the error above.</p>
+                <p>This is a simplified interface. For full features, ensure Redis is running and Celery workers are configured and active.</p>
                 </div>
                 """)
-                # Fallback tabs - keeping only the requested 2D ones
                 with gr.Tabs(selected="tab_biome_inspector_fallback") as fallback_tabs:
                     with gr.TabItem("Biome Inspector (Fallback)", id="tab_biome_inspector_fallback"):
                         gr.Markdown("# Biome Generation Pipeline Inspector (Fallback)")
-                        gr.HTML("<p>Biome generation and viewing features are limited due to core app failure.</p>")
+                        gr.HTML("<p>Biome generation and viewing features are limited as the main app failed to load.</p>")
                         fallback_biome_inspector_theme_input = gr.Textbox(
                             label="Enter Biome Theme (Fallback)",
                             placeholder="e.g., A lush forest with ancient ruins"
@@ -1137,7 +895,7 @@ if __name__ == "__main__":
                         fallback_biome_inspector_output_message = gr.Textbox(label="Generation Status (Fallback)", interactive=False)
 
                         fallback_biome_inspector_generate_button.click(
-                            lambda t, s: ("Fallback: Biome generation not available in this mode.", gr.update(choices=[], value=None)),
+                            fallback_dummy_biome_generate,
                             inputs=[fallback_biome_inspector_theme_input, fallback_biome_inspector_structure_types_input],
                             outputs=[fallback_biome_inspector_output_message, gr.Dropdown(choices=[], value=None)]
                         )
@@ -1152,7 +910,7 @@ if __name__ == "__main__":
                         fallback_text_output = gr.Image(label="Generated Image")
                         fallback_text_message = gr.Textbox(label="Status", interactive=False)
                         gr.Button("Generate Image").click(
-                            fallback_text_processor_dummy, 
+                            fallback_dummy_task_submit, 
                             inputs=[fallback_text_input, fallback_text_width, fallback_text_height, fallback_text_num_images, fallback_text_model], 
                             outputs=[fallback_text_output, fallback_text_message]
                         )
@@ -1166,12 +924,10 @@ if __name__ == "__main__":
                         fallback_grid_viz = gr.Image(label="Grid Visualization")
                         fallback_grid_message = gr.Textbox(label="Status", interactive=False)
                         gr.Button("Generate Grid Image").click(
-                            fallback_grid_processor_dummy, 
+                            fallback_dummy_grid_submit, 
                             inputs=[fallback_grid_input, fallback_grid_width, fallback_grid_height, fallback_grid_num_images, fallback_grid_model], 
                             outputs=[fallback_grid_output, fallback_grid_viz, fallback_grid_message]
                         )
-                    # Removed fallback for MongoDB or File Upload tabs, as they were not explicitly mentioned for fallback
-                    # This fallback should only contain the minimum necessary functionality if the main app crashes.
             logger.info("merged_gradio_app.py: Attempting to launch minimal 2D-only fallback app...")
             logger.info(f"merged_gradio_app.py: Fallback app will be accessible on port: {args.port}")
             fallback_demo_app.launch(server_name=args.host, server_port=args.port, share=args.share)
