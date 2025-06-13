@@ -8,7 +8,7 @@ load_dotenv()
 
 # --- LLM API Configuration ---
 # OpenRouter API Key (Leave as empty string; Canvas will inject if available)
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "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")
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 # OpenRouter Base URL
 OPENROUTER_BASE_URL = "https://openrouter.ai"
 
