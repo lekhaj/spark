@@ -2,6 +2,7 @@
 import os
 import json
 import logging
+import re # Added for more robust JSON extraction
 from datetime import datetime
 import nltk
 from nltk.corpus import stopwords
@@ -13,38 +14,36 @@ nltk.download("punkt")
 nltk.download("stopwords")
 
 # Logging setup
-# Adjust log file path to be relative to the project root, not src/text_grid
 LOG_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'logs'))
 os.makedirs(LOG_DIR, exist_ok=True)
-# FIX: Set logging level to DEBUG for more verbose output during debugging
 logging.basicConfig(filename=os.path.join(LOG_DIR, "biome_generator.log"), level=logging.DEBUG) 
 
-# Define the logger at the module level
 logger = logging.getLogger(__name__)
 
 
 def extract_first_json_block(text):
     """
-    Extract the first valid JSON object from a string using bracket matching.
-    Improved to handle markdown code blocks.
+    Extract the first valid JSON object from a string.
+    Prioritizes markdown code blocks, then tries to find a standalone JSON object.
     """
-    # First, try to strip markdown code block fences if they exist
-    if text.strip().startswith('```json') and text.strip().endswith('```'):
-        text = text.strip()[len('```json'):-len('```')].strip()
-    elif text.strip().startswith('```') and text.strip().endswith('```'):
-        text = text.strip()[len('```'):-len('```')].strip()
-
+    # Try to extract from markdown code blocks first
+    json_match = re.search(r'```json\n(.*?)\n```', text, re.DOTALL)
+    if json_match:
+        return json_match.group(1).strip()
+    
+    # Fallback: Try to find a balanced JSON object without markdown fences
     brace_stack = []
     start_idx = -1
     for i, char in enumerate(text):
         if char == '{':
             if not brace_stack:
-                start_idx = i
+                start_idx = i 
             brace_stack.append('{')
         elif char == '}':
             if brace_stack:
                 brace_stack.pop()
                 if not brace_stack and start_idx != -1:
+                    # Found a complete, balanced JSON object
                     return text[start_idx:i+1]
     return None
 
@@ -62,31 +61,36 @@ def get_grid_placement_hints_prompt(structure_definitions, theme_prompt, grid_di
         for idx, details in structure_definitions.items()
     ])
 
+    # IMPORTANT: The prompt is now even more aggressive in demanding ONLY JSON output.
     return (
-        f"You are an expert game environment designer, specializing in procedural generation.\n"
-        f"The biome theme is: '{theme_prompt}'.\n"
-        f"The grid size is {grid_dimensions[0]}x{grid_dimensions[1]}.\n"
+        f"--- JSON_OUTPUT_START ---\n"
+        f"```json\n"
+        f"{{\n"
+        f'   "biome_name_suggestion": "Your generated biome name (max 4 words)",\n'
+        f'   "grid_dimensions": {{"width": {grid_dimensions[0]}, "height": {grid_dimensions[1]}}},\n'
+        f'   "placement_rules": [\n'
+        f'     {{"structure_id": <int>, "type": "<str>", "min_count": <int>, "max_count": <int>, "size": [<int>, <int>], "priority_zones": ["corner", "edge", "center", "any"], "adjacent_to_ids": [<int>], "avoid_ids": [<int>] }}\n'
+        f'   ],\n'
+        f'   "general_density": <float> // (0.0 to 1.0, overall structure density)\n'
+        f'}}\n'
+        f"```\n"
+        f"--- JSON_OUTPUT_END ---\n\n"
+        f"As an expert game environment designer specializing in procedural generation, "
+        f"your task is to suggest strategic placement rules and parameters for a "
+        f"{grid_dimensions[0]}x{grid_dimensions[1]} grid based on the theme: '{theme_prompt}'.\n"
         f"Available structures and their IDs:\n{structure_info}\n\n"
-        "Your task is to suggest strategic placement rules and parameters for these structures "
-        "to create a realistic and thematic layout, without generating the actual grid.\n"
-        "Consider density, clustering, relation to edges/corners, and proximity between structure types.\n"
-        "Use 0 for empty tiles if you need to refer to empty spaces in your rules.\n\n"
-        "Return your output strictly as a JSON object with the following keys, "
-        "enclosed within a markdown code block for JSON:\n"
-        "```json\n"
-        "{\n"
-        '   "biome_name_suggestion": "Your generated biome name (max 4 words)",\n'
-        '   "grid_dimensions": {"width": 10, "height": 10},\n'
-        '   "placement_rules": [\n'
-        '     { "structure_id": <int>, "type": "<str>", "min_count": <int>, "max_count": <int>, "size": [<int>, <int>], "priority_zones": ["corner", "edge", "center", "any"], "adjacent_to_ids": [<int>], "avoid_ids": [<int>] }\n'
-        '   ],\n'
-        '   "general_density": <float> // (0.0 to 1.0, overall structure density)\n'
-        '}\n'
-        "```\n"
-        "Briefly describe each parameter within the JSON, e.g., 'priority_zones': list of preferred locations like 'corner', 'edge', 'center', 'any'. "
-        "The `size` is [width, height], `adjacent_to_ids` means structures should be near these IDs, `avoid_ids` means structures should avoid these IDs. "
-        "Keep `max_count` realistic for a 10x10 grid (e.g., total count should not exceed grid_size * density). "
-        "Ensure `structure_id` and `type` match the provided structure_info exactly."
+        "Crucial Guidelines:\n"
+        "- Do NOT generate the actual grid. Provide only the rules.\n"
+        "- Consider density, clustering, relation to edges/corners, and proximity between structure types.\n"
+        "- Use 0 for empty tiles when referring to space.\n"
+        "- `structure_id`: Must match IDs from the provided list.\n"
+        "- `type`: Must match types from the provided list.\n"
+        "- `min_count`, `max_count`: Number of instances of this structure.\n"
+        "- `size`: [width, height] for the structure's footprint (e.g., [1,1] for a single tile, [2,2] for a 2x2 building).\n"
+        "- `priority_zones`: List of preferred locations: 'corner', 'edge', 'center', 'any'.\n"
+        "- `adjacent_to_ids`: List of structure IDs this one should be near (Manhattan distance <= 3).\n"
+        "- `avoid_ids`: List of structure IDs this one should avoid (Manhattan distance <= 2).\n"
+        "**VERY IMPORTANT**: Ensure `max_count` and `size` values are realistic so that the sum of `max_count * size[0] * size[1]` for all structures does not significantly exceed `grid_width * grid_height * general_density`."
     )
 
 def parse_llm_hints(llm_response: str):
@@ -94,22 +98,21 @@ def parse_llm_hints(llm_response: str):
     Parses the LLM's JSON response containing grid placement hints.
     Includes robust error handling and sets default values if parsing fails or data is missing.
     """
-    current_logger = logging.getLogger(__name__) # Ensure logger is accessible
-    current_logger.info(f"Raw LLM response for hints:\n{llm_response}") # Added print for debugging
+    current_logger = logging.getLogger(__name__) 
+    current_logger.info(f"Raw LLM response for hints:\n{llm_response}") 
     try:
         cleaned = extract_first_json_block(llm_response)
         if not cleaned:
             raise ValueError("No JSON block found in LLM response for hints")
         parsed = json.loads(cleaned)
 
-        # Basic validation and default values for grid dimensions
         grid_dims = parsed.get("grid_dimensions", {"width": 10, "height": 10})
         if not isinstance(grid_dims, dict) or "width" not in grid_dims or "height" not in grid_dims:
-             grid_dims = {"width": 10, "height": 10} # Default if invalid
+             grid_dims = {"width": 10, "height": 10} 
 
         rules = []
         for r in parsed.get("placement_rules", []):
-            try: # Try parsing each rule robustly
+            try: 
                 rule_id = int(r.get("structure_id")) if isinstance(r.get("structure_id"), (str, int)) else 0
                 rule_type = str(r.get("type", "unknown"))
                 min_c = int(r.get("min_count", 0))
@@ -145,25 +148,23 @@ def parse_llm_hints(llm_response: str):
 
     except Exception as e:
         current_logger.error(f"[ERROR] Failed to parse LLM hints: {e}\nRaw: {llm_response}")
-        # Return a default, basic set of hints if parsing fails
         return {
             "biome_name_suggestion": "Default Biome",
             "grid_dimensions": {"width": 10, "height": 10},
-            "placement_rules": [], # No specific rules
+            "placement_rules": [], 
             "general_density": 0.3
         }
 
 
 # --- Existing Utility Functions (no change from previous update) ---
-def build_structure_definitions(structure_defs_raw_str, start_id): # Renamed for clarity
+def build_structure_definitions(structure_defs_raw_str, start_id): 
     """
     Converts structure definitions into an ID-keyed dictionary.
     Accepts a stringified JSON (expected to be a single object where keys are structure names).
     """
-    current_logger = logging.getLogger(__name__) # Ensure logger is accessible
-    current_logger.info(f"Raw LLM response for structure definitions:\n{structure_defs_raw_str}") # Added print for debugging
+    current_logger = logging.getLogger(__name__) 
+    current_logger.info(f"Raw LLM response for structure definitions:\n{structure_defs_raw_str}") 
     
-    # --- ADDED: Check for None or empty string before processing ---
     if structure_defs_raw_str is None or not structure_defs_raw_str.strip():
         raise ValueError("LLM response for structure definitions is empty or None. Cannot process.")
 
@@ -182,13 +183,11 @@ def build_structure_definitions(structure_defs_raw_str, start_id): # Renamed for
         current_logger.debug(f"[DEBUG] Raw input: {structure_defs_raw_str}")
         raise ValueError(f"Failed to process raw structure definitions: {e}")
 
-    # Now, explicitly check if the parsed JSON is a dictionary, as per the prompt's example
     if not isinstance(parsed_json, dict):
         current_logger.error(f"[ERROR] LLM returned unexpected type for structure definitions. Expected dict, got {type(parsed_json)}")
         current_logger.debug(f"[DEBUG] Parsed JSON: {parsed_json}")
         raise ValueError("Expected LLM response for structure definitions to be a dictionary.")
 
-    # Convert the dictionary of structures into a list of structure dictionaries (their values)
     structure_list = list(parsed_json.values())
     
     structured = {}
@@ -198,14 +197,13 @@ def build_structure_definitions(structure_defs_raw_str, start_id): # Renamed for
             current_logger.debug(f"[DEBUG] Invalid struct in list: {struct}")
             raise ValueError(f"[ERROR] Each structure in the LLM-provided list must be a dict. Got: {type(struct)}")
         
-        # Ensure 'attributes' is a dictionary if it comes as something else
         attributes = struct.get("attributes", {})
         if not isinstance(attributes, dict):
             current_logger.warning(f"Attributes for structure type '{struct.get('type')}' is not a dict. Defaulting to empty dict.")
             attributes = {}
 
         structured[str(current_id)] = {
-            "type": struct.get("type", "Unnamed Structure"), # Add .get with default for robustness
+            "type": struct.get("type", "Unnamed Structure"), 
             "description": struct.get("description", ""),
             "attributes": attributes
         }

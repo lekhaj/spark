@@ -8,7 +8,7 @@ load_dotenv()
 
 # --- LLM API Configuration ---
 # OpenRouter API Key (Leave as empty string; Canvas will inject if available)
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "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")
 # OpenRouter Base URL
 OPENROUTER_BASE_URL = "https://openrouter.ai"
 
@@ -23,7 +23,7 @@ DEFAULT_NUM_IMAGES = 1
 
 # --- Output Directories ---
 # Directory for saving generated images and 3D assets
-OUTPUT_DIR = "generated_assets"
+OUTPUT_DIR = "./generated_assets"
 OUTPUT_IMAGES_DIR = os.path.join(OUTPUT_DIR, "images")
 OUTPUT_3D_ASSETS_DIR = os.path.join(OUTPUT_DIR, "3d_assets")
 
@@ -95,4 +95,6 @@ class Config:
         4: "desert",
         # Add more terrain types as needed
     }
-
+# Celery and Redis Configuration
+REDIS_BROKER_URL = "redis://localhost:6379/0" # Keep this for production setup
+USE_CELERY = False

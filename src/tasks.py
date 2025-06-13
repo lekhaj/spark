@@ -1,0 +1,284 @@
+# src/tasks.py
+
+import os
+import logging
+from celery import Celery
+import numpy as np
+from PIL import Image
+from datetime import datetime
+import pymongo # Used for pymongo.results.ObjectId if you have it in your db_helper
+from celery.signals import worker_process_init # For lazy loading models
+import uuid # Needed for unique filenames in tasks
+
+# --- Imports for actual processing logic ---
+# These paths are crucial. They must be correct relative to where tasks.py will run
+# On the GPU EC2, your 'src' directory (or just the relevant parts) should be present.
+try:
+    from config import (
+        DEFAULT_TEXT_MODEL, DEFAULT_GRID_MODEL,
+        OUTPUT_DIR, OUTPUT_IMAGES_DIR, OUTPUT_3D_ASSETS_DIR, # Ensure these are paths on the worker machine
+        MONGO_DB_NAME, MONGO_BIOME_COLLECTION
+    )
+    from pipeline.text_processor import TextProcessor
+    from pipeline.grid_processor import GridProcessor
+    from pipeline.pipeline import Pipeline
+    # from terrain.grid_parser import GridParser # Only needed if GridProcessor doesn't handle visualization internally
+    from utils.image_utils import save_image, create_image_grid
+    from db_helper import MongoDBHelper # For saving results to DB
+
+    # Biome Generation modules (these need to be present on the worker)
+    from text_grid.structure_registry import get_biome_names, fetch_biome
+    from text_grid.grid_generator import generate_biome
+
+    TASK_MODULES_LOADED = True
+    print("INFO: All necessary task modules loaded for Celery worker.")
+except ImportError as e:
+    print(f"ERROR: Could not load all task modules for Celery worker: {e}")
+    print("Please ensure your 'src' directory and its subfolders (config, pipeline, db_helper, text_grid, utils) are accessible to the Celery worker.")
+    TASK_MODULES_LOADED = False
+
+# --- Celery App Setup ---
+# The broker URL should point to your Redis instance.
+# It will be read from the REDIS_BROKER_URL environment variable or config.py
+# If not set, it defaults to a local Redis instance.
+broker_url = os.getenv('REDIS_BROKER_URL', 'redis://localhost:6379/0')
+app = Celery('gpu_tasks', broker=broker_url, backend='rpc://') # rpc:// for basic result backend if needed
+
+# Set up logging for Celery tasks
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+task_logger = logging.getLogger('celery_tasks')
+
+# Global variables for processors (will be initialized lazily within tasks if needed)
+_text_processor = None
+_grid_processor = None
+_pipeline = None
+
+# --- Lazy Initialization of Processors ---
+# Use Celery's worker_process_init signal to load models once per worker process.
+# This avoids loading models multiple times if the same process handles many tasks.
+@worker_process_init.connect
+def initialize_processors_for_worker(**kwargs):
+    global _text_processor, _grid_processor, _pipeline
+    if not TASK_MODULES_LOADED:
+        task_logger.error("Skipping processor initialization: Core task modules failed to load.")
+        return
+
+    try:
+        task_logger.info("Initializing TextProcessor and GridProcessor for Celery worker process...")
+        _text_processor = TextProcessor(model_type=DEFAULT_TEXT_MODEL)
+        _grid_processor = GridProcessor(model_type=DEFAULT_GRID_MODEL)
+        _pipeline = Pipeline(_text_processor, _grid_processor)
+        task_logger.info("Processors initialized/ready for task execution.")
+    except Exception as e:
+        task_logger.critical(f"FATAL: Failed to initialize core processors in Celery worker: {e}", exc_info=True)
+        # You might want to exit the worker or mark it unhealthy here
+
+# --- Celery Tasks ---
+
+@app.task(name='generate_text_image')
+def generate_text_image(prompt: str, width: int, height: int, num_images: int, model_type: str):
+    """Celery task to process text prompt and generate images."""
+    global _text_processor, _pipeline
+    if not TASK_MODULES_LOADED or _pipeline is None:
+        # Re-attempt initialization if not ready (e.g., if worker_process_init failed for some reason)
+        initialize_processors_for_worker()
+        if _pipeline is None: # If still None after re-attempt
+            return {"status": "error", "message": "Worker not fully initialized or modules missing."}
+
+    try:
+        task_logger.info(f"Task: Processing text prompt: '{prompt[:50]}' with model {model_type}")
+        
+        # Ensure correct model is used - re-initialize if type changes
+        if _text_processor.model_type != model_type:
+            task_logger.info(f"Re-initializing TextProcessor to {model_type} for task.")
+             # Re-declare global to modify
+            _text_processor = TextProcessor(model_type=model_type)
+            _pipeline = Pipeline(_text_processor, _grid_processor)
+
+        images = _pipeline.process_text(prompt)
+        
+        if not images:
+            task_logger.error("No images were generated by the pipeline.")
+            return {"status": "error", "message": "No images generated."}
+        
+        # Save images to the OUTPUT_IMAGES_DIR on the worker machine
+        image_relative_paths = []
+        if len(images) > 1:
+            grid_image = create_image_grid(images)
+            unique_id = str(uuid.uuid4())[:8]
+            grid_filename = f"text_grid_{unique_id}.png"
+            grid_path = os.path.join(OUTPUT_IMAGES_DIR, grid_filename)
+            grid_image.save(grid_path)
+            image_relative_paths.append(grid_filename) # Store just the filename/relative path
+
+            for i, img in enumerate(images):
+                single_filename = f"text_{unique_id}_{i}.png"
+                single_img_path = os.path.join(OUTPUT_IMAGES_DIR, single_filename)
+                img.save(single_img_path)
+                image_relative_paths.append(single_filename)
+            message = f"Generated {len(images)} images (grid). Saved to {OUTPUT_IMAGES_DIR}"
+        else:
+            unique_id = str(uuid.uuid4())[:8]
+            img_filename = f"text_image_{unique_id}.png"
+            img_path = os.path.join(OUTPUT_IMAGES_DIR, img_filename)
+            images[0].save(img_path)
+            image_relative_paths.append(img_filename)
+            message = f"Generated 1 image. Saved to {OUTPUT_IMAGES_DIR}"
+
+        return {"status": "success", "message": message, "image_filenames": image_relative_paths}
+
+    except Exception as e:
+        task_logger.error(f"Error in generate_text_image task for prompt '{prompt[:50]}': {e}", exc_info=True)
+        return {"status": "error", "message": f"Task failed: {e}"}
+
+@app.task(name='generate_grid_image')
+def generate_grid_image(grid_string: str, width: int, height: int, num_images: int, model_type: str):
+    """Celery task to process grid data and generate terrain images."""
+    global _grid_processor, _pipeline
+    if not TASK_MODULES_LOADED or _pipeline is None:
+        initialize_processors_for_worker()
+        if _pipeline is None:
+            return {"status": "error", "message": "Worker not fully initialized or modules missing."}
+
+    try:
+        task_logger.info(f"Task: Processing grid data with model {model_type}")
+
+        if _grid_processor.model_type != model_type:
+            task_logger.info(f"Re-initializing GridProcessor to {model_type} for task.")
+            
+            _grid_processor = GridProcessor(model_type=model_type)
+            _pipeline = Pipeline(_text_processor, _grid_processor)
+
+        images, grid_viz = _pipeline.process_grid(grid_string)
+        
+        if not images:
+            task_logger.error("No images were generated by the pipeline.")
+            return {"status": "error", "message": "No images generated."}
+
+        unique_id = str(uuid.uuid4())[:8]
+        viz_filename = f"grid_visualization_{unique_id}.png"
+        viz_path = os.path.join(OUTPUT_IMAGES_DIR, viz_filename)
+        grid_viz.save(viz_path)
+        
+        image_filenames = [viz_filename] # Include viz image filename
+
+        if len(images) > 1:
+            grid_image = create_image_grid(images)
+            grid_filename = f"terrain_grid_{unique_id}.png"
+            grid_path = os.path.join(OUTPUT_IMAGES_DIR, grid_filename)
+            grid_image.save(grid_path)
+            image_filenames.append(grid_filename)
+            for i, img in enumerate(images):
+                single_filename = f"terrain_{unique_id}_{i}.png"
+                single_img_path = os.path.join(OUTPUT_IMAGES_DIR, single_filename)
+                img.save(single_img_path)
+                image_filenames.append(single_filename)
+            message = f"Generated {len(images)} images (grid). Saved to {OUTPUT_IMAGES_DIR}"
+        else:
+            img_filename = f"terrain_image_{unique_id}.png"
+            img_path = os.path.join(OUTPUT_IMAGES_DIR, img_filename)
+            images[0].save(img_path)
+            image_filenames.append(img_filename)
+            message = f"Generated 1 image. Saved to {OUTPUT_IMAGES_DIR}"
+
+        return {"status": "success", "message": message, "image_filenames": image_filenames}
+
+    except Exception as e:
+        task_logger.error(f"Error in generate_grid_image task: {e}", exc_info=True)
+        return {"status": "error", "message": f"Task failed: {e}"}
+
+
+@app.task(name='run_biome_generation')
+async def run_biome_generation(theme: str, structure_types_str: str):
+    """Celery task to generate biome data and save it to MongoDB."""
+    if not TASK_MODULES_LOADED:
+        return {"status": "error", "message": "Worker not fully initialized or modules missing."}
+
+    task_logger.info(f"Task: Running biome generation for theme: '{theme[:50]}', structures: '{structure_types_str}'")
+    structure_type_list = [s.strip() for s in structure_types_str.split(',') if s.strip()]
+
+    if not structure_type_list:
+        task_logger.warning("No structure types provided for biome generation task.")
+        return {"status": "error", "message": "No structure types provided."}
+    
+    try:
+        msg = await generate_biome(theme, structure_type_list)
+        task_logger.info(f"Biome generation finished with message: {msg}")
+
+        return {"status": "success", "message": msg}
+
+    except Exception as e:
+        task_logger.error(f"Error in run_biome_generation task for theme '{theme[:50]}': {e}", exc_info=True)
+        return {"status": "error", "message": f"Task failed: {e}"}
+
+@app.task(name='batch_process_mongodb_prompts_task')
+def batch_process_mongodb_prompts_task(db_name: str, collection_name: str, limit: int, width: int, height: int, model_type: str, update_db: bool):
+    """Celery task to batch process multiple prompts from MongoDB and generate images."""
+    global _text_processor, _pipeline 
+    if not TASK_MODULES_LOADED or _pipeline is None:
+        initialize_processors_for_worker()
+        if _pipeline is None:
+            return {"status": "error", "message": "Worker not fully initialized or modules missing."}
+
+    mongo_helper = MongoDBHelper()
+    
+    try:
+        query = {"$or": [{"theme_prompt": {"$exists": True}}, {"description": {"$exists": True}}]}
+        prompt_documents = mongo_helper.find_many(collection_name, query=query, limit=limit)
+        
+        if not prompt_documents:
+            return {"status": "success", "message": "No prompts found to process in batch."}
+    except Exception as e:
+        task_logger.error(f"Error fetching prompts for batch processing from MongoDB: {e}")
+        return {"status": "error", "message": f"Failed to fetch prompts for batch: {e}"}
+
+    results = []
+    
+    for doc in prompt_documents:
+        doc_id = str(doc.get("_id"))
+        prompt = doc.get("theme_prompt") or doc.get("description")
+        
+        if not prompt and "possible_structures" in doc: 
+            for category_key in doc["possible_structures"]:
+                for item_key in doc["possible_structures"][category_key]:
+                    if "description" in doc["possible_structures"][category_key][item_key]:
+                        prompt = doc["possible_structures"][category_key][item_key]["description"]
+                        break
+                if prompt: break
+        
+        if not prompt:
+            results.append(f"Skipping {doc_id}: No valid prompt found.")
+            continue
+        
+        task_logger.info(f"Batch processing prompt: '{prompt[:50]}'")
+        try:
+            if _text_processor.model_type != model_type:
+                
+                _text_processor = TextProcessor(model_type=model_type)
+                _pipeline = Pipeline(_text_processor, _grid_processor)
+
+            images = _pipeline.process_text(prompt)
+            
+            if images and images[0]: 
+                unique_id = str(uuid.uuid4())[:8]
+                image_filename = f"mongo_batch_{unique_id}_{doc_id[:8]}.png" 
+                image_path = os.path.join(OUTPUT_IMAGES_DIR, image_filename)
+                images[0].save(image_path)
+                results.append(f"Generated image for: '{prompt[:30]}...' -> {image_filename}")
+                
+                if update_db:
+                    update_data = {
+                        "processed": True,
+                        "processed_at": datetime.now(),
+                        "model_used": model_type,
+                        "image_path": image_filename 
+                    }
+                    mongo_helper.update_by_id(collection_name, doc_id, update_data)
+            else:
+                results.append(f"Failed to generate image for: '{prompt[:30]}' - No image output.")
+        except Exception as e:
+            task_logger.error(f"Error in batch processing for {doc_id}: {e}", exc_info=True)
+            results.append(f"Failed to process '{prompt[:30]}...' - Error: {e}")
+            
+    return {"status": "success", "message": "\n".join(results)}
+

@@ -87,10 +87,10 @@ async def call_online_llm(prompt: str, model_name: str = "qwen/qwen3-14b:free") 
         chat_messages.append({"role": "user", "content": prompt})
 
         payload = {
-            "model": model_name,
+            "model": "qwen/qwen3-14b:free",
             "messages": chat_messages,
             "temperature": 0.7, # Adjust as needed for creativity vs. adherence
-            "max_tokens": 1500, # Ensure enough tokens for the response
+            "max_tokens": 2048, # Ensure enough tokens for the response
             # OpenRouter passes this through to underlying models. 
             # Some models might not respect `response_format` perfectly, rely on prompt engineering.
             # "response_format": {"type": "json_object"}, 
@@ -118,12 +118,25 @@ async def call_online_llm(prompt: str, model_name: str = "qwen/qwen3-14b:free") 
 
         logger.debug(f"LLM.PY DEBUG: Raw API response object: {result}")
 
-        if result.get('choices') and result['choices'][0].get('message') and result['choices'][0]['message'].get('content'):
-            return result['choices'][0]['message']['content'].strip()
+        if result.get('choices') and result['choices'][0].get('message'):
+            message_content = result['choices'][0]['message'].get('content')
+            message_reasoning = result['choices'][0]['message'].get('reasoning') # Get reasoning field
+
+            if message_content and message_content.strip():
+                return message_content.strip()
+            elif message_reasoning and message_reasoning.strip():
+                # If content is empty but reasoning has content, return reasoning
+                logger.warning("LLM response 'content' was empty, falling back to 'reasoning' field.")
+                return message_reasoning.strip()
+            else:
+                error_message = result.get('error', {}).get('message', 'Unknown error from OpenRouter LLM.')
+                logger.error(f"[LLM ERROR] OpenRouter response did not contain expected content in 'content' or 'reasoning'. Error: {error_message}. Full result: {result}")
+                return None
         else:
-            error_message = result.get('error', {}).get('message', 'Unknown error from OpenRouter LLM.')
-            logger.error(f"[LLM ERROR] OpenRouter response did not contain expected content. Error: {error_message}. Full result: {result}")
+            error_message = result.get('error', {}).get('message', 'Unknown error from OpenRouter LLM (no choices/message).')
+            logger.error(f"[LLM ERROR] OpenRouter response did not contain expected 'choices' or 'message' structure. Error: {error_message}. Full result: {result}")
             return None
+
 
     except httpx.HTTPStatusError as e:
         logger.error(f"[LLM ERROR] OpenRouter API HTTP error: {e.response.status_code} - {e.response.text}", exc_info=True) 
