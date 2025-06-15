@@ -9,6 +9,7 @@ load_dotenv()
 # --- LLM API Configuration ---
 # OpenRouter API Key (Leave as empty string; Canvas will inject if available)
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+
 # OpenRouter Base URL
 OPENROUTER_BASE_URL = "https://openrouter.ai"
 
@@ -23,12 +24,27 @@ DEFAULT_NUM_IMAGES = 1
 
 # --- Output Directories ---
 # Directory for saving generated images and 3D assets
-OUTPUT_DIR = "./generated_assets"
-OUTPUT_IMAGES_DIR = os.path.join(OUTPUT_DIR, "images")
-OUTPUT_3D_ASSETS_DIR = os.path.join(OUTPUT_DIR, "3d_assets")
+# --- Path Configuration ---
+# Get the directory of the current file (config.py) -> C:\Users\Sagar H V\OneDrive\Desktop\spark\src
+CURRENT_FILE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Create output directories if they don't exist
-os.makedirs(OUTPUT_IMAGES_DIR, exist_ok=True)
+# Define the root of your 'spark' project
+# This goes up one level from 'src' to 'spark'
+PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_FILE_DIR, os.pardir))
+
+# Define where generated images will be stored on the file system
+# This will be C:\Users\Sagar H V\OneDrive\Desktop\spark\src\generated_assets\images
+OUTPUT_IMAGES_DIR = os.path.join(CURRENT_FILE_DIR, 'generated_assets', 'images')
+
+# Define general output directory for other assets (e.g., 3D models)
+# This will be C:\Users\Sagar H V\OneDrive\Desktop\spark\outputs
+OUTPUT_DIR = os.path.join(PROJECT_ROOT, 'outputs')
+OUTPUT_3D_ASSETS_DIR = os.path.join(OUTPUT_DIR, '3d_assets')
+
+# Ensure all necessary directories exist
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(os.path.join(CURRENT_FILE_DIR, 'generated_assets'), exist_ok=True) # Ensure 'generated_assets' parent exists
+os.makedirs(OUTPUT_IMAGES_DIR, exist_ok=True) # Ensure the 'images' directory exists
 os.makedirs(OUTPUT_3D_ASSETS_DIR, exist_ok=True)
 
 # --- MongoDB Configuration ---
