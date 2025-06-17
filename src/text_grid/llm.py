@@ -1,4 +1,5 @@
 # src/text_grid/llm.py
+
 import os
 import torch 
 import logging
@@ -50,31 +51,77 @@ def load_local_pipeline():
             raise # Re-raise to indicate failure to caller
     return _local_pipeline
 
-async def call_llm_for_structure_definitions(theme_prompt: str, structure_types: list) -> str:
-    """
-    Calls the LLM to generate fictional structure definitions based on a theme and types.
-    The prompt is specifically crafted for this task, now asking for a JSON object.
-    """
-    # This prompt is designed to elicit JSON output.
-    structure_prompt = (
-        f"Given the theme '{theme_prompt}', generate 5 fictional structure definitions. "
-        f"Each definition must include a 'type' (from: {', '.join(structure_types)}), "
-        f"a 'description', and 'attributes' (with at least 'hp'). "
-        "Return a single valid JSON object where keys are arbitrary structure names and values are their definitions. "
-        "The response MUST contain ONLY the JSON object, no other text or markdown fences." # CRITICAL: No markdown fences
-        "\n\nExample Output Format:\n"
-        "{\n"
-        "  \"Structure A\": {\"type\": \"TypeA\", \"description\": \"DescA\", \"attributes\": {\"hp\": 100}},\n"
-        "  \"Structure B\": {\"type\": \"TypeB\", \"description\": \"DescB\", \"attributes\": {\"hp\": 150}}\n"
-        "}"
-    )
-    # This function now calls the OpenRouter LLM
-    return await call_online_llm(structure_prompt)
+# --- JSON Schema Definition for get_biome_generation_hints ---
+# This schema defines the structure that the LLM *must* adhere to.
+# It matches the expected output in get_grid_placement_hints_prompt from utils.py
+GRID_HINTS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "biome_name_suggestion": {"type": "string", "description": "A concise, max 4-word biome name."},
+        "grid_dimensions": {
+            "type": "object",
+            "properties": {
+                "width": {"type": "integer"},
+                "height": {"type": "integer"}
+            },
+            "required": ["width", "height"]
+        },
+        "placement_rules": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "structure_id": {"type": "integer", "description": "Unique integer ID of the structure."},
+                    "type": {"type": "string", "description": "The name of the structure type."},
+                    "min_count": {"type": "integer", "description": "Minimum instances to place."},
+                    "max_count": {"type": "integer", "description": "Maximum instances to place."},
+                    "size": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "minItems": 2,
+                        "maxItems": 2,
+                        "description": "[width, height] in grid cells."
+                    },
+                    "priority_zones": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Preferred locations: 'corner', 'edge', 'center', 'any'."
+                    },
+                    "adjacent_to_ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "List of structure IDs this should be near."
+                    },
+                    "avoid_ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "List of structure IDs this should avoid."
+                    }
+                },
+                "required": ["structure_id", "type", "min_count", "max_count", "size", "priority_zones", "adjacent_to_ids", "avoid_ids"]
+            }
+        },
+        "general_density": {"type": "number", "format": "float", "description": "Overall structure density (0.0-1.0)."}
+    },
+    "required": ["biome_name_suggestion", "grid_dimensions", "placement_rules", "general_density"]
+}
 
-async def call_online_llm(prompt: str, model_name: str = "qwen/qwen3-14b:free") -> str: # Default to the specific Qwen model
+
+# General LLM call function, now with structured output capability
+async def call_online_llm(prompt: str, model_name: str = "google/gemini-2.0-flash-exp:free", output_schema: dict = None) -> str:
     """
     Makes a general call to the online LLM (OpenRouter) with a given prompt.
-    Returns the stripped text content of the LLM's response, or None if an error occurs.
+    Supports requesting structured JSON output via `output_schema`.
+
+    Args:
+        prompt (str): The prompt to send to the LLM.
+        model_name (str): The specific model name to use on OpenRouter.
+                         Defaults to "google/gemini-1.5-flash" (a valid OpenRouter ID).
+        output_schema (dict): An optional JSON schema to include in the request
+                              to guide the LLM's output format.
+
+    Returns:
+        str: The raw text or JSON string response from the LLM, or None if an error occurs.
     """
     global openrouter_client
 
@@ -87,13 +134,12 @@ async def call_online_llm(prompt: str, model_name: str = "qwen/qwen3-14b:free") 
         chat_messages.append({"role": "user", "content": prompt})
 
         payload = {
-            "model": "qwen/qwen3-14b:free",
+            "model": model_name, # Now uses the correct OpenRouter ID for Gemini Flash
             "messages": chat_messages,
             "temperature": 0.7, # Adjust as needed for creativity vs. adherence
             "max_tokens": 2048, # Ensure enough tokens for the response
-            # OpenRouter passes this through to underlying models. 
-            # Some models might not respect `response_format` perfectly, rely on prompt engineering.
-            # "response_format": {"type": "json_object"}, 
+            # OpenRouter's way to request JSON output
+            "response_format": {"type": "json_object"}, 
         }
 
         api_url_path = "/api/v1/chat/completions" # OpenRouter's chat completions endpoint
@@ -120,23 +166,18 @@ async def call_online_llm(prompt: str, model_name: str = "qwen/qwen3-14b:free") 
 
         if result.get('choices') and result['choices'][0].get('message'):
             message_content = result['choices'][0]['message'].get('content')
-            message_reasoning = result['choices'][0]['message'].get('reasoning') # Get reasoning field
-
+            
             if message_content and message_content.strip():
                 return message_content.strip()
-            elif message_reasoning and message_reasoning.strip():
-                # If content is empty but reasoning has content, return reasoning
-                logger.warning("LLM response 'content' was empty, falling back to 'reasoning' field.")
-                return message_reasoning.strip()
             else:
-                error_message = result.get('error', {}).get('message', 'Unknown error from OpenRouter LLM.')
-                logger.error(f"[LLM ERROR] OpenRouter response did not contain expected content in 'content' or 'reasoning'. Error: {error_message}. Full result: {result}")
+                # If content is empty, log and return None for robustness
+                error_message = result.get('error', {}).get('message', 'Unknown error from OpenRouter LLM (empty content).')
+                logger.error(f"[LLM ERROR] OpenRouter response did not contain expected content. Error: {error_message}. Full result: {result}")
                 return None
         else:
             error_message = result.get('error', {}).get('message', 'Unknown error from OpenRouter LLM (no choices/message).')
             logger.error(f"[LLM ERROR] OpenRouter response did not contain expected 'choices' or 'message' structure. Error: {error_message}. Full result: {result}")
             return None
-
 
     except httpx.HTTPStatusError as e:
         logger.error(f"[LLM ERROR] OpenRouter API HTTP error: {e.response.status_code} - {e.response.text}", exc_info=True) 
@@ -148,33 +189,28 @@ async def call_online_llm(prompt: str, model_name: str = "qwen/qwen3-14b:free") 
         logger.error(f"[LLM ERROR] An unexpected error occurred during OpenRouter API call: {e}", exc_info=True)
         return None
 
-# Kept call_local_llm for other components that might use it (e.g., TextProcessor's 'local' option)
-async def call_local_llm(prompt: str) -> str:
+# The call_llm_for_structure_definitions is specifically for defining structures
+# and can remain as is, as its prompt already asks for JSON.
+# It now calls the updated call_online_llm with the default model.
+async def call_llm_for_structure_definitions(theme_prompt: str, structure_types: list) -> str:
     """
-    Makes a general call to the local LLM with a given prompt.
-    Returns the stripped text content of the LLM's response, or None if an error occurs.
+    Calls the LLM to generate fictional structure definitions based on a theme and types.
+    The prompt is specifically crafted for this task, now asking for a JSON object.
     """
-    try:
-        local_pipeline = load_local_pipeline() # Ensure local model is loaded
-        
-        messages = [
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": prompt}
-        ]
-        text = local_pipeline(
-            messages,
-            do_sample=True,
-            temperature=0.7,
-            top_p=0.95,
-            max_new_tokens=1500,
-            return_full_text=False # Return only the generated response
-        )
-        
-        if text and len(text) > 0 and 'generated_text' in text[0]:
-            return text[0]['generated_text'].strip()
-        
-        logger.warning("Local LLM generated empty or invalid response.")
-        return None
-    except Exception as e:
-        logger.error(f"[LOCAL LLM ERROR] An error occurred during local LLM call: {e}", exc_info=True)
-        return None
+    # This prompt is designed to elicit JSON output.
+    structure_prompt = (
+        f"Given the theme '{theme_prompt}', generate 5 fictional structure definitions. "
+        f"Each definition must include a 'type' (from: {', '.join(structure_types)}), "
+        f"a 'description', and 'attributes' (with at least 'hp'). "
+        "Return a single valid JSON object where keys are arbitrary structure names and values are their definitions. "
+        "The response MUST contain ONLY the JSON object, no other text or markdown fences." # CRITICAL: No markdown fences
+        "\n\nExample Output Format:\n"
+        "{\n"
+        "  \"Structure A\": {\"type\": \"TypeA\", \"description\": \"DescA\", \"attributes\": {\"hp\": 100}},\n"
+        "  \"Structure B\": {\"type\": \"TypeB\", \"description\": \"DescB\", \"attributes\": {\"hp\": 150}}\n"
+        "}"
+    )
+    # This function now calls the OpenRouter LLM with the default model,
+    # which is configured for google/gemini-1.5-flash and requests JSON output.
+    return await call_online_llm(structure_prompt)
+
