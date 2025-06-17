@@ -11,8 +11,8 @@ from io_helper_connect import get_latest_glb_from_s3, download_from_s3, upload_t
 # --- CONFIGURATION ---
 bucket_name = "sparkassets"
 s3_prefix = "incoming_models/"
-models_folder = "/home/ubuntu/input"
-output_folder = "/home/ubuntu/output"
+models_folder = "/home/ubuntu/sarthak/input"
+output_folder = "/home/ubuntu/sarthak/output"
 
 # ——— UTILS ———
 def clear_scene():
