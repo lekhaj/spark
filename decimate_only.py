@@ -10,7 +10,7 @@ from io_helper_connect import get_latest_glb_from_s3, download_from_s3, upload_t
 
 # --- CONFIGURATION ---
 bucket_name = "sparkassets"
-s3_prefix = "/3d_assets"
+s3_prefix = "3d_assets"
 models_folder = "/home/ubuntu/sarthak/input"
 output_folder = "/home/ubuntu/sarthak/output"
 
