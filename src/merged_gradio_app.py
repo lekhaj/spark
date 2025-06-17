@@ -1,4 +1,4 @@
-# merged_gradio_app.py - Frontend Gradio Application with Development/Production Toggle
+# merged_gradio_app.py - Frontend Gradio Application with Multiple Image Display
 
 import os
 import time
@@ -23,43 +23,37 @@ except ImportError:
 from datetime import datetime
 
 # --- ALL IMPORTS NOW REFER TO THE NEW CONSOLIDATED STRUCTURE ---
-# Ensure config.py is correctly set up with these constants
 from config import ( 
     DEFAULT_TEXT_MODEL, DEFAULT_GRID_MODEL, 
     DEFAULT_IMAGE_WIDTH, DEFAULT_IMAGE_HEIGHT, DEFAULT_NUM_IMAGES,
     OUTPUT_DIR, OUTPUT_IMAGES_DIR, OUTPUT_3D_ASSETS_DIR, 
     MONGO_DB_NAME, MONGO_BIOME_COLLECTION,
-    REDIS_BROKER_URL, # Imported, but only used if USE_CELERY is True and app.backend is used for result fetching
-    USE_CELERY # <--- NEW: Flag to control Celery usage
+    REDIS_BROKER_URL, 
+    USE_CELERY 
 )
 from db_helper import MongoDBHelper 
 
 # Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# Changed logging level to DEBUG to capture more detailed info for debugging
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-_biome_logger = logging.getLogger("BiomeInspector") # Defined globally and early
+_biome_logger = logging.getLogger("BiomeInspector") 
 
 # --- Conditional Imports based on USE_CELERY ---
 if USE_CELERY:
-    logger.info("Running in PRODUCTION mode (Celery Enabled).")
-    # Import Celery task functions to call .delay() on them
+    logger.info("Running in PRODUCTION mode (Celery Enabled).\n")
     from tasks import generate_text_image as celery_generate_text_image, \
                       generate_grid_image as celery_generate_grid_image, \
                       run_biome_generation as celery_run_biome_generation, \
                       batch_process_mongodb_prompts_task as celery_batch_process_mongodb_prompts_task
-    # No direct model processor imports needed here, as they run on the worker.
-    # from celery import Celery # Might need this if you want to track task results directly
-    # from tasks import app as celery_app_instance # if you need to access backend results
 else:
-    logger.info("Running in DEVELOPMENT mode (Direct Processing).")
-    # Import direct processing functions and their dependencies
+    logger.info("Running in DEVELOPMENT mode (Direct Processing).\n")
     from pipeline.text_processor import TextProcessor 
     from pipeline.grid_processor import GridProcessor 
     from pipeline.pipeline import Pipeline 
     from utils.image_utils import save_image, create_image_grid 
-    from text_grid.grid_generator import generate_biome # Direct call for biome generation
+    from text_grid.grid_generator import generate_biome 
 
-    # Global variables for processors in DEV mode
     _dev_text_processor = None
     _dev_grid_processor = None
     _dev_pipeline = None
@@ -75,8 +69,6 @@ else:
 
 
 # --- Imports for functions that remain local (e.g., UI display, helper functions) ---
-# These are functions that do not perform heavy computation and can run on the FastAPI server
-# They also provide mocks if the actual modules are not found (for standalone testing)
 try:
     from text_grid.structure_registry import get_biome_names, fetch_biome 
     _biome_logger.info("INFO: Loaded actual text_grid.structure_registry.")
@@ -88,13 +80,15 @@ except ImportError:
             "theme": "A lush forest with ancient ruins",
             "structures": ["Tree", "Stone Arch"],
             "grid_data": [[0,1,0],[1,1,1],[0,1,0]],
-            "details": "This is a mock forest biome detail."
+            "details": "This is a mock forest biome detail.",
+            "image_paths": ["https://example.com/mock_forest.png"]
         },
         "A_mock_desert": {
             "theme": "A vast, arid desert with hidden oases",
             "structures": ["Sand Dune", "Cactus"],
             "grid_data": [[4,4,4],[4,0,4],[4,4,4]],
-            "details": "This is a mock desert biome detail."
+            "details": "This is a mock desert biome detail.",
+            "image_paths": ["https://example.com/mock_desert.png"]
         }
     }
 
@@ -104,20 +98,19 @@ except ImportError:
     def fetch_biome(db_name, collection_name, name: str): 
         return _mock_biomes_db.get(name)
 
-    # Mock for generate_biome if running in DEV mode without actual text_grid.grid_generator
-    # This mock is for when the *mock* import fails for the `text_grid.grid_generator`
-    # and not used directly by the main app in dev mode.
-    # The actual `generate_biome` used in DEV mode comes from `text_grid.grid_generator` directly.
     async def generate_biome_mock(theme: str, structure_type_list: list[str]): 
         new_biome_name = f"Generated_Biome_{len(_mock_biomes_db) + 1}"
         _mock_biomes_db[new_biome_name] = {
             "theme": theme,
             "structures": structure_type_list,
             "details": f"Mock details for a biome generated with theme: '{theme}' and structures: {structure_type_list}.",
-            "grid_data": [[0,0,0],[0,0,0],[0,0,0]] 
+            "grid_data": [[0,0,0],[0,0,0],[0,0,0]],
+            "image_paths": [] # Mock for no images
         }
         return f"✅ Mock Biome '{new_biome_name}' generated successfully!"
 
+
+# Constants
 
 # Constants
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__)) 
@@ -133,11 +126,16 @@ def _format_data_for_display(data, indent_level=0):
     if isinstance(data, dict):
         formatted_items = []
         for k, v in data.items():
-            formatted_value = _format_data_for_display(v, indent_level + 1)
-            if isinstance(v, (dict, list)) and '\n' in formatted_value:
+            # Special handling for image_path (now could be in attributes) and model3dUrl
+            if k == "image_path" and v and v.startswith("http"): # Check for S3 URL
+                formatted_items.append(f"{indent_str}{k}: {v} (S3 URL)")
+            elif k == "model3dUrl" and v:
+                formatted_items.append(f"{indent_str}{k}: {v} (3D model link)")
+            elif isinstance(v, (dict, list)) and '\n' in _format_data_for_display(v, indent_level + 1):
+                formatted_value = _format_data_for_display(v, indent_level + 1)
                 formatted_items.append(f"{indent_str}{k}:\n{formatted_value}")
             else:
-                formatted_items.append(f"{indent_str}{k}: {formatted_value}")
+                formatted_items.append(f"{indent_str}{k}: {_format_data_for_display(v, indent_level + 1)}")
         return "\n".join(formatted_items)
     elif isinstance(data, list):
         if all(isinstance(item, list) for item in data) and len(data) > 0 and \
@@ -154,19 +152,63 @@ def _format_data_for_display(data, indent_level=0):
     else:
         return str(data)
 
-def display_selected_biome(db_name: str, collection_name: str, name: str) -> str: 
+def display_selected_biome(db_name: str, collection_name: str, name: str) -> tuple[str, list[str]]:
+    """
+    Fetches and formats biome details for display, including collecting multiple S3 image URLs.
+    Returns (formatted_text, list_of_S3_Image_URLs).
+    """
     if not name:
         _biome_logger.info("No biome selected for display.")
-        return "" 
+        return "", [] # Return empty list for images
     
     _biome_logger.info(f"Fetching biome details for: '{name}' from DB: '{db_name}', Collection: '{collection_name}'")
     biome = fetch_biome(db_name, collection_name, name) 
+    
+    formatted_text = ""
+    image_display_urls = [] # Will collect all S3 URLs
+
     if biome:
         _biome_logger.info(f"Successfully fetched biome '{name}'.")
-        return _format_data_for_display(biome)
+        formatted_text = _format_data_for_display(biome) # This formats all data for text display
+
+        # Collect image_path from each structure
+        possible_structures = biome.get("possible_structures", {})
+        buildings = possible_structures.get("buildings", {})
+
+        for struct_id, struct_data in buildings.items():
+            # First, try to get image_path directly from struct_data
+            img_path = struct_data.get("image_path")
+            
+            if not (img_path and isinstance(img_path, str) and img_path.startswith("http")):
+                # If not found or not a valid URL, try inside 'attributes'
+                attributes = struct_data.get("attributes", {})
+                img_path = attributes.get("image_path")
+            
+            if img_path and isinstance(img_path, str) and img_path.startswith("http"):
+                image_display_urls.append(img_path)
+                _biome_logger.info(f"Found S3 URL for structure {struct_id}: {img_path}")
+            elif img_path:
+                _biome_logger.warning(f"Image path for structure {struct_id} is not a valid S3 URL or is empty: {img_path}")
+        
+        # Also check for a top-level image_path if it exists (for overall biome image)
+        top_level_image_path = biome.get("image_path")
+        if top_level_image_path and isinstance(top_level_image_path, str) and top_level_image_path.startswith("http"):
+            image_display_urls.insert(0, top_level_image_path) # Add to beginning if it's a main biome image
+            _biome_logger.info(f"Found top-level S3 URL for biome: {top_level_image_path}")
+
+        if not image_display_urls:
+            _biome_logger.info(f"No S3 image_paths found for biome '{name}' or its structures.")
+
     else:
-        _biome_logger.warning(f"Biome '{name}' not found in registry for DB '{db_name}' and Collection '{collection_name}'.")
-        return f"Biome '{name}' not found in the registry for DB '{db_name}' and Collection '{collection_name}'."
+        _biome_logger.warning(f"Biome '{name}' not found in the registry for DB '{db_name}' and Collection '{collection_name}'.")
+        formatted_text = f"Biome '{name}' not found in the registry for DB '{db_name}' and Collection '{collection_name}'."
+    
+    # Add a debug log to confirm what URLs are being passed to Gradio Gallery
+    _biome_logger.debug(f"Final image_display_urls for gallery: {image_display_urls}")
+    
+    # Return the list of S3 URL strings (can be empty)
+    return formatted_text, image_display_urls
+
 
 async def handler(theme: str, structure_types_str: str, db_name: str, collection_name: str) -> tuple[str, gr.Dropdown]: 
     """
@@ -181,13 +223,11 @@ async def handler(theme: str, structure_types_str: str, db_name: str, collection
                gr.update(choices=get_biome_names(db_name, collection_name), value=None) 
     
     if USE_CELERY:
-        # Submit task to Celery
         task = celery_run_biome_generation.delay(theme, structure_types_str) 
         msg = f"✅ Biome generation task submitted (ID: {task.id}). Please refresh 'View Generated Biomes' after a moment to see the new entry."
     else:
-        # Direct call for development
         try:
-            msg = await generate_biome(theme, structure_type_list) # Directly call the actual function
+            msg = await generate_biome(theme, structure_type_list) 
             _biome_logger.info(f"Biome generation finished directly with message: {msg}")
         except Exception as e:
             _biome_logger.error(f"Error during direct biome generation: {e}", exc_info=True)
@@ -213,7 +253,7 @@ def process_image_generation_task(prompt_or_grid_content, width, height, num_ima
             return None, f"Task submitted (ID: {task.id}). Image will be saved to '{OUTPUT_IMAGES_DIR}' on the worker."
     else:
         # Direct processing in DEV mode
-        if _dev_pipeline is None: # Initialize if not already
+        if _dev_pipeline is None: 
             initialize_dev_processors()
 
         try:
@@ -223,9 +263,9 @@ def process_image_generation_task(prompt_or_grid_content, width, height, num_ima
                 if not images:
                     return None, None, "No images generated directly."
                 
-                # Save and return the image for direct display
-                img_path = save_image(images[0], f"terrain_direct_{int(time.time())}", "images")
-                viz_path = save_image(grid_viz, f"grid_viz_direct_{int(time.time())}", "images")
+                img_path = save_image(images[0], f"terrain_direct_{int(time.time())}", "images") 
+                viz_path = save_image(grid_viz, f"grid_viz_direct_{int(time.time())}", "images") 
+                
                 return images[0], grid_viz, f"Generated image directly. Saved to {img_path}"
             else:
                 logger.info(f"Directly processing text prompt: {prompt_or_grid_content[:50]}...")
@@ -233,8 +273,8 @@ def process_image_generation_task(prompt_or_grid_content, width, height, num_ima
                 if not images:
                     return None, "No images generated directly."
 
-                # Save and return the image for direct display
-                img_path = save_image(images[0], f"text_direct_{int(time.time())}", "images")
+                img_path = save_image(images[0], f"text_direct_{int(time.time())}", "images") 
+                
                 return images[0], f"Generated image directly. Saved to {img_path}"
         except Exception as e:
             logger.error(f"Error during direct image generation: {e}", exc_info=True)
@@ -271,7 +311,7 @@ def submit_file_upload_task(file_obj_path, width, height, num_images, text_model
             return process_image_generation_task(content, width, height, num_images, grid_model_type, is_grid_input=True)
         else:
             text_result, text_message = process_image_generation_task(content, width, height, num_images, text_model_type, is_grid_input=False)
-            return text_result, None, text_message # grid_viz is None for text processing
+            return text_result, None, text_message 
 
     except Exception as e:
         logger.error(f"Error processing file upload: {str(e)}")
@@ -322,7 +362,6 @@ def get_prompts_from_mongodb(db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_
         logger.error(f"MongoDB connection error fetching prompts: {str(e)}")
         return [], f"Error connecting to MongoDB: {str(e)}"
 
-# This function will now submit a task or process directly
 def submit_mongodb_prompt_task(prompt_id, db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_COLLECTION, width=DEFAULT_IMAGE_WIDTH, height=DEFAULT_IMAGE_HEIGHT, 
                              num_images=DEFAULT_NUM_IMAGES, model_type=DEFAULT_TEXT_MODEL):
     """Submits a MongoDB prompt processing task to Celery OR processes directly."""
@@ -341,7 +380,6 @@ def submit_mongodb_prompt_task(prompt_id, db_name=MONGO_DB_NAME, collection_name
         logger.error(f"Error fetching prompt content for ID {prompt_id}: {e}")
         return None, f"Error fetching prompt content for ID {prompt_id}: {e}"
 
-    # Use the generic image generation wrapper
     return process_image_generation_task(prompt_content, width, height, num_images, model_type, is_grid_input=False)
 
 
@@ -374,7 +412,6 @@ def get_grids_from_mongodb(db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_CO
         logger.error(f"MongoDB connection error fetching grids: {str(e)}")
         return [], f"Error connecting to MongoDB: {str(e)}"
 
-# This function will now submit a task or process directly
 def submit_mongodb_grid_task(grid_item_id, db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_COLLECTION, width=DEFAULT_IMAGE_WIDTH, height=DEFAULT_IMAGE_HEIGHT, 
                              num_images=DEFAULT_NUM_IMAGES, model_type="stability"):
     """Submits a MongoDB grid processing task to Celery OR processes directly."""
@@ -408,11 +445,9 @@ def submit_mongodb_grid_task(grid_item_id, db_name=MONGO_DB_NAME, collection_nam
         logger.error(f"Error fetching grid content for {grid_item_id}: {e}")
         return None, None, f"Error fetching grid content for {grid_item_id}: {e}"
 
-    # Use the generic image generation wrapper
     return process_image_generation_task(grid_content_str, width, height, num_images, model_type, is_grid_input=True)
 
 
-# This function will now submit a batch task or process directly
 def submit_batch_process_mongodb_prompts_task_ui(db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_COLLECTION, limit=10, width=DEFAULT_IMAGE_WIDTH, height=DEFAULT_IMAGE_HEIGHT, 
                                      model_type=DEFAULT_TEXT_MODEL, update_db=False):
     """Submits a batch processing task to Celery OR processes directly."""
@@ -456,7 +491,6 @@ def submit_batch_process_mongodb_prompts_task_ui(db_name=MONGO_DB_NAME, collecti
                 
                 logger.info(f"Directly batch processing prompt: '{prompt[:50]}'")
                 try:
-                    # Direct call to generate image
                     images = _dev_pipeline.process_text(prompt)
                     
                     if images and images[0]: 
@@ -556,20 +590,35 @@ def build_app():
                 )
                 
                 initial_biome_display_text = ""
+                initial_image_urls = [] # This will now be a LIST of URLs
                 try:
                     if biome_inspector_selector.value: 
-                        initial_biome_display_text = display_selected_biome(biome_db_name.value, biome_collection_name.value, biome_inspector_selector.value)
+                        initial_biome_display_text, initial_image_urls = display_selected_biome(biome_db_name.value, biome_collection_name.value, biome_inspector_selector.value)
                 except Exception as e:
                     _biome_logger.error(f"Error fetching initial biome display details for inspector: {e}")
 
-                biome_inspector_display = gr.Textbox(
-                    label="Biome Details",
-                    value=initial_biome_display_text, 
-                    interactive=False, 
-                    lines=20, 
-                    max_lines=50, 
-                    show_copy_button=True
-                )
+                with gr.Row():
+                    biome_inspector_display = gr.Textbox(
+                        label="Biome Details",
+                        value=initial_biome_display_text, 
+                        interactive=False, 
+                        lines=20, 
+                        max_lines=50, 
+                        show_copy_button=True,
+                        scale=2 # Allocate more space for text
+                    )
+                    # CRITICAL CHANGE: Use gr.Gallery for multiple images
+                    biome_image_display = gr.Gallery(
+                        label="Generated Biome Images",
+                        value=initial_image_urls, # Set initial image URLs if available
+                        interactive=False,
+                        height=400, # Fixed height for better layout
+                        columns=2, # Display in 2 columns
+                        rows=-1,    # <--- This is the key change: Set to -1 to allow dynamic number of rows
+                        object_fit="contain",
+                        preview=True,
+                        scale=1 # Allocate less space for images, text is primary
+                    )
             
             # Text to Image Tab
             with gr.TabItem("Text to Image", id="tab_text_image"):
@@ -679,7 +728,7 @@ def build_app():
                             with gr.Row():
                                 grid_width = gr.Slider(minimum=256, maximum=1024, value=DEFAULT_IMAGE_WIDTH, step=64, label="Width")
                                 grid_height = gr.Slider(minimum=256, maximum=1024, value=DEFAULT_IMAGE_HEIGHT, step=64, label="Height")
-                            grid_num_images = gr.Slider(minimum=1, maximum=4, value=DEFAULT_NUM_IMAGES, step=1, label="Number of Images")
+                            grid_num_images = gr.Slider(minimum=1, maximum=4, value=1, step=1, label="Number of Images")
                             grid_model = gr.Dropdown(["openai", "stability", "local"], value=DEFAULT_GRID_MODEL, label="Model") 
                             grid_process_btn = gr.Button("Generate Image", interactive=False)
                     
@@ -699,10 +748,11 @@ def build_app():
             outputs=[biome_inspector_output_message, biome_inspector_selector]
         )
         
+        # IMPORTANT: Updated outputs for display_selected_biome - now returns list of URLs
         biome_inspector_selector.change(
             fn=display_selected_biome, 
             inputs=[biome_db_name, biome_collection_name, biome_inspector_selector],
-            outputs=biome_inspector_display
+            outputs=[biome_inspector_display, biome_image_display] # Outputs both text and image LIST
         )
 
         # Text to Image Tab
@@ -784,6 +834,8 @@ def build_app():
 def create_fastapi_app(gradio_app):
     """Creates a FastAPI app and mounts the Gradio app on it."""
     app = FastAPI()
+    # Remove static file serving for S3-hosted biome images,
+    # unless you have other local static files to serve.
     app = gr.mount_gradio_app(app, gradio_app, path="/")
     return app
 
@@ -795,15 +847,14 @@ if __name__ == "__main__":
     parser.add_argument('--share', action='store_true', help='Share the Gradio app')
     args = parser.parse_args()
     
-    # Create output directories (ensure they exist on the frontend machine)
+    # Ensure local output directories still exist for other image generation tasks if needed
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     os.makedirs(OUTPUT_IMAGES_DIR, exist_ok=True)
     os.makedirs(OUTPUT_3D_ASSETS_DIR, exist_ok=True) 
     
     try:
-        # Initialize processors only if in DEV mode
         if not USE_CELERY:
-            initialize_dev_processors() # <--- NEW: Call this in DEV mode
+            initialize_dev_processors() 
         else:
             logger.info("merged_gradio_app.py: FastAPI/Gradio app starting (CPU-only, submitting tasks to Celery).")
         
@@ -822,11 +873,10 @@ if __name__ == "__main__":
         except ImportError:
             logger.warning("merged_gradio_app.py: Uvicorn not found, falling back to Gradio's built-in server.")
             logger.info(f"merged_gradio_app.py: Launching Gradio built-in server at http://{args.host}:{args.port}/")
-            demo.launch(server_name=args.host, server_port=args.port, share=args.share)
+            demo.launch(server_name=args.host, server_port=args.port, share=args.share) 
     except Exception as e:
         logger.critical(f"merged_gradio_app.py: A critical error occurred during application startup: {str(e)}", exc_info=True)
         print(f"\nFATAL ERROR: Application could not start. Details: {e}")
-        print("Please check your environment setup and dependencies.")
         
         # Fallback UI (simplified to only 2D image/grid processing with messages)
         try:
@@ -834,7 +884,6 @@ if __name__ == "__main__":
             from PIL import Image, ImageDraw, ImageFont
             import numpy as np
 
-            # Dummy functions for fallback UI, indicating tasks are not truly run
             def fallback_dummy_task_submit(input_data, *args):
                 dummy_image = Image.new('RGB', (256, 256), color=(100, 100, 100))
                 draw = ImageDraw.Draw(dummy_image)
@@ -935,4 +984,3 @@ if __name__ == "__main__":
         except Exception as fallback_launch_e:
             logger.critical(f"merged_gradio_app.py: CRITICAL: Failed to launch even the minimal 2D-only fallback app: {fallback_launch_e}", exc_info=True)
             print(f"FATAL: Could not start any part of the application. Please check your Python installation and core dependencies.")
-
