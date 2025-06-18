@@ -5,7 +5,7 @@ import glob
 from mathutils import Vector
 sys.path.append(os.path.dirname(__file__))
 
-from io_helper_connect import download_from_s3, upload_to_s3, get_mongo_collection, update_asset_status,get_latest_glb_from_s3
+from io_helper_connect import download_from_s3, upload_to_s3, get_mongo_collection, update_asset_status, get_latest_glb_from_s3
 
 # --- CONFIG ---
 input_folder = "/home/ubuntu/sarthak/input"
@@ -47,6 +47,7 @@ def import_template_mesh():
 def decimate_mesh(obj, tf, mode, p):
     faces = len(obj.data.polygons)
     if faces <= tf:
+        print("[Decimate] Skip; under threshold")
         return
     bpy.ops.object.select_all(action='DESELECT')
     obj.select_set(True)
@@ -62,6 +63,7 @@ def decimate_mesh(obj, tf, mode, p):
         mod.decimate_type = "PLANAR"
         mod.angle_limit = p
     bpy.ops.object.modifier_apply(modifier=mod.name)
+    print(f"[Decimate] {faces} → {len(obj.data.polygons)} faces")
 
 def transfer_weights(src, dst):
     dt = dst.modifiers.new("WeightTransfer", "DATA_TRANSFER")
@@ -71,6 +73,7 @@ def transfer_weights(src, dst):
     dt.vert_mapping = 'NEAREST'
     bpy.context.view_layer.objects.active = dst
     bpy.ops.object.modifier_apply(modifier=dt.name)
+    print("[Weights] Transferred template → target")
 
 def parent_to_armature(mesh, arm):
     bpy.ops.object.select_all(action='DESELECT')
@@ -80,6 +83,7 @@ def parent_to_armature(mesh, arm):
     bpy.ops.object.parent_set(type='ARMATURE_NAME')
     mod = mesh.modifiers.get("Armature") or mesh.modifiers.new("Armature", "ARMATURE")
     mod.object = arm
+    print("[Parent] Mesh → Armature")
 
 def export_glb(path, mesh, arm):
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -92,6 +96,7 @@ def export_glb(path, mesh, arm):
     bpy.context.view_layer.objects.active = mesh
     bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
     bpy.ops.export_scene.gltf(filepath=path, export_format='GLB', use_selection=True, export_apply=True, export_skins=True)
+    print(f"[Export] {path}")
 
 def get_bounding_box_corners(obj):
     return [obj.matrix_world @ Vector(b) for b in obj.bound_box]
@@ -106,6 +111,7 @@ def get_bounding_box_bottom_center(corners):
 def align_meshes(target, template):
     translation = get_bounding_box_bottom_center(get_bounding_box_corners(template)) - get_bounding_box_bottom_center(get_bounding_box_corners(target))
     target.location += translation
+    print("[Align] Target mesh bottom-center to template bottom-center")
 
 def get_vgroup_centroid(mesh, group_name):
     vg = mesh.vertex_groups.get(group_name)
@@ -133,9 +139,18 @@ def main():
 
     argv = sys.argv
     args = argv[argv.index("--") + 1:] if "--" in argv else []
-    tf = int(args[0]) if len(args) > 0 else 3000
-    mode = args[1].upper() if len(args) > 1 else "COLLAPSE"
-    param = float(args[2]) if len(args) > 2 else 0.5
+    if len(args) < 3:
+        print("Usage: script.py TARGET_FACE_COUNT COLLAPSE/UNSUBDIV/PLANAR PARAM align_method vhds_res vhds_smooth")
+        print("  align_method: 0 = use centroid, 1 = use existing bone positions")
+        print("  vhds_res: Voxel size for VHDS (e.g., 0.1)")
+        print("  vhds_smooth: Smooth iterations for VHDS (e.g., 5)")
+        return
+    tf = int(args[0])
+    mode = args[1].upper()
+    param = float(args[2])
+    align_method = int(args[3]) if len(args) > 3 else 0
+    vhds_res = float(args[4]) if len(args) > 4 else 0.1
+    vhds_smooth = int(args[5]) if len(args) > 5 else 5
 
     clear_scene()
 
@@ -158,23 +173,40 @@ def main():
     bpy.context.view_layer.objects.active = arm
     bpy.ops.object.mode_set(mode='EDIT')
 
-    mapping = {"hand.L": "wrist.L", "hand.R": "wrist.R", "forearm.L": "elbow.L",
-               "forearm.R": "elbow.R", "upperarm.L": "upper_arm.L", "upperarm.R": "upper_arm.R",
-               "neck": ["neck.001", "neck.002"]}
+    mapping = {
+        "hand.L": "wrist.L",
+        "hand.R": "wrist.R",
+        "forearm.L": "elbow.L",
+        "forearm.R": "elbow.R",
+        "upperarm.L": "upper_arm.L",
+        "upperarm.R": "upper_arm.R",
+        "neck": ["neck.001", "neck.002"]
+    }
 
     for bone in arm.data.edit_bones:
         vgroup = bone.name
         for k, v in mapping.items():
             if isinstance(v, list) and bone.name in v:
                 vgroup = k
+                break
             elif bone.name.startswith(k):
                 vgroup = k
+                break
 
         cen = get_vgroup_centroid(target, vgroup)
         if cen:
-            local = arm.matrix_world.inverted() @ cen
-            bone.head = local
-            bone.tail = local + Vector((0, 0.05, 0))
+            local_centroid = arm.matrix_world.inverted() @ cen
+            if align_method == 0:  # Use centroid
+                bone.head = local_centroid
+                bone.tail = local_centroid + (bone.tail - bone.head)
+            elif align_method == 1:  # Use existing bone positions
+                original_head = bone.head
+                original_tail = bone.tail
+                bone.head = original_head + (local_centroid - original_head) * 0.5
+                bone.tail = original_tail + (local_centroid - original_tail) * 0.5
+            print(f"[Align] Bone {bone.name} to centroid of {vgroup}")
+        else:
+            print(f"[Align] No centroid for {vgroup}")
 
     bpy.ops.object.mode_set(mode='OBJECT')
     arm.data.display_type = 'STICK'
@@ -186,7 +218,12 @@ def main():
         arm.select_set(True)
         bpy.context.view_layer.objects.active = arm
         bpy.ops.object.modifier_set_active(modifier="Armature")
-        print("[VHDS] Simulated - Blender GUI required")
+        bpy.ops.object.voxel_remesh(mode='BOUNDED', resolution=vhds_res)
+        bpy.ops.object.modifier_add(type='SMOOTH')
+        bpy.context.object.modifiers["Smooth"].factor = 0.5
+        bpy.context.object.modifiers["Smooth"].iterations = vhds_smooth
+        bpy.ops.object.modifier_apply(modifier="Smooth")
+        print(f"[VHDS] Voxel Heat Diffuse Skinning applied successfully. Res: {vhds_res}, Smooth: {vhds_smooth}")
     except Exception as e:
         print(f"[VHDS] Error: {e}")
 
@@ -200,7 +237,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
