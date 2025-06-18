@@ -218,20 +218,20 @@ def main():
     parent_to_armature(target, arm)
 
     # VHDS block commented out as per your test
-    # try:
-    #     bpy.ops.object.select_all(action='DESELECT')
-    #     target.select_set(True)
-    #     arm.select_set(True)
-    #     bpy.context.view_layer.objects.active = arm
-    #     bpy.ops.object.modifier_set_active(modifier="Armature")
-    #     bpy.ops.object.voxel_remesh(mode='BOUNDED', resolution=vhds_res)
-    #     bpy.ops.object.modifier_add(type='SMOOTH')
-    #     bpy.context.object.modifiers["Smooth"].factor = 0.5
-    #     bpy.context.object.modifiers["Smooth"].iterations = vhds_smooth
-    #     bpy.ops.object.modifier_apply(modifier="Smooth")
-    #     print(f"[VHDS] Voxel Heat Diffuse Skinning applied successfully. Res: {vhds_res}, Smooth: {vhds_smooth}")
-    # except Exception as e:
-    #     print(f"[VHDS] Error: {e}")
+     try:
+       bpy.ops.object.select_all(action='DESELECT')
+       target.select_set(True)
+       arm.select_set(True)
+       bpy.context.view_layer.objects.active = arm
+       bpy.ops.object.modifier_set_active(modifier="Armature")
+       bpy.ops.object.voxel_remesh(mode='BOUNDED', resolution=vhds_res)
+       bpy.ops.object.modifier_add(type='SMOOTH')
+       bpy.context.object.modifiers["Smooth"].factor = 0.5
+       bpy.context.object.modifiers["Smooth"].iterations = vhds_smooth
+       bpy.ops.object.modifier_apply(modifier="Smooth")
+       print(f"[VHDS] Voxel Heat Diffuse Skinning applied successfully. Res: {vhds_res}, Smooth: {vhds_smooth}")
+    except Exception as e:
+       print(f"[VHDS] Error: {e}")
 
     out_file = f"{asset_id}_rigged.glb"
     out_path = os.path.join(output_folder, out_file)
