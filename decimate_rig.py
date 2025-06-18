@@ -5,7 +5,13 @@ import glob
 from mathutils import Vector
 sys.path.append(os.path.dirname(__file__))
 
-from io_helper_connect import download_from_s3, upload_to_s3, get_mongo_collection, update_asset_status, get_latest_glb_from_s3
+from io_helper_connect import (
+    download_from_s3,
+    upload_to_s3,
+    get_mongo_collection,
+    update_asset_status,
+    get_latest_glb_from_s3
+)
 
 # --- CONFIG ---
 input_folder = "/home/ubuntu/sarthak/input"
@@ -23,7 +29,9 @@ def clear_scene():
     if hasattr(bpy.ops.outliner, "orphans_purge"):
         bpy.ops.outliner.orphans_purge(do_local_ids=True, do_linked_ids=True, do_recursive=True)
 
+
 def import_glb(filepath):
+    """Import a GLB file and return the mesh object."""
     bpy.ops.import_scene.gltf(filepath=filepath)
     for o in bpy.context.selected_objects:
         if o.type == "MESH":
@@ -31,7 +39,9 @@ def import_glb(filepath):
             return o
     return None
 
+
 def append_object(blend, name):
+    """Append an object by name from an external .blend file."""
     with bpy.data.libraries.load(blend, link=False) as (src, dst):
         if name in src.objects:
             dst.objects = [name]
@@ -41,8 +51,10 @@ def append_object(blend, name):
         obj.select_set(True)
     return obj
 
+
 def import_template_mesh():
     return append_object(template_blend, template_mesh_name)
+
 
 def decimate_mesh(obj, tf, mode, p):
     faces = len(obj.data.polygons)
@@ -65,6 +77,7 @@ def decimate_mesh(obj, tf, mode, p):
     bpy.ops.object.modifier_apply(modifier=mod.name)
     print(f"[Decimate] {faces} → {len(obj.data.polygons)} faces")
 
+
 def transfer_weights(src, dst):
     dt = dst.modifiers.new("WeightTransfer", "DATA_TRANSFER")
     dt.object = src
@@ -74,6 +87,7 @@ def transfer_weights(src, dst):
     bpy.context.view_layer.objects.active = dst
     bpy.ops.object.modifier_apply(modifier=dt.name)
     print("[Weights] Transferred template → target")
+
 
 def parent_to_armature(mesh, arm):
     bpy.ops.object.select_all(action='DESELECT')
@@ -85,6 +99,7 @@ def parent_to_armature(mesh, arm):
     mod.object = arm
     print("[Parent] Mesh → Armature")
 
+
 def export_glb(path, mesh, arm):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     nm = os.path.splitext(os.path.basename(path))[0]
@@ -95,11 +110,19 @@ def export_glb(path, mesh, arm):
     arm.select_set(True)
     bpy.context.view_layer.objects.active = mesh
     bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
-    bpy.ops.export_scene.gltf(filepath=path, export_format='GLB', use_selection=True, export_apply=True, export_skins=True)
+    bpy.ops.export_scene.gltf(
+        filepath=path,
+        export_format='GLB',
+        use_selection=True,
+        export_apply=True,
+        export_skins=True
+    )
     print(f"[Export] {path}")
+
 
 def get_bounding_box_corners(obj):
     return [obj.matrix_world @ Vector(b) for b in obj.bound_box]
+
 
 def get_bounding_box_bottom_center(corners):
     bottom_z = min(c.z for c in corners)
@@ -108,10 +131,15 @@ def get_bounding_box_bottom_center(corners):
     cy = sum(c.y for c in bottom) / len(bottom)
     return Vector((cx, cy, bottom_z))
 
+
 def align_meshes(target, template):
-    translation = get_bounding_box_bottom_center(get_bounding_box_corners(template)) - get_bounding_box_bottom_center(get_bounding_box_corners(target))
+    translation = (
+        get_bounding_box_bottom_center(get_bounding_box_corners(template))
+        - get_bounding_box_bottom_center(get_bounding_box_corners(target))
+    )
     target.location += translation
     print("[Align] Target mesh bottom-center to template bottom-center")
+
 
 def get_vgroup_centroid(mesh, group_name):
     vg = mesh.vertex_groups.get(group_name)
@@ -128,6 +156,7 @@ def get_vgroup_centroid(mesh, group_name):
     print(f"[Debug] {group_name} Centroid (World): {centroid}")
     return centroid
 
+
 def main():
     collection = get_mongo_collection(mongo_uri)
     latest_key = get_latest_glb_from_s3(bucket, prefix="3d_assets/Humanoids/")
@@ -142,10 +171,7 @@ def main():
     argv = sys.argv
     args = argv[argv.index("--") + 1:] if "--" in argv else []
     if len(args) < 3:
-        print("Usage: script.py TARGET_FACE_COUNT COLLAPSE/UNSUBDIV/PLANAR PARAM align_method vhds_res vhds_smooth")
-        print("  align_method: 0 = use centroid, 1 = use existing bone positions")
-        print("  vhds_res: Voxel size for VHDS (e.g., 0.1)")
-        print("  vhds_smooth: Smooth iterations for VHDS (e.g., 5)")
+        print("Usage: script.py <TF> <Mode> <Param> [align_method] [vhds_res] [vhds_smooth]")
         return
     tf = int(args[0])
     mode = args[1].upper()
@@ -163,13 +189,21 @@ def main():
         print("[Error] Template/Armature/Target missing")
         return
 
+    # Align meshes
     align_meshes(target, template)
-    decimate_mesh(target, tf, mode, param)
 
+    # Apply transforms after alignment
+    bpy.ops.object.select_all(action='DESELECT')
+    target.select_set(True)
+    bpy.context.view_layer.objects.active = target
+    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+    print("[TransformApply] Applied location, rotation, scale to target mesh after alignment")
+
+    # Decimate, transfer weights, and rig
+    decimate_mesh(target, tf, mode, param)
     for vg in template.vertex_groups:
         if vg.name not in target.vertex_groups:
             target.vertex_groups.new(name=vg.name)
-
     transfer_weights(template, target)
 
     bpy.context.view_layer.objects.active = arm
@@ -181,7 +215,7 @@ def main():
         "forearm.L": "elbow.L",
         "forearm.R": "elbow.R",
         "upperarm.L": "upper_arm.L",
-        "upperarm.R": "upper_arm.R",
+        "upperarm.R": "upperarm.R",
         "neck": ["neck.001", "neck.002"]
     }
 
@@ -195,7 +229,6 @@ def main():
             elif bone.name.startswith(k):
                 vgroup = k
                 break
-
         cen = get_vgroup_centroid(target, vgroup)
         if cen:
             local_centroid = arm.matrix_world.inverted() @ cen
@@ -203,8 +236,8 @@ def main():
             original_tail = bone.tail.copy()
             if align_method == 0:
                 bone.head = local_centroid
-                bone.tail = local_centroid + (bone.tail - bone.head)
-            elif align_method == 1:
+                bone.tail = local_centroid + (bone.tail - original_head)
+            else:
                 bone.head = original_head + (local_centroid - original_head) * 0.5
                 bone.tail = original_tail + (local_centroid - original_tail) * 0.5
             print(f"[Align] Bone {bone.name} to centroid of {vgroup}")
@@ -217,21 +250,21 @@ def main():
     arm.data.display_type = 'STICK'
     parent_to_armature(target, arm)
 
-    # VHDS block commented out as per your test
+    # VHDS (optional, GUI-only operators may fail headless)
     try:
-       bpy.ops.object.select_all(action='DESELECT')
-       target.select_set(True)
-       arm.select_set(True)
-       bpy.context.view_layer.objects.active = arm
-       bpy.ops.object.modifier_set_active(modifier="Armature")
-       bpy.ops.object.voxel_remesh(mode='BOUNDED', resolution=vhds_res)
-       bpy.ops.object.modifier_add(type='SMOOTH')
-       bpy.context.object.modifiers["Smooth"].factor = 0.5
-       bpy.context.object.modifiers["Smooth"].iterations = vhds_smooth
-       bpy.ops.object.modifier_apply(modifier="Smooth")
-       print(f"[VHDS] Voxel Heat Diffuse Skinning applied successfully. Res: {vhds_res}, Smooth: {vhds_smooth}")
+        bpy.ops.object.select_all(action='DESELECT')
+        target.select_set(True)
+        arm.select_set(True)
+        bpy.context.view_layer.objects.active = arm
+        bpy.ops.object.modifier_set_active(modifier="Armature")
+        bpy.ops.object.voxel_remesh(mode='BOUNDED', resolution=vhds_res)
+        bpy.ops.object.modifier_add(type='SMOOTH')
+        bpy.context.object.modifiers["Smooth"].factor = 0.5
+        bpy.context.object.modifiers["Smooth"].iterations = vhds_smooth
+        bpy.ops.object.modifier_apply(modifier="Smooth")
+        print(f"[VHDS] Applied: res={vhds_res}, smooth={vhds_smooth}")
     except Exception as e:
-       print(f"[VHDS] Error: {e}")
+        print(f"[VHDS] Error: {e}")
 
     out_file = f"{asset_id}_rigged.glb"
     out_path = os.path.join(output_folder, out_file)
@@ -240,6 +273,7 @@ def main():
     final_url = upload_to_s3(bucket, upload_key, out_path)
 
     update_asset_status(collection, asset_id, status="completed", output_url=final_url)
+
 
 if __name__ == "__main__":
     main()
