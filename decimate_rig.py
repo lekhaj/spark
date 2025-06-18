@@ -30,7 +30,6 @@ def clear_scene():
         bpy.ops.outliner.orphans_purge(do_local_ids=True, do_linked_ids=True, do_recursive=True)
 
 def import_glb(filepath):
-    """Import a GLB file and return the mesh object."""
     bpy.ops.import_scene.gltf(filepath=filepath)
     for o in bpy.context.selected_objects:
         if o.type == "MESH":
@@ -39,7 +38,6 @@ def import_glb(filepath):
     return None
 
 def append_object(blend, name):
-    """Append an object by name from an external .blend file."""
     with bpy.data.libraries.load(blend, link=False) as (src, dst):
         if name in src.objects:
             dst.objects = [name]
@@ -170,7 +168,6 @@ def main():
 
     clear_scene()
 
-    # Download and import
     template = import_template_mesh()
     arm = append_object(template_blend, arm_name)
     target = import_glb(local_glb)
@@ -178,7 +175,7 @@ def main():
         print("[Error] Template/Armature/Target missing")
         return
 
-    # 1) Bake transforms on template + armature
+    # 1) Bake transforms on template mesh & armature
     for obj in (template, arm):
         bpy.ops.object.select_all(action='DESELECT')
         obj.select_set(True)
@@ -186,17 +183,17 @@ def main():
         bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
         print(f"[TransformApply] Baked transforms on {obj.name}")
 
-    # 2) Align
+    # 2) Align meshes
     align_meshes(target, template)
 
-    # 3) Bake target after alignment
+    # 3) Bake transforms on target mesh after alignment
     bpy.ops.object.select_all(action='DESELECT')
     target.select_set(True)
     bpy.context.view_layer.objects.active = target
     bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
     print("[TransformApply] Baked target after alignment")
 
-    # 4) Proceed
+    # Continue pipeline: decimation, weight transfer, rigging
     decimate_mesh(target, tf, mode, param)
     for vg in template.vertex_groups:
         if vg.name not in target.vertex_groups:
@@ -226,7 +223,19 @@ def main():
             elif bone.name.startswith(k):
                 vgroup = k
                 break
-        cen = get_vgroup_centroid(target, vgroup)
+
+        # special handling for neck bones
+        if bone.name in ("neck.001", "neck.002"):
+            cen_neck  = get_vgroup_centroid(target, "neck")
+            cen_spine = get_vgroup_centroid(target, "spine1")
+            if cen_neck and cen_spine:
+                cen = (cen_neck + cen_spine) / 2
+            else:
+                cen = cen_neck or cen_spine
+        else:
+            cen = get_vgroup_centroid(target, vgroup)
+        # end special neck
+
         if cen:
             local_centroid = arm.matrix_world.inverted() @ cen
             original_head = bone.head.copy()
@@ -235,11 +244,13 @@ def main():
                 bone.head = local_centroid
                 bone.tail = local_centroid + (bone.tail - original_head)
             else:
-                bias = 0.4 if vgroup == "neck" else 0.5
-                bone.head = original_head + (local_centroid - original_head) * bias
-                bone.tail = original_tail + (local_centroid - original_tail) * bias
+                # uniform 50% bias
+                bone.head = original_head + (local_centroid - original_head) * 0.5
+                bone.tail = original_tail + (local_centroid - original_tail) * 0.5
+
             print(f"[Align] Bone {bone.name} to centroid of {vgroup}")
-            print(f"[Debug] Bone {bone.name}, World Centroid: {cen}, Local Centroid: {local_centroid}, Original Head: {original_head}, New Head: {bone.head}, Tail: {bone.tail}")
+            print(f"[Debug] Bone {bone.name}, World Centroid: {cen}, Local Centroid: {local_centroid}, "
+                  f"Original Head: {original_head}, New Head: {bone.head}, Tail: {bone.tail}")
         else:
             print(f"[Align] No centroid for {vgroup}")
             print(f"[Debug] No centroid for {vgroup}")
@@ -274,4 +285,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
