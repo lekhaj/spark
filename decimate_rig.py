@@ -5,7 +5,7 @@ import glob
 from mathutils import Vector
 sys.path.append(os.path.dirname(__file__))
 
-from io_helper_connect import download_from_s3, upload_to_s3, get_mongo_collection, update_asset_status
+from io_helper_connect import download_from_s3, upload_to_s3, get_mongo_collection, update_asset_status,get_latest_glb_from_s3
 
 # --- CONFIG ---
 input_folder = "/home/ubuntu/sarthak/input"
