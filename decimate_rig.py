@@ -185,7 +185,7 @@ def main():
         "neck": ["neck.001", "neck.002"]
     }
 
-    print(f"[Debug] Armature World Matrix: {arm.matrix_matrix_world}")
+    print(f"[Debug] Armature World Matrix: {arm.matrix_world}")
     for bone in arm.data.edit_bones:
         vgroup = bone.name
         for k, v in mapping.items():
