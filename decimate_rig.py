@@ -10,7 +10,7 @@ from io_helper_connect import download_from_s3, upload_to_s3, get_mongo_collecti
 # ——— USER SETTINGS ———
 input_folder = "/home/ubuntu/sarthak/input"
 output_folder = "/home/ubuntu/sarthak/output"
-template_blend = "/home/ubuntu/logs/royal1.blend"
+template_blend = "/home/ubuntu/sarthak/logs/royal1.blend"
 arm_name = "metarig.001"
 template_mesh_name = "villager"
 bucket = "sparkassets"
