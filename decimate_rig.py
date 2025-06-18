@@ -251,7 +251,8 @@ def main():
                 bone.head = original_head + (local_centroid - original_head) * bias
                 bone.tail = original_tail + (local_centroid - original_tail) * bias
             print(f"[Align] Bone {bone.name} to centroid of {vgroup}")
-            print(f"[Debug] Bone {bone.name}, World Centroid: {cen}, Local Centroid: {local_centroid}, Original Head: {original_head}, New Head: {bone.head}, Tail: {bone.tail}")(f"[Align] Bone {bone.name} to centroid of {vgroup}")
+            print(f"[Align] Bone {bone.name} to centroid of {vgroup}")
+            print(f"[Debug] Bone {bone.name}, World Centroid: {cen}, Local Centroid: {local_centroid}, Original Head: {original_head}, New Head: {bone.head}, Tail: {bone.tail}") {bone.name} to centroid of {vgroup}")
             print(f"[Debug] Bone {bone.name}, World Centroid: {cen}, Local Centroid: {local_centroid}, Original Head: {original_head}, New Head: {bone.head}, Tail: {bone.tail}")
         else:
             print(f"[Align] No centroid for {vgroup}")
