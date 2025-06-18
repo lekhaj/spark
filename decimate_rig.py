@@ -246,13 +246,10 @@ def main():
                 bone.head = local_centroid
                 bone.tail = local_centroid + (bone.tail - original_head)
             else:
-                # bias more toward original for neck to lower those bones
                 bias = 0.4 if vgroup == "neck" else 0.5
                 bone.head = original_head + (local_centroid - original_head) * bias
                 bone.tail = original_tail + (local_centroid - original_tail) * bias
             print(f"[Align] Bone {bone.name} to centroid of {vgroup}")
-            print(f"[Align] Bone {bone.name} to centroid of {vgroup}")
-            print(f"[Debug] Bone {bone.name}, World Centroid: {cen}, Local Centroid: {local_centroid}, Original Head: {original_head}, New Head: {bone.head}, Tail: {bone.tail}") {bone.name} to centroid of {vgroup}")
             print(f"[Debug] Bone {bone.name}, World Centroid: {cen}, Local Centroid: {local_centroid}, Original Head: {original_head}, New Head: {bone.head}, Tail: {bone.tail}")
         else:
             print(f"[Align] No centroid for {vgroup}")
@@ -279,13 +276,3 @@ def main():
         print(f"[VHDS] Error: {e}")
 
     out_file = f"{asset_id}_rigged.glb"
-    out_path = os.path.join(output_folder, out_file)
-    export_glb(out_path, target, arm)
-    upload_key = f"processed/{out_file}"
-    final_url = upload_to_s3(bucket, upload_key, out_path)
-
-    update_asset_status(collection, asset_id, status="completed", output_url=final_url)
-
-
-if __name__ == "__main__":
-    main()
