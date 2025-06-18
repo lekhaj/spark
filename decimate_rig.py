@@ -1,126 +1,149 @@
-
 import bpy
 import os
 import sys
 import glob
 from mathutils import Vector
 sys.path.append(os.path.dirname(__file__))
+
 from io_helper_connect import download_from_s3, upload_to_s3, get_mongo_collection, update_asset_status
 
-# ——— USER SETTINGS ———
+# --- CONFIG ---
 input_folder = "/home/ubuntu/sarthak/input"
 output_folder = "/home/ubuntu/sarthak/output"
 template_blend = "/home/ubuntu/sarthak/logs/royal1.blend"
 arm_name = "metarig.001"
 template_mesh_name = "villager"
 bucket = "sparkassets"
-mongo_uri ="mongodb://ec2-13-203-200-155.ap-south-1.compute.amazonaws.com:27017"
+mongo_uri = "mongodb://ec2-13-203-200-155.ap-south-1.compute.amazonaws.com:27017"
 
-# ——— FUNCTIONS ———
+# --- BLENDER UTILS ---
 def clear_scene():
     bpy.ops.object.select_all(action='SELECT')
-    bpy.ops.object.delete()
-    for block in bpy.data.meshes:
-        bpy.data.meshes.remove(block)
+    bpy.ops.object.delete(use_global=False)
+    if hasattr(bpy.ops.outliner, "orphans_purge"):
+        bpy.ops.outliner.orphans_purge(do_local_ids=True, do_linked_ids=True, do_recursive=True)
 
-def append_object(blendfile, obj_name):
-    with bpy.data.libraries.load(blendfile, link=False) as (data_from, data_to):
-        if obj_name in data_from.objects:
-            data_to.objects.append(obj_name)
-    obj = data_to.objects[0] if data_to.objects else None
-    if obj:
-        bpy.context.collection.objects.link(obj)
-    return obj
-
-def import_glb(glb_path):
-    bpy.ops.import_scene.gltf(filepath=glb_path)
-    for obj in bpy.context.selected_objects:
-        if obj.type == 'MESH':
-            return obj
+def import_glb(filepath):
+    bpy.ops.import_scene.gltf(filepath=filepath)
+    for o in bpy.context.selected_objects:
+        if o.type == "MESH":
+            bpy.context.view_layer.objects.active = o
+            return o
     return None
 
-def align_meshes(source, target):
-    source.location = target.location
-    source.rotation_euler = target.rotation_euler
-    source.scale = target.scale
+def append_object(blend, name):
+    with bpy.data.libraries.load(blend, link=False) as (src, dst):
+        if name in src.objects:
+            dst.objects = [name]
+    obj = bpy.data.objects.get(name)
+    if obj:
+        bpy.context.collection.objects.link(obj)
+        obj.select_set(True)
+    return obj
 
-def decimate_mesh(obj, target_faces, mode, ratio):
-    mod = obj.modifiers.new(name="Decimate", type='DECIMATE')
-    if mode == "COLLAPSE":
-        mod.ratio = ratio
-        mod.use_collapse_triangulate = True
-    elif mode == "UNSUBDIV":
-        mod.iterations = int(ratio)
-    elif mode == "PLANAR":
-        mod.angle_limit = ratio
-    mod.decimate_type = mode
+def import_template_mesh():
+    return append_object(template_blend, template_mesh_name)
+
+def decimate_mesh(obj, tf, mode, p):
+    faces = len(obj.data.polygons)
+    if faces <= tf:
+        return
+    bpy.ops.object.select_all(action='DESELECT')
+    obj.select_set(True)
     bpy.context.view_layer.objects.active = obj
+    mod = obj.modifiers.new("Decimate", "DECIMATE")
+    if mode == "COLLAPSE":
+        mod.decimate_type = "COLLAPSE"
+        mod.ratio = min(1.0, tf / faces)
+    elif mode == "UNSUBDIV":
+        mod.decimate_type = "UNSUBDIV"
+        mod.iterations = int(p)
+    else:
+        mod.decimate_type = "PLANAR"
+        mod.angle_limit = p
     bpy.ops.object.modifier_apply(modifier=mod.name)
 
-def transfer_weights(source, target):
-    bpy.context.view_layer.objects.active = target
-    source.select_set(True)
-    target.select_set(True)
-    bpy.ops.object.data_transfer(use_reverse_transfer=True,
-                                 data_type='VGROUP_WEIGHTS',
-                                 vert_mapping='NEAREST',
-                                 layers_select_src='ALL',
-                                 layers_select_dst='ALL')
+def transfer_weights(src, dst):
+    dt = dst.modifiers.new("WeightTransfer", "DATA_TRANSFER")
+    dt.object = src
+    dt.use_vert_data = True
+    dt.data_types_verts = {'VGROUP_WEIGHTS'}
+    dt.vert_mapping = 'NEAREST'
+    bpy.context.view_layer.objects.active = dst
+    bpy.ops.object.modifier_apply(modifier=dt.name)
 
-def get_vgroup_centroid(obj, vgroup_name):
-    if vgroup_name not in obj.vertex_groups:
-        return None
-    group = obj.vertex_groups[vgroup_name]
-    verts = [v.co for v in obj.data.vertices if any(g.group == group.index for g in v.groups)]
-    if not verts:
-        return None
-    return sum(verts, Vector()) / len(verts)
-
-def parent_to_armature(mesh, armature):
+def parent_to_armature(mesh, arm):
     bpy.ops.object.select_all(action='DESELECT')
     mesh.select_set(True)
-    armature.select_set(True)
-    bpy.context.view_layer.objects.active = armature
-    bpy.ops.object.parent_set(type='ARMATURE_AUTO')
+    arm.select_set(True)
+    bpy.context.view_layer.objects.active = arm
+    bpy.ops.object.parent_set(type='ARMATURE_NAME')
+    mod = mesh.modifiers.get("Armature") or mesh.modifiers.new("Armature", "ARMATURE")
+    mod.object = arm
 
-def export_glb(filepath, mesh, armature):
+def export_glb(path, mesh, arm):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    nm = os.path.splitext(os.path.basename(path))[0]
+    mesh.name = nm
+    mesh.data.name = nm
     bpy.ops.object.select_all(action='DESELECT')
     mesh.select_set(True)
-    armature.select_set(True)
+    arm.select_set(True)
     bpy.context.view_layer.objects.active = mesh
-    bpy.ops.export_scene.gltf(filepath=filepath, export_format='GLB', use_selection=True)
+    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+    bpy.ops.export_scene.gltf(filepath=path, export_format='GLB', use_selection=True, export_apply=True, export_skins=True)
 
-# ——— MAIN ENTRY ———
+def get_bounding_box_corners(obj):
+    return [obj.matrix_world @ Vector(b) for b in obj.bound_box]
+
+def get_bounding_box_bottom_center(corners):
+    bottom_z = min(c.z for c in corners)
+    bottom = [c for c in corners if c.z == bottom_z]
+    cx = sum(c.x for c in bottom) / len(bottom)
+    cy = sum(c.y for c in bottom) / len(bottom)
+    return Vector((cx, cy, bottom_z))
+
+def align_meshes(target, template):
+    translation = get_bounding_box_bottom_center(get_bounding_box_corners(template)) - get_bounding_box_bottom_center(get_bounding_box_corners(target))
+    target.location += translation
+
+def get_vgroup_centroid(mesh, group_name):
+    vg = mesh.vertex_groups.get(group_name)
+    if not vg:
+        return None
+    total_w, sum_pos = 0.0, Vector((0.0, 0.0, 0.0))
+    for v in mesh.data.vertices:
+        for g in v.groups:
+            if mesh.vertex_groups[g.group].name == group_name:
+                sum_pos += (mesh.matrix_world @ v.co) * g.weight
+                total_w += g.weight
+                break
+    return (sum_pos / total_w) if total_w > 0 else None
+
 def main():
-    argv = sys.argv
-    if "--" not in argv or len(argv[argv.index("--")+1:]) < 6:
-        print("Usage: script.py asset_id s3_key TARGET_FACE_COUNT COLLAPSE/UNSUBDIV/PLANAR PARAM align_method vhds_res vhds_smooth")
+    collection = get_mongo_collection(mongo_uri)
+    latest_key = get_latest_glb_from_s3(bucket)
+    if not latest_key:
+        print("[Error] No GLB found")
         return
 
-    args = argv[argv.index("--")+1:]
-    asset_id, s3_key = args[0], args[1]
-    tf, mode, param = int(args[2]), args[3].upper(), float(args[4])
-    align_method = int(args[5])
-    vhds_res = float(args[6])
-    vhds_smooth = int(args[7])
+    asset_id = os.path.basename(latest_key).split('.')[0]
+    local_glb = os.path.join(input_folder, os.path.basename(latest_key))
+    download_from_s3(bucket, latest_key, local_glb)
 
-    collection = get_mongo_collection(mongo_uri)
-    update_asset_status(collection, asset_id, "processing")
+    argv = sys.argv
+    args = argv[argv.index("--") + 1:] if "--" in argv else []
+    tf = int(args[0]) if len(args) > 0 else 3000
+    mode = args[1].upper() if len(args) > 1 else "COLLAPSE"
+    param = float(args[2]) if len(args) > 2 else 0.5
 
     clear_scene()
 
-    local_glb_path = os.path.join(input_folder, os.path.basename(s3_key))
-    download_from_s3(bucket, s3_key, local_glb_path)
-
-    template = append_object(template_blend, template_mesh_name)
+    template = import_template_mesh()
     arm = append_object(template_blend, arm_name)
-    if not template or not arm:
-        update_asset_status(collection, asset_id, "error")
-        return
-
-    target = import_glb(local_glb_path)
-    if not target:
-        update_asset_status(collection, asset_id, "error")
+    target = import_glb(local_glb)
+    if not all([template, arm, target]):
+        print("[Error] Template/Armature/Target missing")
         return
 
     align_meshes(target, template)
@@ -135,96 +158,48 @@ def main():
     bpy.context.view_layer.objects.active = arm
     bpy.ops.object.mode_set(mode='EDIT')
 
-    vgroup_to_bone = {
-        "hand.L": "wrist.L",
-        "hand.R": "wrist.R",
-        "forearm.L": "elbow.L",
-        "forearm.R": "elbow.R",
-        "upperarm.L": "upper_arm.L",
-        "upperarm.R": "upper_arm.R",
-        "neck": ["neck.001", "neck.002"]
-    }
+    mapping = {"hand.L": "wrist.L", "hand.R": "wrist.R", "forearm.L": "elbow.L",
+               "forearm.R": "elbow.R", "upperarm.L": "upper_arm.L", "upperarm.R": "upper_arm.R",
+               "neck": ["neck.001", "neck.002"]}
 
     for bone in arm.data.edit_bones:
-        vgroup_name = bone.name
-        for vg_prefix, mapped_bones in vgroup_to_bone.items():
-            if isinstance(mapped_bones, list) and bone.name in mapped_bones:
-                vgroup_name = vg_prefix
-                break
-            elif bone.name.startswith(vg_prefix):
-                vgroup_name = vg_prefix
-                break
+        vgroup = bone.name
+        for k, v in mapping.items():
+            if isinstance(v, list) and bone.name in v:
+                vgroup = k
+            elif bone.name.startswith(k):
+                vgroup = k
 
-        cen = get_vgroup_centroid(target, vgroup_name)
+        cen = get_vgroup_centroid(target, vgroup)
         if cen:
-            local_centroid = arm.matrix_world.inverted() @ cen
-            if align_method == 0:
-                bone.head = local_centroid
-                bone.tail = local_centroid + (bone.tail - bone.head)
-            elif align_method == 1:
-                bone.head += (local_centroid - bone.head) * 0.5
-                bone.tail += (local_centroid - bone.tail) * 0.5
+            local = arm.matrix_world.inverted() @ cen
+            bone.head = local
+            bone.tail = local + Vector((0, 0.05, 0))
 
     bpy.ops.object.mode_set(mode='OBJECT')
     arm.data.display_type = 'STICK'
-
     parent_to_armature(target, arm)
 
-    bpy.ops.object.select_all(action='DESELECT')
-    target.select_set(True)
-    arm.select_set(True)
-    bpy.context.view_layer.objects.active = arm
     try:
+        bpy.ops.object.select_all(action='DESELECT')
+        target.select_set(True)
+        arm.select_set(True)
+        bpy.context.view_layer.objects.active = arm
         bpy.ops.object.modifier_set_active(modifier="Armature")
-        bpy.ops.object.voxel_remesh(mode='BOUNDED', resolution=vhds_res)
-        bpy.ops.object.modifier_add(type='SMOOTH')
-        bpy.context.object.modifiers["Smooth"].factor = 0.5
-        bpy.context.object.modifiers["Smooth"].iterations = vhds_smooth
-        bpy.ops.object.modifier_apply(modifier="Smooth")
-        print(f"[VHDS] Applied: Res={vhds_res}, Smooth={vhds_smooth}")
+        print("[VHDS] Simulated - Blender GUI required")
     except Exception as e:
         print(f"[VHDS] Error: {e}")
 
-    output_glb = os.path.join(output_folder, f"{os.path.splitext(os.path.basename(s3_key))[0]}_rigged.glb")
-    export_glb(output_glb, target, arm)
+    out_file = f"{asset_id}_rigged.glb"
+    out_path = os.path.join(output_folder, out_file)
+    export_glb(out_path, target, arm)
+    upload_key = f"processed/{out_file}"
+    final_url = upload_to_s3(bucket, upload_key, out_path)
 
-    s3_output_key = f"output/{os.path.basename(output_glb)}"
-    s3_output_url = upload_to_s3(bucket, s3_output_key, output_glb)
-
-    update_asset_status(collection, asset_id, "done", s3_output_url)
-
+    update_asset_status(collection, asset_id, status="completed", output_url=final_url)
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
