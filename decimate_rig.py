@@ -5,7 +5,7 @@ import sys
 import glob
 from mathutils import Vector
 from io_helper_connect import download_from_s3, upload_to_s3, get_mongo_collection, update_asset_status
-sys.path.append(os.path.dirname(__file__)
+sys.path.append(os.path.dirname(__file__))
 # ——— USER SETTINGS ———
 input_folder = "/home/ubuntu/sarthak/input"
 output_folder = "/home/ubuntu/sarthak/output"
