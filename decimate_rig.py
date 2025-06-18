@@ -189,17 +189,25 @@ def main():
         print("[Error] Template/Armature/Target missing")
         return
 
-    # Align meshes
+    # 1) Bake transforms on template mesh & armature
+    for obj in (template, arm):
+        bpy.ops.object.select_all(action='DESELECT')
+        obj.select_set(True)
+        bpy.context.view_layer.objects.active = obj
+        bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+        print(f"[TransformApply] Baked transforms on {obj.name}")
+
+    # 2) Align meshes
     align_meshes(target, template)
 
-    # Apply transforms after alignment
+    # 3) Bake transforms on target mesh after alignment
     bpy.ops.object.select_all(action='DESELECT')
     target.select_set(True)
     bpy.context.view_layer.objects.active = target
     bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
-    print("[TransformApply] Applied location, rotation, scale to target mesh after alignment")
+    print("[TransformApply] Baked target after alignment")
 
-    # Decimate, transfer weights, and rig
+    # Continue pipeline: decimation, weight transfer, rigging
     decimate_mesh(target, tf, mode, param)
     for vg in template.vertex_groups:
         if vg.name not in target.vertex_groups:
@@ -250,7 +258,7 @@ def main():
     arm.data.display_type = 'STICK'
     parent_to_armature(target, arm)
 
-    # VHDS (optional, GUI-only operators may fail headless)
+    # VHDS (optional)
     try:
         bpy.ops.object.select_all(action='DESELECT')
         target.select_set(True)
