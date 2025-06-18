@@ -218,7 +218,7 @@ def main():
     parent_to_armature(target, arm)
 
     # VHDS block commented out as per your test
-     try:
+    try:
        bpy.ops.object.select_all(action='DESELECT')
        target.select_set(True)
        arm.select_set(True)
