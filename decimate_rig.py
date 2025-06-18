@@ -122,7 +122,7 @@ def get_vgroup_centroid(mesh, group_name):
 
 def main():
     collection = get_mongo_collection(mongo_uri)
-   latest_key = get_latest_glb_from_s3(bucket, prefix="3d_assets/Humanoids/")
+    latest_key = get_latest_glb_from_s3(bucket, prefix="3d_assets/Humanoids/")
     if not latest_key:
         print("[Error] No GLB found")
         return
