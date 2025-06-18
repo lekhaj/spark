@@ -9,17 +9,17 @@ import logging
 import gradio as gr
 from PIL import Image, ImageDraw, ImageFont 
 from pathlib import Path
-from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
-import json 
-import httpx 
+# Removed fastapi imports as we will directly use gradio.launch() for sharing
+# import json  # Keep if used elsewhere
+# import httpx # Keep if used elsewhere
 import base64 
 import pymongo # For ObjectId in MongoDB operations (local DB access)
 
-try:
-    import uvicorn
-except ImportError:
-    pass
+# Removed try-except for uvicorn, as we're explicitly choosing gradio.launch()
+# try:
+#     import uvicorn
+# except ImportError:
+#     pass
 from datetime import datetime
 
 # --- ALL IMPORTS NOW REFER TO THE NEW CONSOLIDATED STRUCTURE ---
@@ -521,7 +521,7 @@ def submit_batch_process_mongodb_prompts_task_ui(db_name=MONGO_DB_NAME, collecti
 
 
 # Create the Gradio Interface
-def build_app():
+def build_app(): # Removed share parameter from here
     custom_css = """
     .app.svelte-wpkpf6.svelte-wpkpf6:not(.fill_width) {
         max-width: 1480px;
@@ -831,13 +831,12 @@ def build_app():
     
     return demo
 
-def create_fastapi_app(gradio_app):
-    """Creates a FastAPI app and mounts the Gradio app on it."""
-    app = FastAPI()
-    # Remove static file serving for S3-hosted biome images,
-    # unless you have other local static files to serve.
-    app = gr.mount_gradio_app(app, gradio_app, path="/")
-    return app
+# The create_fastapi_app function is no longer needed if we're directly using demo.launch()
+# def create_fastapi_app(gradio_app):
+#     """Creates a FastAPI app and mounts the Gradio app on it."""
+#     app = FastAPI()
+#     app = gr.mount_gradio_app(app, gradio_app, path="/")
+#     return app
 
 # Main execution block
 if __name__ == "__main__":
@@ -856,29 +855,25 @@ if __name__ == "__main__":
         if not USE_CELERY:
             initialize_dev_processors() 
         else:
-            logger.info("merged_gradio_app.py: FastAPI/Gradio app starting (CPU-only, submitting tasks to Celery).")
+            logger.info("merged_gradio_app.py: Application starting (CPU-only, submitting tasks to Celery).") # Updated message
         
         logger.info("merged_gradio_app.py: Building Gradio app interface...")
-        demo = build_app() 
+        demo = build_app() # No share parameter needed here
         logger.info("merged_gradio_app.py: Gradio app interface built.")
         
-        logger.info("merged_gradio_app.py: Attempting to launch application server (FastAPI/Uvicorn or Gradio built-in)...")
+        logger.info("merged_gradio_app.py: Attempting to launch Gradio application...")
         logger.info(f"merged_gradio_app.py: Gradio application will be accessible on port: {args.port}")
 
-        try:
-            import uvicorn
-            app = create_fastapi_app(demo) 
-            logger.info(f"merged_gradio_app.py: Launching Uvicorn server at http://{args.host}:{args.port}/")
-            uvicorn.run(app, host=args.host, port=args.port)
-        except ImportError:
-            logger.warning("merged_gradio_app.py: Uvicorn not found, falling back to Gradio's built-in server.")
-            logger.info(f"merged_gradio_app.py: Launching Gradio built-in server at http://{args.host}:{args.port}/")
-            demo.launch(server_name=args.host, server_port=args.port, share=args.share) 
+        # CRITICAL CHANGE: Always call demo.launch() directly here,
+        # and pass args.share to enable the ngrok tunnel if the flag is present.
+        demo.launch(server_name=args.host, server_port=args.port, share=args.share) 
+        
     except Exception as e:
         logger.critical(f"merged_gradio_app.py: A critical error occurred during application startup: {str(e)}", exc_info=True)
         print(f"\nFATAL ERROR: Application could not start. Details: {e}")
         
         # Fallback UI (simplified to only 2D image/grid processing with messages)
+        # This fallback block is now only for true catastrophic errors, not a regular launch path.
         try:
             import gradio as gr
             from PIL import Image, ImageDraw, ImageFont
@@ -909,7 +904,7 @@ if __name__ == "__main__":
                 text_bbox = draw.textbbox((0,0), text, font=font)
                 text_width = text_bbox[2] - text_bbox[0]
                 text_height = text_bbox[3] - text_bbox[1]
-                draw.text(((256 - text_width) / 2, (256 - text_height) / 2), text, (255, 255, 255), font=font)
+                draw.text(((256 - text_width) / 2, (256, - text_height) / 2), text, (255, 255, 255), font=font)
                 return dummy_image, dummy_image, "Fallback: App initialization failed. Tasks cannot be processed."
 
             def fallback_dummy_biome_generate(theme, structures):
