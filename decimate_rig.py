@@ -124,7 +124,9 @@ def get_vgroup_centroid(mesh, group_name):
                 sum_pos += (mesh.matrix_world @ v.co) * g.weight
                 total_w += g.weight
                 break
-    return (sum_pos / total_w) if total_w > 0 else None
+    centroid = (sum_pos / total_w) if total_w > 0 else None
+    print(f"[Debug] {group_name} Centroid (World): {centroid}")
+    return centroid
 
 def main():
     collection = get_mongo_collection(mongo_uri)
@@ -183,6 +185,7 @@ def main():
         "neck": ["neck.001", "neck.002"]
     }
 
+    print(f"[Debug] Armature World Matrix: {arm.matrix_matrix_world}")
     for bone in arm.data.edit_bones:
         vgroup = bone.name
         for k, v in mapping.items():
@@ -196,36 +199,39 @@ def main():
         cen = get_vgroup_centroid(target, vgroup)
         if cen:
             local_centroid = arm.matrix_world.inverted() @ cen
-            if align_method == 0:  # Use centroid
+            original_head = bone.head.copy()
+            original_tail = bone.tail.copy()
+            if align_method == 0:
                 bone.head = local_centroid
                 bone.tail = local_centroid + (bone.tail - bone.head)
-            elif align_method == 1:  # Use existing bone positions
-                original_head = bone.head
-                original_tail = bone.tail
+            elif align_method == 1:
                 bone.head = original_head + (local_centroid - original_head) * 0.5
                 bone.tail = original_tail + (local_centroid - original_tail) * 0.5
             print(f"[Align] Bone {bone.name} to centroid of {vgroup}")
+            print(f"[Debug] Bone {bone.name}, World Centroid: {cen}, Local Centroid: {local_centroid}, Original Head: {original_head}, New Head: {bone.head}, Tail: {bone.tail}")
         else:
             print(f"[Align] No centroid for {vgroup}")
+            print(f"[Debug] No centroid for {vgroup}")
 
     bpy.ops.object.mode_set(mode='OBJECT')
     arm.data.display_type = 'STICK'
     parent_to_armature(target, arm)
 
-   # try:
-      #  bpy.ops.object.select_all(action='DESELECT')
-       # target.select_set(True)
-        #arm.select_set(True)
-        #bpy.context.view_layer.objects.active = arm
-        #bpy.ops.object.modifier_set_active(modifier="Armature")
-        #bpy.ops.object.voxel_remesh(mode='BOUNDED', resolution=vhds_res)
-        #bpy.ops.object.modifier_add(type='SMOOTH')
-        #bpy.context.object.modifiers["Smooth"].factor = 0.5
-        #bpy.context.object.modifiers["Smooth"].iterations = vhds_smooth
-        #bpy.ops.object.modifier_apply(modifier="Smooth")
-        #print(f"[VHDS] Voxel Heat Diffuse Skinning applied successfully. Res: {vhds_res}, Smooth: {vhds_smooth}")
-    #except Exception as e:
-        #print(f"[VHDS] Error: {e}")
+    # VHDS block commented out as per your test
+    # try:
+    #     bpy.ops.object.select_all(action='DESELECT')
+    #     target.select_set(True)
+    #     arm.select_set(True)
+    #     bpy.context.view_layer.objects.active = arm
+    #     bpy.ops.object.modifier_set_active(modifier="Armature")
+    #     bpy.ops.object.voxel_remesh(mode='BOUNDED', resolution=vhds_res)
+    #     bpy.ops.object.modifier_add(type='SMOOTH')
+    #     bpy.context.object.modifiers["Smooth"].factor = 0.5
+    #     bpy.context.object.modifiers["Smooth"].iterations = vhds_smooth
+    #     bpy.ops.object.modifier_apply(modifier="Smooth")
+    #     print(f"[VHDS] Voxel Heat Diffuse Skinning applied successfully. Res: {vhds_res}, Smooth: {vhds_smooth}")
+    # except Exception as e:
+    #     print(f"[VHDS] Error: {e}")
 
     out_file = f"{asset_id}_rigged.glb"
     out_path = os.path.join(output_folder, out_file)
