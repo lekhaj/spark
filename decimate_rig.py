@@ -128,7 +128,7 @@ def align_meshes(target, template):
     target.location += translation
     print("[Align] Target mesh bottom-center to template bottom-center")
 
-def get_vgroup_centroid(mesh, group_name):
+def get_vgroup_centroid(mesh, group_name, weight_factor=1.0):
     vg = mesh.vertex_groups.get(group_name)
     if not vg:
         return None
@@ -136,7 +136,7 @@ def get_vgroup_centroid(mesh, group_name):
     for v in mesh.data.vertices:
         for g in v.groups:
             if mesh.vertex_groups[g.group].name == group_name:
-                sum_pos += (mesh.matrix_world @ v.co) * g.weight
+                sum_pos += (mesh.matrix_world @ v.co) * g.weight * weight_factor
                 total_w += g.weight
                 break
     centroid = (sum_pos / total_w) if total_w > 0 else None
@@ -224,36 +224,40 @@ def main():
                 vgroup = k
                 break
 
-        # special handling for neck bones
+        # Special handling for neck bones
         if bone.name in ("neck.001", "neck.002"):
-            cen_neck  = get_vgroup_centroid(target, "neck")
+            cen_neck = get_vgroup_centroid(target, "neck", weight_factor=1.5)  # Prioritize neck
             cen_spine = get_vgroup_centroid(target, "spine1")
             if cen_neck and cen_spine:
-                cen = (cen_neck + cen_spine) / 2
+                cen = (cen_neck * 0.7 + cen_spine * 0.3)  # 70% neck, 30% spine weighting
             else:
                 cen = cen_neck or cen_spine
+            if cen:
+                local_centroid = arm.matrix_world.inverted() @ cen
+                original_head = bone.head.copy()
+                original_tail = bone.tail.copy()
+                offset = Vector((0.0, 0.0, 0.1))  # Small upward offset for neck
+                bone.head = local_centroid + offset
+                bone.tail = local_centroid + offset + (bone.tail - original_head) * 1.1  # Slightly extend tail
+                print(f"[Align] Bone {bone.name} to adjusted centroid of {vgroup}")
+                print(f"[Debug] Bone {bone.name}, World Centroid: {cen}, Local Centroid: {local_centroid}, "
+                      f"Original Head: {original_head}, New Head: {bone.head}, Tail: {bone.tail}")
         else:
             cen = get_vgroup_centroid(target, vgroup)
-        # end special neck
-
-        if cen:
-            local_centroid = arm.matrix_world.inverted() @ cen
-            original_head = bone.head.copy()
-            original_tail = bone.tail.copy()
-            if align_method == 0:
-                bone.head = local_centroid
-                bone.tail = local_centroid + (bone.tail - original_head)
+            if cen:
+                local_centroid = arm.matrix_world.inverted() @ cen
+                original_head = bone.head.copy()
+                original_tail = bone.tail.copy()
+                if align_method == 0:
+                    bone.head = local_centroid
+                    bone.tail = local_centroid + (bone.tail - original_head)
+                else:
+                    bone.head = original_head + (local_centroid - original_head) * 0.5
+                    bone.tail = original_tail + (local_centroid - original_tail) * 0.5
+                print(f"[Align] Bone {bone.name} to centroid of {vgroup}")
             else:
-                # uniform 50% bias
-                bone.head = original_head + (local_centroid - original_head) * 0.5
-                bone.tail = original_tail + (local_centroid - original_tail) * 0.5
-
-            print(f"[Align] Bone {bone.name} to centroid of {vgroup}")
-            print(f"[Debug] Bone {bone.name}, World Centroid: {cen}, Local Centroid: {local_centroid}, "
-                  f"Original Head: {original_head}, New Head: {bone.head}, Tail: {bone.tail}")
-        else:
-            print(f"[Align] No centroid for {vgroup}")
-            print(f"[Debug] No centroid for {vgroup}")
+                print(f"[Align] No centroid for {vgroup}")
+                print(f"[Debug] No centroid for {vgroup}")
 
     bpy.ops.object.mode_set(mode='OBJECT')
     arm.data.display_type = 'STICK'
