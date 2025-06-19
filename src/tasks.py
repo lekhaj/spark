@@ -115,25 +115,66 @@ _hunyuan_i23d_worker = None
 _hunyuan_rembg_worker = None
 _hunyuan_texgen_worker = None
 
+# Global flag for Hunyuan3D availability
+TASK_3D_MODULES_LOADED = False
+
+# Step 1: Test basic PyTorch and CUDA
 try:
-    from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
-    from hy3dgen.shapegen import FaceReducer, FloaterRemover, DegenerateFaceRemover
-    from hy3dgen.rembg import BackgroundRemover
-    from hy3dgen.texgen import Hunyuan3DPaintPipeline
     import torch
-    import trimesh
+    task_logger.info(f"✓ PyTorch loaded: {torch.__version__}")
+    task_logger.info(f"✓ CUDA available: {torch.cuda.is_available()}")
     
-    from hunyuan3d_worker import (
-        initialize_hunyuan3d_processors, 
-        generate_3d_from_image_core,
-        get_model_info,
-        cleanup_models
-    )
-    
-    TASK_3D_MODULES_LOADED = True
-    task_logger.info("All necessary Hunyuan3D modules loaded for Celery worker.")
+    if torch.cuda.is_available():
+        task_logger.info(f"✓ GPU device: {torch.cuda.get_device_name()}")
+        task_logger.info(f"✓ GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+    else:
+        task_logger.warning("⚠ CUDA not available, will use CPU")
+        
 except ImportError as e:
-    task_logger.error(f"Could not load Hunyuan3D modules for Celery worker: {e}")
+    task_logger.error(f"✗ PyTorch import failed: {e}")
+    torch = None
+
+# Step 2: Test Transformers and Diffusers
+try:
+    if torch is not None:
+        from transformers import AutoTokenizer, AutoModel
+        import diffusers
+        task_logger.info(f"✓ Transformers loaded: {diffusers.__version__}")
+        task_logger.info("✓ Diffusers loaded successfully")
+except ImportError as e:
+    task_logger.error(f"✗ Transformers/Diffusers import failed: {e}")
+
+# Step 3: Try to import Hunyuan3D modules
+try:
+    if torch is not None:
+        # Try importing the specific Hunyuan3D modules
+        from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
+        from hy3dgen.shapegen import FaceReducer, FloaterRemover, DegenerateFaceRemover
+        from hy3dgen.rembg import BackgroundRemover
+        from hy3dgen.texgen import Hunyuan3DPaintPipeline
+        import trimesh
+        
+        task_logger.info("✓ Hunyuan3D core modules imported successfully")
+        
+        # Try importing the worker functions
+        from hunyuan3d_worker import (
+            initialize_hunyuan3d_processors, 
+            generate_3d_from_image_core,
+            get_model_info,
+            cleanup_models
+        )
+        
+        task_logger.info("✓ Hunyuan3D worker functions imported successfully")
+        
+        TASK_3D_MODULES_LOADED = True
+        task_logger.info("✅ All necessary Hunyuan3D modules loaded for Celery worker.")
+        
+except ImportError as e:
+    task_logger.error(f"✗ Could not load Hunyuan3D modules for Celery worker: {e}")
+    task_logger.error("   Make sure you have installed: transformers, diffusers, torch with CUDA support")
+    TASK_3D_MODULES_LOADED = False
+except Exception as e:
+    task_logger.error(f"✗ Unexpected error loading Hunyuan3D modules: {e}")
     TASK_3D_MODULES_LOADED = False
 
 # Create function aliases
@@ -445,29 +486,64 @@ def generate_3d_model_from_image(self, image_path, with_texture=False, output_fo
     """
     Celery task to generate a 3D model from an image using Hunyuan3D.
     """
+    task_logger.info(f"🚀 Starting 3D model generation task")
+    task_logger.info(f"   Image path: {image_path}")
+    task_logger.info(f"   With texture: {with_texture}")
+    task_logger.info(f"   Output format: {output_format}")
+    task_logger.info(f"   Hunyuan3D modules loaded: {TASK_3D_MODULES_LOADED}")
+    
     if not TASK_3D_MODULES_LOADED:
-        return {"status": "error", "message": "Hunyuan3D modules not loaded on this worker."}
+        error_msg = "Hunyuan3D modules not loaded on this worker. Please check module installation."
+        task_logger.error(f"❌ {error_msg}")
+        return {"status": "error", "message": error_msg}
     
     # Initialize processors if needed
-    if _hunyuan_i23d_worker is None:
-        if not initialize_hunyuan3d_processors():
-            return {"status": "error", "message": "Failed to initialize Hunyuan3D processors."}
-    
-    # Use the core function from hunyuan3d_worker
     try:
+        task_logger.info("🔧 Checking Hunyuan3D processor initialization...")
+        if _hunyuan_i23d_worker is None:
+            task_logger.info("⚙️ Initializing Hunyuan3D processors...")
+            self.update_state(state='PROGRESS', meta={'progress': 5, 'status': 'Initializing Hunyuan3D processors...'})
+            
+            if not initialize_hunyuan3d_processors():
+                error_msg = "Failed to initialize Hunyuan3D processors."
+                task_logger.error(f"❌ {error_msg}")
+                return {"status": "error", "message": error_msg}
+            
+            task_logger.info("✅ Hunyuan3D processors initialized successfully")
+        else:
+            task_logger.info("✅ Hunyuan3D processors already initialized")
+    except Exception as e:
+        error_msg = f"Error during processor initialization: {str(e)}"
+        task_logger.error(f"❌ {error_msg}")
+        return {"status": "error", "message": error_msg}
+    
+    # Generate 3D model
+    try:
+        task_logger.info("🎯 Starting 3D model generation...")
+        self.update_state(state='PROGRESS', meta={'progress': 10, 'status': 'Generating 3D model...'})
+        
         result = generate_3d_from_image_core(
             image_path, 
             with_texture, 
             output_format, 
             progress_callback=lambda p, s: self.update_state(
                 state='PROGRESS', 
-                meta={'progress': p, 'status': s}
+                meta={'progress': min(p, 95), 'status': s}
             )
         )
+        
+        if result.get('status') == 'success':
+            task_logger.info(f"✅ 3D model generated successfully: {result.get('model_path', 'No path returned')}")
+            self.update_state(state='PROGRESS', meta={'progress': 100, 'status': 'Completed successfully'})
+        else:
+            task_logger.error(f"❌ 3D model generation failed: {result.get('message', 'Unknown error')}")
+            
         return result
+        
     except Exception as e:
-        task_logger.error(f"Error generating 3D model: {e}", exc_info=True)
-        return {"status": "error", "message": f"Task failed: {e}"}
+        error_msg = f"Error generating 3D model: {str(e)}"
+        task_logger.error(f"❌ {error_msg}", exc_info=True)
+        return {"status": "error", "message": error_msg}
 
 @app.task(name='generate_3d_model_from_prompt', bind=True)
 def generate_3d_model_from_prompt(self, text_prompt, with_texture=False, output_format='glb'):
