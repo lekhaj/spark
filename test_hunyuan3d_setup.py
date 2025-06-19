@@ -77,10 +77,40 @@ for lib_name, package_name in libraries:
 
 # Test 5: Hunyuan3D specific modules
 print("\n5. Testing Hunyuan3D modules...")
+hunyuan_paths = [
+    "/home/ubuntu/Shashwat/spark/Hunyuan3D-2",
+    "/home/ubuntu/Shashwat/spark/Hunyuan3D-1", 
+    "./Hunyuan3D-2",
+    "./Hunyuan3D-1"
+]
+
+hunyuan_found = False
+for path in hunyuan_paths:
+    if os.path.exists(path):
+        print(f"✅ Found Hunyuan3D directory: {path}")
+        hunyuan_found = True
+        
+        # Check if hy3dgen module exists
+        hy3dgen_path = os.path.join(path, "hy3dgen")
+        if os.path.exists(hy3dgen_path):
+            print(f"✅ Found hy3dgen module: {hy3dgen_path}")
+            
+            # Add to Python path temporarily
+            if path not in sys.path:
+                sys.path.insert(0, path)
+                print(f"✅ Added {path} to Python path")
+        break
+
+if not hunyuan_found:
+    print("❌ Hunyuan3D directory not found")
+    print("   Expected locations:", hunyuan_paths)
+    print("   Please clone Hunyuan3D repository:")
+    print("   git clone https://github.com/Tencent/Hunyuan3D-1.git")
+
+# Try importing hy3dgen modules
 try:
-    # Check if the hy3dgen module exists
     import hy3dgen
-    print("✅ hy3dgen base module found")
+    print("✅ hy3dgen base module imported")
     
     from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
     print("✅ Hunyuan3DDiTFlowMatchingPipeline imported")
@@ -93,8 +123,10 @@ try:
     
 except ImportError as e:
     print(f"❌ Hunyuan3D modules error: {e}")
-    print("   Make sure Hunyuan3D is properly installed")
-    print("   Check if you have the Hunyuan3D-2 directory with the hy3dgen module")
+    print("   Solutions:")
+    print("   1. Make sure Hunyuan3D is cloned in the project directory")
+    print("   2. Install Hunyuan3D requirements: pip install -r Hunyuan3D-2/requirements.txt")
+    print("   3. Check if the hy3dgen module is properly structured")
 
 # Test 6: Check worker module
 print("\n6. Testing worker module...")
