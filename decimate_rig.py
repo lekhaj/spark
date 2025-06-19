@@ -151,6 +151,17 @@ def get_vgroup_centroid(mesh, group_name):
     return centroid
 
 
+def get_bounding_box_corners(obj):
+    return [obj.matrix_world @ Vector(b) for b in obj.bound_box]
+
+def get_bounding_box_bottom_center(corners):
+    bottom_z = min(c.z for c in corners)
+    bottom = [c for c in corners if abs(c.z - bottom_z) < 1e-6]
+    cx = sum(c.x for c in bottom) / len(bottom)
+    cy = sum(c.y for c in bottom) / len(bottom)
+    return Vector((cx, cy, bottom_z))
+
+
 def main():
     collection = get_mongo_collection(mongo_uri)
     latest_key = get_latest_glb_from_s3(bucket, prefix="3d_assets/Humanoids/")
