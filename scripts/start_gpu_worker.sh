@@ -28,7 +28,12 @@ cd "$SRC_DIR"
 ENV_FILE="$PROJECT_ROOT/.env.gpu"
 if [ -f "$ENV_FILE" ]; then
     echo "Loading environment from $ENV_FILE"
-    export $(cat "$ENV_FILE" | grep -v '^#' | grep -v '^$' | xargs)
+    # Source the .env.gpu file to load all variables
+    set -a  # Automatically export all variables
+    source "$ENV_FILE"
+    set +a  # Stop automatically exporting
+else
+    echo "⚠️  Environment file not found: $ENV_FILE"
 fi
 
 # Set environment variables for GPU spot instance (with fallbacks)
@@ -39,15 +44,23 @@ export REDIS_READ_URL="${REDIS_READ_URL:-$REDIS_BROKER_URL}"
 export USE_CELERY=True
 export WORKER_TYPE=gpu
 export GPU_SPOT_INSTANCE_IP="${GPU_SPOT_INSTANCE_IP:-127.0.0.1}"
-export HUNYUAN3D_DEVICE=cuda
+export HUNYUAN3D_DEVICE="${HUNYUAN3D_DEVICE:-cuda}"
 
 # GPU worker configuration
-export GPU_WORKER_QUEUES="gpu_tasks"
+export GPU_WORKER_QUEUES="${GPU_WORKER_QUEUES:-gpu_tasks}"
 export WORKER_HOSTNAME="gpu-worker@$(hostname)"
 
 # Spot instance specific settings
 export AWS_GPU_IS_SPOT_INSTANCE=True
 export SPOT_INSTANCE_HANDLING_ENABLED=True
+
+# Print environment variables for debugging
+echo "🔧 Environment variables:"
+echo "   REDIS_BROKER_URL: $REDIS_BROKER_URL"
+echo "   WORKER_TYPE: $WORKER_TYPE"
+echo "   HUNYUAN3D_DEVICE: $HUNYUAN3D_DEVICE"
+echo "   GPU_WORKER_QUEUES: $GPU_WORKER_QUEUES"
+echo "   WORKER_HOSTNAME: $WORKER_HOSTNAME"
 
 echo "Environment Configuration:"
 echo "  REDIS_BROKER_URL: $REDIS_BROKER_URL"

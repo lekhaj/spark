@@ -7,6 +7,19 @@ Run this on your GPU instance to check dependencies.
 import sys
 import os
 
+# Load environment variables from .env.gpu if it exists
+env_file = "/home/ubuntu/Shashwat/spark/.env.gpu"
+if os.path.exists(env_file):
+    print(f"📋 Loading environment from {env_file}")
+    with open(env_file, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#') and '=' in line:
+                key, value = line.split('=', 1)
+                os.environ[key] = value
+else:
+    print(f"⚠️  Environment file not found: {env_file}")
+
 print("🔍 Testing Hunyuan3D setup...")
 print("=" * 50)
 
