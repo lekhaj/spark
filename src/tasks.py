@@ -525,10 +525,11 @@ def generate_3d_model_from_prompt(self, text_prompt, with_texture=False, output_
         task_logger.error(f"Error in text-to-3D pipeline: {e}", exc_info=True)
         return {"status": "error", "message": f"Text-to-3D pipeline failed: {e}"}
 
-@app.task(name='manage_gpu_instance')
-def manage_gpu_instance(action="ensure_running", instance_id=None, region=None):
+@app.task(name='manage_gpu_instance', bind=True)
+def manage_gpu_instance(self, action="ensure_running", instance_id=None, region=None):
     """
-    Celery task to manage the GPU EC2 instance.
+    Enhanced Celery task to manage GPU spot instances.
+    Includes spot instance specific handling.
     """
     try:
         aws_manager = get_aws_manager()
@@ -536,7 +537,6 @@ def manage_gpu_instance(action="ensure_running", instance_id=None, region=None):
         if aws_manager is None:
             return {"status": "error", "message": "AWS manager not available."}
         
-        # Use provided IDs or fall back to config
         instance_id = instance_id or getattr(aws_manager, 'instance_id', None)
         region = region or getattr(aws_manager, 'region', None)
         
@@ -544,44 +544,65 @@ def manage_gpu_instance(action="ensure_running", instance_id=None, region=None):
             return {"status": "error", "message": "No GPU instance ID provided or configured."}
         
         if action == "ensure_running":
-            task_logger.info(f"Ensuring GPU instance {instance_id} is running...")
-            success = aws_manager.ensure_instance_running()
+            task_logger.info(f"Ensuring GPU spot instance {instance_id} is running...")
+            
+            # Check current status first
+            info = aws_manager.get_instance_info()
+            if info and info.state == 'running':
+                return {"status": "success", "message": f"GPU spot instance {instance_id} is already running."}
+            
+            # For spot instances, we may need to request a new one if terminated
+            if info and info.state == 'terminated':
+                task_logger.warning(f"Spot instance {instance_id} was terminated. May need to launch new instance.")
+                return {"status": "warning", "message": f"Spot instance {instance_id} was terminated. Please launch a new spot instance."}
+            
+            success = aws_manager.ensure_instance_running(max_wait_time=600)  # Longer wait for spot instances
             
             if success:
-                return {"status": "success", "message": f"GPU instance {instance_id} is running."}
+                return {"status": "success", "message": f"GPU spot instance {instance_id} is now running."}
             else:
-                return {"status": "error", "message": f"Failed to ensure GPU instance {instance_id} is running."}
+                return {"status": "error", "message": f"Failed to ensure GPU spot instance {instance_id} is running."}
                 
         elif action == "stop":
-            task_logger.info(f"Stopping GPU instance {instance_id}...")
+            task_logger.info(f"Stopping GPU spot instance {instance_id}...")
             success = aws_manager.stop_instance()
             
             if success:
-                return {"status": "success", "message": f"Stop request sent for GPU instance {instance_id}."}
+                return {"status": "success", "message": f"Stop request sent for GPU spot instance {instance_id}."}
             else:
-                return {"status": "error", "message": f"Failed to stop GPU instance {instance_id}."}
+                return {"status": "error", "message": f"Failed to stop GPU spot instance {instance_id}."}
         
         elif action == "status":
-            task_logger.info(f"Getting status of GPU instance {instance_id}...")
+            task_logger.info(f"Getting status of GPU spot instance {instance_id}...")
             info = aws_manager.get_instance_info()
             
             if info:
                 cost_info = aws_manager.get_instance_cost_estimate()
                 return {
                     "status": "success", 
-                    "message": f"Instance {instance_id} status retrieved.",
-                    "instance_info": info,
+                    "message": f"Spot instance {instance_id} status retrieved.",
+                    "instance_info": {
+                        "state": info.state,
+                        "instance_type": info.instance_type,
+                        "public_ip": info.public_ip,
+                        "uptime_hours": info.uptime_hours,
+                        "is_spot": True  # Flag for spot instance
+                    },
                     "cost_estimate": cost_info
                 }
             else:
-                return {"status": "error", "message": f"Failed to get status for instance {instance_id}."}
+                return {"status": "error", "message": f"Failed to get status for spot instance {instance_id}."}
         
         else:
             return {"status": "error", "message": f"Unknown action: {action}"}
             
     except Exception as e:
-        task_logger.error(f"Error managing GPU instance: {e}", exc_info=True)
-        return {"status": "error", "message": f"GPU instance management failed: {e}"}
+        task_logger.error(f"Error managing GPU spot instance: {e}", exc_info=True)
+        # Retry for spot instance specific errors
+        if 'spot' in str(e).lower() or 'insufficient' in str(e).lower():
+            task_logger.info("Retrying spot instance operation...")
+            self.retry(countdown=60, max_retries=3)
+        return {"status": "error", "message": f"GPU spot instance management failed: {e}"}
 
 @app.task(name='cleanup_old_assets')
 def cleanup_old_assets(max_age_hours=24):
