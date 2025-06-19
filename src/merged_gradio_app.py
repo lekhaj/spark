@@ -34,6 +34,10 @@ from config import (
 )
 from db_helper import MongoDBHelper 
 
+# Global variables to store ID mappings for dropdowns
+_prompt_id_mapping = {}
+_grid_id_mapping = {}
+
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -371,7 +375,7 @@ def get_prompts_from_mongodb(db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_
             {"theme_prompt": {"$exists": True}},
             {"description": {"$exists": True}}
         ]}
-        documents = mongo_helper.find_many(collection_name, query=query, limit=limit) 
+        documents = mongo_helper.find_many(db_name, collection_name, query=query, limit=limit) 
         if not documents:
             return [], "No prompts found in the specified collection."
         prompt_items = []
@@ -391,28 +395,26 @@ def get_prompts_from_mongodb(db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_
         logger.error(f"MongoDB connection error fetching prompts: {str(e)}")
         return [], f"Error connecting to MongoDB: {str(e)}"
 
-# This function will now submit a task or process directly
-def submit_mongodb_prompt_task(prompt_id, db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_COLLECTION, width=DEFAULT_IMAGE_WIDTH, height=DEFAULT_IMAGE_HEIGHT, 
-                             num_images=DEFAULT_NUM_IMAGES, model_type=DEFAULT_TEXT_MODEL):
-    """Submits a MongoDB prompt processing task to Celery OR processes directly."""
-    logger.info(f"Processing MongoDB prompt task for ID: {prompt_id}")
+def get_prompts_for_dropdown(db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_COLLECTION, limit=100):
+    """Retrieve prompts from MongoDB and format for dropdown"""
+    global _prompt_id_mapping
+    prompt_items, status = get_prompts_from_mongodb(db_name, collection_name, limit)
     
-    prompt_content = ""
-    try:
-        mongo_helper = MongoDBHelper()
-        document = mongo_helper.find_one(collection_name, {"_id": pymongo.results.ObjectId(prompt_id)})
-        if document:
-            prompt_content = document.get("theme_prompt") or document.get("description") or \
-                             (next((item["description"] for category in document.get("possible_structures", {}).values() for item in category.values() if "description" in item), None))
-        if not prompt_content:
-            return None, f"Error: No prompt content found for ID {prompt_id}."
-    except Exception as e:
-        logger.error(f"Error fetching prompt content for ID {prompt_id}: {e}")
-        return None, f"Error fetching prompt content for ID {prompt_id}: {e}"
-
-    # Use the generic image generation wrapper
-    return process_image_generation_task(prompt_content, width, height, num_images, model_type, is_grid_input=False)
-
+    if not prompt_items:
+        _prompt_id_mapping = {}
+        return gr.update(choices=[], value=None), status
+    
+    # Create mapping and choices for dropdown
+    _prompt_id_mapping = {}
+    choices = []
+    for doc_id, prompt in prompt_items:
+        # Truncate long prompts for display
+        display_text = prompt[:80] + "..." if len(prompt) > 80 else prompt
+        display_choice = f"{doc_id}: {display_text}"
+        choices.append(display_choice)
+        _prompt_id_mapping[display_choice] = doc_id
+    
+    return gr.update(choices=choices, value=choices[0] if choices else None), status
 
 def get_grids_from_mongodb(db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_COLLECTION, limit=100):
     """Retrieve grid data from MongoDB collection"""
@@ -422,7 +424,7 @@ def get_grids_from_mongodb(db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_CO
             {"grid": {"$exists": True}},
             {"possible_grids.layout": {"$exists": True}}
         ]}
-        documents = mongo_helper.find_many(collection_name, query=query, limit=limit)
+        documents = mongo_helper.find_many(db_name, collection_name, query=query, limit=limit)
         if not documents: return [], "No grids found in the specified collection."
         grid_items = []
         for doc in documents:
@@ -443,6 +445,60 @@ def get_grids_from_mongodb(db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_CO
         logger.error(f"MongoDB connection error fetching grids: {str(e)}")
         return [], f"Error connecting to MongoDB: {str(e)}"
 
+def get_grids_for_dropdown(db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_COLLECTION, limit=100):
+    """Retrieve grids from MongoDB and format for dropdown"""
+    global _grid_id_mapping
+    grid_items, status = get_grids_from_mongodb(db_name, collection_name, limit)
+    
+    if not grid_items:
+        _grid_id_mapping = {}
+        return gr.update(choices=[], value=None), status
+    
+    # Create mapping and choices for dropdown
+    _grid_id_mapping = {}
+    choices = []
+    for grid_id, grid_str in grid_items:
+        # Truncate long grid strings for display
+        display_text = grid_str.replace("\n", " ")[:60] + "..." if len(grid_str) > 60 else grid_str.replace("\n", " ")
+        display_choice = f"{grid_id}: {display_text}"
+        choices.append(display_choice)
+        _grid_id_mapping[display_choice] = grid_id
+    
+    return gr.update(choices=choices, value=choices[0] if choices else None), status
+
+# This function will now submit a task or process directly
+def submit_mongodb_prompt_task(prompt_id, db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_COLLECTION, width=DEFAULT_IMAGE_WIDTH, height=DEFAULT_IMAGE_HEIGHT, 
+                             num_images=DEFAULT_NUM_IMAGES, model_type=DEFAULT_TEXT_MODEL):
+    """Submits a MongoDB prompt processing task to Celery OR processes directly."""
+    logger.info(f"Processing MongoDB prompt task for ID: {prompt_id}")
+    
+    prompt_content = ""
+    try:
+        mongo_helper = MongoDBHelper()
+        document = mongo_helper.find_one(db_name, collection_name, {"_id": pymongo.results.ObjectId(prompt_id)})
+        if document:
+            prompt_content = document.get("theme_prompt") or document.get("description") or \
+                             (next((item["description"] for category in document.get("possible_structures", {}).values() for item in category.values() if "description" in item), None))
+        if not prompt_content:
+            return None, f"Error: No prompt content found for ID {prompt_id}."
+    except Exception as e:
+        logger.error(f"Error fetching prompt content for ID {prompt_id}: {e}")
+        return None, f"Error fetching prompt content for ID {prompt_id}: {e}"
+
+    # Use the generic image generation wrapper
+    return process_image_generation_task(prompt_content, width, height, num_images, model_type, is_grid_input=False)
+
+def submit_mongodb_prompt_task_from_dropdown(selected_prompt, db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_COLLECTION, width=DEFAULT_IMAGE_WIDTH, height=DEFAULT_IMAGE_HEIGHT, 
+                             num_images=DEFAULT_NUM_IMAGES, model_type=DEFAULT_TEXT_MODEL):
+    """Wrapper to extract prompt ID from dropdown selection and submit task"""
+    global _prompt_id_mapping
+    
+    if not selected_prompt or selected_prompt not in _prompt_id_mapping:
+        return None, "Error: Please select a valid prompt from the dropdown."
+    
+    prompt_id = _prompt_id_mapping[selected_prompt]
+    return submit_mongodb_prompt_task(prompt_id, db_name, collection_name, width, height, num_images, model_type)
+
 # This function will now submit a task or process directly
 def submit_mongodb_grid_task(grid_item_id, db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_COLLECTION, width=DEFAULT_IMAGE_WIDTH, height=DEFAULT_IMAGE_HEIGHT, 
                              num_images=DEFAULT_NUM_IMAGES, model_type="stability"):
@@ -454,7 +510,7 @@ def submit_mongodb_grid_task(grid_item_id, db_name=MONGO_DB_NAME, collection_nam
         parts = grid_item_id.split("_", 1)
         doc_id = parts[0]
         mongo_helper = MongoDBHelper()
-        document = mongo_helper.find_one(collection_name, {"_id": pymongo.results.ObjectId(doc_id)}) 
+        document = mongo_helper.find_one(db_name, collection_name, {"_id": pymongo.results.ObjectId(doc_id)}) 
         if not document: return None, None, f"Error: Document with ID {doc_id} not found."
         
         grid_content = None
@@ -480,6 +536,16 @@ def submit_mongodb_grid_task(grid_item_id, db_name=MONGO_DB_NAME, collection_nam
     # Use the generic image generation wrapper
     return process_image_generation_task(grid_content_str, width, height, num_images, model_type, is_grid_input=True)
 
+def submit_mongodb_grid_task_from_dropdown(selected_grid, db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_COLLECTION, width=DEFAULT_IMAGE_WIDTH, height=DEFAULT_IMAGE_HEIGHT, 
+                             num_images=DEFAULT_NUM_IMAGES, model_type="stability"):
+    """Wrapper to extract grid ID from dropdown selection and submit task"""
+    global _grid_id_mapping
+    
+    if not selected_grid or selected_grid not in _grid_id_mapping:
+        return None, None, "Error: Please select a valid grid from the dropdown."
+    
+    grid_id = _grid_id_mapping[selected_grid]
+    return submit_mongodb_grid_task(grid_id, db_name, collection_name, width, height, num_images, model_type)
 
 # This function will now submit a batch task or process directly
 def submit_batch_process_mongodb_prompts_task_ui(db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_COLLECTION, limit=10, width=DEFAULT_IMAGE_WIDTH, height=DEFAULT_IMAGE_HEIGHT, 
@@ -498,7 +564,7 @@ def submit_batch_process_mongodb_prompts_task_ui(db_name=MONGO_DB_NAME, collecti
                 {"theme_prompt": {"$exists": True}},
                 {"description": {"$exists": True}}
             ]}
-            prompt_documents = mongo_helper.find_many(collection_name, query=query, limit=limit)
+            prompt_documents = mongo_helper.find_many(db_name, collection_name, query=query, limit=limit)
             
             if not prompt_documents:
                 return "No prompts found to process in batch."
@@ -528,33 +594,34 @@ def submit_batch_process_mongodb_prompts_task_ui(db_name=MONGO_DB_NAME, collecti
                     # Direct call to generate image
                     images = _dev_pipeline.process_text(prompt)
                     
-                    if images and images[0]: 
-                        unique_id = str(uuid.uuid4())[:8]
-                        image_filename = f"mongo_batch_{unique_id}_{doc_id[:8]}.png" 
-                        image_path = os.path.join(OUTPUT_IMAGES_DIR, image_filename)
-                        images[0].save(image_path)
-                        results.append(f"Generated image for: '{prompt[:30]}...' -> {image_filename}")
+                    if images:
+                        # Save the first image
+                        output_path = os.path.join(OUTPUT_IMAGES_DIR, f"batch_{doc_id}.png")
+                        images[0].save(output_path)
+                        results.append(f"✓ {doc_id}: Generated and saved to {output_path}")
                         
+                        # Update database if requested
                         if update_db:
-                            update_data = {
-                                "processed": True,
-                                "processed_at": datetime.now(),
-                                "model_used": model_type,
-                                "image_path": image_filename 
-                            }
-                            mongo_helper.update_by_id(collection_name, doc_id, update_data)
+                            try:
+                                mongo_helper.update_one(db_name, collection_name, 
+                                                      {"_id": doc["_id"]}, 
+                                                      {"$set": {"generated_image_path": output_path}})
+                                results.append(f"  └─ Updated database record for {doc_id}")
+                            except Exception as e:
+                                results.append(f"  └─ Failed to update database for {doc_id}: {e}")
                     else:
-                        results.append(f"Failed to generate image for: '{prompt[:30]}' - No image output.")
+                        results.append(f"✗ {doc_id}: No images generated")
+                        
                 except Exception as e:
-                    logger.error(f"Error in direct batch processing for {doc_id}: {e}", exc_info=True)
-                    results.append(f"Failed to process '{prompt[:30]}...' - Error: {e}")
-                    
-            return "\n".join(results)
+                    results.append(f"✗ {doc_id}: Error generating image - {e}")
+            
+            return f"Batch processing completed!\n\n" + "\n".join(results)
+            
         except Exception as e:
-            logger.error(f"Error in overall direct batch processing: {e}", exc_info=True)
-            return f"Error during direct batch processing: {e}"
+            logger.error(f"Error in batch processing: {e}")
+            return f"Error in batch processing: {e}"
 
-
+# --- FastAPI and Gradio app setup code ---
 # Create the Gradio Interface
 def build_app():
     custom_css = """
@@ -947,7 +1014,7 @@ def build_app():
         
         # MongoDB Prompt tab event handlers
         mongo_fetch_btn.click(
-            get_prompts_from_mongodb, 
+            get_prompts_for_dropdown, 
             inputs=[mongo_db_name, mongo_collection], 
             outputs=[mongo_prompts, mongo_status]
         ).then(
@@ -956,7 +1023,7 @@ def build_app():
         )
 
         mongo_process_btn.click(
-            submit_mongodb_prompt_task, 
+            submit_mongodb_prompt_task_from_dropdown, 
             inputs=[
                 mongo_prompts, mongo_db_name, mongo_collection, 
                 mongo_width, mongo_height, mongo_num_images, mongo_model
@@ -975,7 +1042,7 @@ def build_app():
 
         # MongoDB Grid tab event handlers
         grid_fetch_btn.click(
-            get_grids_from_mongodb, 
+            get_grids_for_dropdown, 
             inputs=[grid_db_name, grid_collection], 
             outputs=[grid_items, grid_status]
         ).then(
@@ -984,7 +1051,7 @@ def build_app():
         )
 
         grid_process_btn.click(
-            submit_mongodb_grid_task, 
+            submit_mongodb_grid_task_from_dropdown, 
             inputs=[
                 grid_items, grid_db_name, grid_collection, 
                 grid_width, grid_height, grid_num_images, grid_model
