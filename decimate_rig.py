@@ -29,6 +29,7 @@ def clear_scene():
     if hasattr(bpy.ops.outliner, "orphans_purge"):
         bpy.ops.outliner.orphans_purge(do_local_ids=True, do_linked_ids=True, do_recursive=True)
 
+
 def import_glb(filepath):
     bpy.ops.import_scene.gltf(filepath=filepath)
     for o in bpy.context.selected_objects:
@@ -36,6 +37,7 @@ def import_glb(filepath):
             bpy.context.view_layer.objects.active = o
             return o
     return None
+
 
 def append_object(blend, name):
     with bpy.data.libraries.load(blend, link=False) as (src, dst):
@@ -47,8 +49,10 @@ def append_object(blend, name):
         obj.select_set(True)
     return obj
 
+
 def import_template_mesh():
     return append_object(template_blend, template_mesh_name)
+
 
 def decimate_mesh(obj, tf, mode, p):
     faces = len(obj.data.polygons)
@@ -71,6 +75,7 @@ def decimate_mesh(obj, tf, mode, p):
     bpy.ops.object.modifier_apply(modifier=mod.name)
     print(f"[Decimate] {faces} → {len(obj.data.polygons)} faces")
 
+
 def transfer_weights(src, dst):
     dt = dst.modifiers.new("WeightTransfer", "DATA_TRANSFER")
     dt.object = src
@@ -80,6 +85,7 @@ def transfer_weights(src, dst):
     bpy.context.view_layer.objects.active = dst
     bpy.ops.object.modifier_apply(modifier=dt.name)
     print("[Weights] Transferred template → target")
+
 
 def check_vertex_group_weights(mesh, group_name):
     vg = mesh.vertex_groups.get(group_name)
@@ -91,6 +97,13 @@ def check_vertex_group_weights(mesh, group_name):
         print(f"[Error] Vertex group '{group_name}' not found on mesh '{mesh.name}'")
         return False
 
+
+def debug_marker(at, name):
+    empty = bpy.data.objects.new(name, None)
+    empty.location = at
+    bpy.context.collection.objects.link(empty)
+
+
 def parent_to_armature(mesh, arm):
     bpy.ops.object.select_all(action='DESELECT')
     mesh.select_set(True)
@@ -100,6 +113,7 @@ def parent_to_armature(mesh, arm):
     mod = mesh.modifiers.get("Armature") or mesh.modifiers.new("Armature", "ARMATURE")
     mod.object = arm
     print("[Parent] Mesh → Armature")
+
 
 def export_glb(path, mesh, arm):
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -120,8 +134,10 @@ def export_glb(path, mesh, arm):
     )
     print(f"[Export] {path}")
 
+
 def get_bounding_box_corners(obj):
     return [obj.matrix_world @ Vector(b) for b in obj.bound_box]
+
 
 def get_bounding_box_bottom_center(corners):
     bottom_z = min(c.z for c in corners)
@@ -129,6 +145,7 @@ def get_bounding_box_bottom_center(corners):
     cx = sum(c.x for c in bottom) / len(bottom)
     cy = sum(c.y for c in bottom) / len(bottom)
     return Vector((cx, cy, bottom_z))
+
 
 def align_meshes(target, template):
     translation = (
@@ -138,6 +155,7 @@ def align_meshes(target, template):
     target.location += translation
     print("[Align] Target mesh bottom-center to template bottom-center")
 
+
 def get_vgroup_centroid(mesh, group_name):
     vg = mesh.vertex_groups.get(group_name)
     if not vg:
@@ -145,13 +163,15 @@ def get_vgroup_centroid(mesh, group_name):
     total_w, sum_pos = 0.0, Vector((0.0, 0.0, 0.0))
     for v in mesh.data.vertices:
         for g in v.groups:
-            if mesh.vertex_groups[g.group].name == group_name:
+            if mesh.vertex_groups[g.group].name == group_name and g.weight > 0:
                 sum_pos += (mesh.matrix_world @ v.co) * g.weight
                 total_w += g.weight
-                break
-    centroid = (sum_pos / total_w) if total_w > 0 else None
+    if total_w == 0:
+        return None
+    centroid = sum_pos / total_w
     print(f"[Debug] {group_name} Centroid (World): {centroid}")
     return centroid
+
 
 def main():
     collection = get_mongo_collection(mongo_uri)
@@ -178,6 +198,7 @@ def main():
 
     clear_scene()
 
+    # import
     template = import_template_mesh()
     arm = append_object(template_blend, arm_name)
     target = import_glb(local_glb)
@@ -185,7 +206,7 @@ def main():
         print("[Error] Template/Armature/Target missing")
         return
 
-    # 1) Bake transforms on template mesh & armature
+    # bake transforms on template & arm
     for obj in (template, arm):
         bpy.ops.object.select_all(action='DESELECT')
         obj.select_set(True)
@@ -193,80 +214,87 @@ def main():
         bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
         print(f"[TransformApply] Baked transforms on {obj.name}")
 
-    # 2) Align meshes
+    # align meshes
     align_meshes(target, template)
 
-    # 3) Bake transforms on target mesh after alignment
+    # bake transforms on target
     bpy.ops.object.select_all(action='DESELECT')
     target.select_set(True)
     bpy.context.view_layer.objects.active = target
     bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
     print("[TransformApply] Baked target after alignment")
 
-    # Continue pipeline: decimation, weight transfer, rigging
+    # decimate + weights
     decimate_mesh(target, tf, mode, param)
     for vg in template.vertex_groups:
         if vg.name not in target.vertex_groups:
             target.vertex_groups.new(name=vg.name)
     transfer_weights(template, target)
-    if not check_vertex_group_weights(target, "neck"):
-        print("[Warning] 'neck' vertex group has no weights; neck alignment may fail.")
 
+    # debug weight check for 'neck'
+    print("--- Weight checks ---")
+    print("Template groups:", [g.name for g in template.vertex_groups])
+    print("Target groups:", [g.name for g in target.vertex_groups])
+    check_vertex_group_weights(target, "neck")
+
+    # edit bones
     bpy.context.view_layer.objects.active = arm
     bpy.ops.object.mode_set(mode='EDIT')
 
+    # use direct mapping for neck bones
     mapping = {
+        "neck.001": "neck.001",
+        "neck.002": "neck.002",
         "hand.L": "wrist.L",
         "hand.R": "wrist.R",
         "forearm.L": "elbow.L",
         "forearm.R": "elbow.R",
         "upperarm.L": "upper_arm.L",
         "upperarm.R": "upperarm.R",
-        "neck": ["neck.001", "neck.002"]
     }
 
-    print(f"[Debug] Armature World Matrix: {arm.matrix_world}")
     for bone in arm.data.edit_bones:
         vgroup = bone.name
-        for k, v in mapping.items():
-            if isinstance(v, list) and bone.name in v:
-                vgroup = k
-                break
-            elif bone.name.startswith(k):
-                vgroup = k
-                break
-
+        if bone.name in mapping:
+            vgroup = mapping[bone.name]
         cen = get_vgroup_centroid(target, vgroup)
-        if cen:
-            local_centroid = arm.matrix_world.inverted() @ cen
-            original_head = bone.head.copy()
-            original_tail = bone.tail.copy()
-            if align_method == 0:
-                bone.head = local_centroid
-                bone.tail = local_centroid + (bone.tail - original_head)
-            else:
-                # uniform 50% bias
-                bone.head = original_head + (local_centroid - original_head) * 0.5
-                bone.tail = original_tail + (local_centroid - original_tail) * 0.5
+        if not cen:
+            print(f"[Align] No centroid for {vgroup} → skipping {bone.name}")
+            continue
 
-            print(f"[Align] Bone {bone.name} to centroid of {vgroup}")
-            print(f"[Debug] Bone {bone.name}, World Centroid: {cen}, Local Centroid: {local_centroid}, "
-                  f"Original Head: {original_head}, New Head: {bone.head}, Tail: {bone.tail}")
+        # show marker
+        debug_marker(cen, f"centroid_{vgroup}")
+
+        local_centroid = arm.matrix_world.inverted() @ cen
+        orig_head = bone.head.copy()
+        orig_tail = bone.tail.copy()
+
+        # allow per-bone bias: neck halfway if requested
+        method = align_method
+        if bone.name.startswith("neck") and method == 0:
+            method = 1
+
+        if method == 0:
+            bone.head = local_centroid
+            bone.tail = local_centroid + (orig_tail - orig_head)
         else:
-            print(f"[Align] No centroid for {vgroup}")
-            print(f"[Debug] No centroid for {vgroup}")
+            bone.head = orig_head + (local_centroid - orig_head) * 0.5
+            bone.tail = orig_tail + (local_centroid - orig_tail) * 0.5
+
+        print(f"[Align] Bone {bone.name} to centroid of {vgroup}")
+        print(f"[Debug] Original Head: {orig_head}, New Head: {bone.head}")
 
     bpy.ops.object.mode_set(mode='OBJECT')
     arm.data.display_type = 'STICK'
+
     parent_to_armature(target, arm)
 
-    # VHDS (optional)
+    # Optional VHDS
     try:
         bpy.ops.object.select_all(action='DESELECT')
         target.select_set(True)
         arm.select_set(True)
         bpy.context.view_layer.objects.active = arm
-        bpy.ops.object.modifier_set_active(modifier="Armature")
         bpy.ops.object.voxel_remesh(mode='BOUNDED', resolution=vhds_res)
         bpy.ops.object.modifier_add(type='SMOOTH')
         bpy.context.object.modifiers["Smooth"].factor = 0.5
@@ -276,6 +304,7 @@ def main():
     except Exception as e:
         print(f"[VHDS] Error: {e}")
 
+    # export & upload
     out_file = f"{asset_id}_rigged.glb"
     out_path = os.path.join(output_folder, out_file)
     export_glb(out_path, target, arm)
