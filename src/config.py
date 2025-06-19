@@ -68,11 +68,83 @@ DALLE_API_KEY = os.getenv('DALLE_API_KEY')
 # --- Local Model Configuration ---
 LOCAL_MODEL_PATH = os.getenv('LOCAL_MODEL_PATH', './models/local')
 
-# --- Celery and Redis Configuration for Distributed EC2 Setup ---
-# Redis Configuration for distributed tasks across EC2 instances
-# Point to your GPU spot instance as the Redis server
-REDIS_BROKER_URL = os.getenv('REDIS_BROKER_URL', 'redis://13.203.200.155:6379/0')
-REDIS_RESULT_BACKEND = os.getenv('REDIS_RESULT_BACKEND', 'redis://13.203.200.155:6379/0')
+# --- Worker Type Detection ---
+WORKER_TYPE = os.getenv('WORKER_TYPE', 'cpu')  # 'gpu' or 'cpu'
+GPU_SPOT_INSTANCE_IP = os.getenv('GPU_SPOT_INSTANCE_IP', '35.154.102.169')
+
+# --- Enhanced Redis Configuration for Read/Write Separation ---
+class RedisConfig:
+    """Redis configuration manager with separate read/write connections."""
+    
+    def __init__(self):
+        self.worker_type = WORKER_TYPE
+        self.gpu_ip = GPU_SPOT_INSTANCE_IP
+          # Configure URLs based on worker type
+        if self.worker_type == 'gpu':
+            # GPU instance: Use local Redis for both read and write
+            self.write_url = 'redis://127.0.0.1:6379/0'
+            self.read_url = 'redis://127.0.0.1:6379/0'
+        else:
+            # CPU instance: Connect to GPU instance Redis for both read and write
+            self.write_url = f'redis://{self.gpu_ip}:6379/0'
+            self.read_url = f'redis://{self.gpu_ip}:6379/0'
+            
+        # Allow environment override
+        self.write_url = os.getenv('REDIS_WRITE_URL', self.write_url)
+        self.read_url = os.getenv('REDIS_READ_URL', self.read_url)
+        
+    @property
+    def write_client(self):
+        """Get Redis client for write operations."""
+        import redis
+        return redis.Redis.from_url(self.write_url, socket_timeout=5, socket_connect_timeout=5)
+    
+    @property  
+    def read_client(self):
+        """Get Redis client for read operations."""
+        import redis
+        return redis.Redis.from_url(self.read_url, socket_timeout=5, socket_connect_timeout=5)
+    
+    def test_connection(self, operation='both'):
+        """Test Redis connections.
+        
+        Args:
+            operation (str): 'read', 'write', or 'both'
+            
+        Returns:
+            dict: Connection test results
+        """
+        import time
+        results = {}
+        
+        if operation in ['write', 'both']:
+            try:
+                client = self.write_client
+                client.ping()
+                # Test write capability
+                test_key = f"connection_test_{int(time.time())}"
+                client.set(test_key, "test_write", ex=10)
+                client.delete(test_key)
+                results['write'] = {'success': True, 'url': self.write_url}
+            except Exception as e:
+                results['write'] = {'success': False, 'url': self.write_url, 'error': str(e)}
+        
+        if operation in ['read', 'both']:
+            try:
+                client = self.read_client
+                client.ping()
+                results['read'] = {'success': True, 'url': self.read_url}
+            except Exception as e:
+                results['read'] = {'success': False, 'url': self.read_url, 'error': str(e)}
+        
+        return results
+
+# Initialize Redis configuration
+REDIS_CONFIG = RedisConfig()
+
+# Celery and Redis Configuration for backward compatibility
+REDIS_BROKER_URL = os.getenv('REDIS_BROKER_URL', REDIS_CONFIG.write_url)
+REDIS_RESULT_BACKEND = os.getenv('REDIS_RESULT_BACKEND', REDIS_CONFIG.write_url)
 USE_CELERY = os.getenv('USE_CELERY', 'True').lower() == 'true'
 
 # Enhanced task routing for CPU vs GPU workloads across instances
@@ -82,8 +154,7 @@ CELERY_TASK_ROUTES = {
     'generate_grid_image': {'queue': 'cpu_tasks'},
     'run_biome_generation': {'queue': 'cpu_tasks'},
     'batch_process_mongodb_prompts_task': {'queue': 'cpu_tasks'},
-    
-    # GPU tasks (route to GPU spot instance at 13.203.200.155)
+      # GPU tasks (route to GPU spot instance)
     'generate_3d_model_from_image': {'queue': 'gpu_tasks'},
     'generate_3d_model_from_prompt': {'queue': 'gpu_tasks'},
     
@@ -157,7 +228,7 @@ TASK_TIMEOUT_EC2_MANAGEMENT = int(os.getenv('TASK_TIMEOUT_EC2_MANAGEMENT', '600'
 WORKER_TYPE = os.getenv('WORKER_TYPE', 'cpu')  # 'cpu' or 'gpu'
 
 # GPU Spot Instance specific configuration
-GPU_SPOT_INSTANCE_IP = os.getenv('GPU_SPOT_INSTANCE_IP', '13.203.200.155')
+GPU_SPOT_INSTANCE_IP = os.getenv('GPU_SPOT_INSTANCE_IP', '35.154.102.169')
 GPU_INSTANCE_REDIS_PORT = int(os.getenv('GPU_INSTANCE_REDIS_PORT', '6379'))
 
 # Task monitoring and health checks
