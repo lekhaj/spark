@@ -97,17 +97,6 @@ def transfer_weights(src, dst):
     print("[Weights] Transferred template → target")
 
 
-def check_vertex_group_weights(mesh, group_name):
-    vg = mesh.vertex_groups.get(group_name)
-    if vg:
-        weighted_verts = [v for v in mesh.data.vertices if any(g.group == vg.index and g.weight > 0 for g in v.groups)]
-        print(f"[Debug] Vertex group '{group_name}' has {len(weighted_verts)} vertices with weights > 0")
-        return len(weighted_verts) > 0
-    else:
-        print(f"[Error] Vertex group '{group_name}' not found on mesh '{mesh.name}'")
-        return False
-
-
 def debug_marker(at, name):
     empty = bpy.data.objects.new(name, None)
     empty.location = at
@@ -181,7 +170,6 @@ def main():
     tf = int(args[0])
     mode = args[1].upper()
     param = float(args[2])
-    # optional VHDS parameters
     vhds_res = float(args[3]) if len(args) > 3 else 0.1
     vhds_factor = float(args[4]) if len(args) > 4 else 0.5
 
@@ -204,7 +192,6 @@ def main():
     translation = get_bounding_box_bottom_center(get_bounding_box_corners(template)) - \
                   get_bounding_box_bottom_center(get_bounding_box_corners(target))
     target.location += translation
-
     bpy.ops.object.select_all(action='DESELECT')
     target.select_set(True)
     bpy.context.view_layer.objects.active = target
@@ -236,3 +223,31 @@ def main():
         bias = get_bias(bone.name)
         bone.head = h0 + (local_cen - h0) * bias
         bone.tail = t0 + (local_cen - t0) * bias
+    bpy.ops.object.mode_set(mode='OBJECT')
+    arm.data.display_type = 'STICK'
+
+    parent_to_armature(target, arm)
+
+    # Optional VHDS remesh + smooth
+    try:
+        bpy.ops.object.select_all(action='DESELECT')
+        target.select_set(True)
+        arm.select_set(True)
+        bpy.context.view_layer.objects.active = arm
+        bpy.ops.object.voxel_remesh(mode='BOUNDED', resolution=vhds_res)
+        bpy.ops.object.modifier_add(type='SMOOTH')
+        sm = bpy.context.object.modifiers['Smooth']
+        sm.factor = vhds_factor
+        sm.iterations = 5
+        bpy.ops.object.modifier_apply(modifier='Smooth')
+    except Exception as e:
+        print(f"[VHDS] Error: {e}")
+
+    # Export & upload
+    out_path = os.path.join(output_folder, f"{asset_id}_rigged.glb")
+    export_glb(out_path, target, arm)
+    url = upload_to_s3(bucket, f"processed/{asset_id}_rigged.glb", out_path)
+    update_asset_status(collection, asset_id, status="completed", output_url=url)
+
+if __name__ == "__main__":
+    main()
