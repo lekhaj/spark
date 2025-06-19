@@ -3,12 +3,12 @@ import os
 import sys
 import glob
 import bmesh
+import boto3
 from mathutils import Vector
 
 # allow import of helpers
 sys.path.append(os.path.dirname(__file__))
 from io_helper_connect import (
-    get_latest_glb_from_s3,
     download_from_s3,
     upload_to_s3,
     get_mongo_collection,
@@ -20,6 +20,21 @@ s3_prefix = "3d_assets"
 models_folder = "/home/ubuntu/input"
 output_folder = "/home/ubuntu/output"
 mongo_uri = "mongodb://ec2-13-203-200-155.ap-south-1.compute.amazonaws.com:27017"
+
+def get_latest_glb_from_s3_shallow(bucket, prefix):
+    s3 = boto3.client('s3')
+    paginator = s3.get_paginator('list_objects_v2')
+    pages = paginator.paginate(Bucket=bucket, Prefix=prefix + '/')
+    depth = prefix.count('/') + 1
+    candidates = []
+    for page in pages:
+        for obj in page.get('Contents', []):
+            key = obj['Key']
+            if key.lower().endswith('.glb') and key.count('/') == depth:
+                candidates.append((key, obj['LastModified']))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda x: x[1])[0]
 
 def clear_scene():
     bpy.ops.object.select_all(action='SELECT')
@@ -57,8 +72,8 @@ def set_origin_to_bottom_face_cursor(obj):
     bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
     bpy.ops.object.mode_set(mode='EDIT')
     bm = bmesh.from_edit_mesh(obj.data)
-    bottom = min(bm.faces, key=lambda f: sum((obj.matrix_world@v.co).z for v in f.verts)/len(f.verts))
-    center = sum(((obj.matrix_world@v.co) for v in bottom.verts), Vector())/len(bottom.verts)
+    bottom = min(bm.faces, key=lambda f: sum((obj.matrix_world @ v.co).z for v in f.verts)/len(f.verts))
+    center = sum(((obj.matrix_world @ v.co) for v in bottom.verts), Vector())/len(bottom.verts)
     bpy.ops.object.mode_set(mode='OBJECT')
     bpy.context.scene.cursor.location = center
     bpy.ops.object.origin_set(type='ORIGIN_CURSOR')
@@ -90,11 +105,11 @@ def main():
     tf, mode, param = int(args[0]), args[1].upper(), float(args[2])
 
     coll = get_mongo_collection(mongo_uri)
-
     clear_scene()
-    latest_key = get_latest_glb_from_s3(bucket_name, prefix=s3_prefix)
+
+    latest_key = get_latest_glb_from_s3_shallow(bucket_name, s3_prefix)
     if not latest_key:
-        update_asset_status(coll, asset_id=None, status="error", message="No GLB in S3")
+        update_asset_status(coll, None, "error", message="No GLB in root folder")
         return
 
     asset_id = os.path.splitext(os.path.basename(latest_key))[0]
