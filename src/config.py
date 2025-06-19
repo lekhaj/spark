@@ -179,9 +179,9 @@ CELERY_SPOT_INSTANCE_RETRY_POLICY = {
 }
 
 # --- Hunyuan3D Configuration ---
-HUNYUAN3D_MODEL_PATH = os.getenv('HUNYUAN3D_MODEL_PATH', 'tencent/Hunyuan3D-2')
+HUNYUAN3D_MODEL_PATH = os.getenv('HUNYUAN3D_MODEL_PATH', 'Hunyuan3D-2')
 HUNYUAN3D_SUBFOLDER = os.getenv('HUNYUAN3D_SUBFOLDER', 'hunyuan3d-dit-v2-mini-turbo')
-HUNYUAN3D_TEXGEN_MODEL_PATH = os.getenv('HUNYUAN3D_TEXGEN_MODEL_PATH', 'tencent/Hunyuan3D-2')
+HUNYUAN3D_TEXGEN_MODEL_PATH = os.getenv('HUNYUAN3D_TEXGEN_MODEL_PATH', 'Hunyuan3D-2')
 
 # Hunyuan3D Processing Parameters
 HUNYUAN3D_STEPS = int(os.getenv('HUNYUAN3D_STEPS', '30'))

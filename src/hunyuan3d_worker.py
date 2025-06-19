@@ -526,13 +526,6 @@ def generate_3d_from_image_core(
         
         return result
         
-    except Exception as e:
-        error_msg = f"Unexpected error during 3D generation: {str(e)}"
-        logger.error(f"💥 {error_msg}", exc_info=True)
-        return {"status": "error", "message": error_msg}
-        except Exception as e:
-            return {"status": "error", "message": f"Failed to export mesh: {e}"}
-        
         # Also save as GLB for web viewing
         if output_format != 'glb':
             glb_path = os.path.join(model_dir, f"model_{unique_id}.glb")
@@ -564,14 +557,14 @@ def generate_3d_from_image_core(
             result["glb_path"] = glb_path
         if with_texture and texture_gen_time is not None:
             result["processing_time"]["texture_generation"] = texture_gen_time
-            result["processing_time"]["texture_generation"] = texture_gen_time
         
         logger.info(f"3D generation completed successfully: {output_path}")
         return result
         
     except Exception as e:
-        logger.error(f"Error in 3D generation core: {e}", exc_info=True)
-        return {"status": "error", "message": f"3D generation failed: {e}"}
+        error_msg = f"Unexpected error during 3D generation: {str(e)}"
+        logger.error(f"💥 {error_msg}", exc_info=True)
+        return {"status": "error", "message": error_msg}
 
 
 def get_model_info() -> Dict[str, Any]:
