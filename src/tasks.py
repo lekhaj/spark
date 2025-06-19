@@ -144,11 +144,24 @@ TASK_MODULES_LOADED = TASK_2D_MODULES_LOADED
 
 # Celery App Setup
 try:
-    from config import REDIS_BROKER_URL, REDIS_RESULT_BACKEND, CELERY_TASK_ROUTES
+    from config import REDIS_BROKER_URL, REDIS_RESULT_BACKEND, CELERY_TASK_ROUTES, REDIS_CONFIG
+    
+    # Test Redis connections before using them
+    redis_test = REDIS_CONFIG.test_connection()
+    task_logger.info(f"Redis connection test results: {redis_test}")
+    
+    # Use the Redis configuration
     broker_url = REDIS_BROKER_URL
     result_backend = REDIS_RESULT_BACKEND
     task_routes = CELERY_TASK_ROUTES
-except ImportError:
+    
+    # Log configuration
+    task_logger.info(f"Using Redis broker: {broker_url}")
+    task_logger.info(f"Using Redis result backend: {result_backend}")
+    task_logger.info(f"Worker type: {getattr(REDIS_CONFIG, 'worker_type', 'unknown')}")
+    
+except ImportError as e:
+    task_logger.warning(f"Could not import Redis config: {e}")
     broker_url = os.getenv('REDIS_BROKER_URL', 'redis://localhost:6379/0')
     result_backend = os.getenv('REDIS_RESULT_BACKEND', 'redis://localhost:6379/0')
     task_routes = {}
