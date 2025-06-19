@@ -10,6 +10,7 @@ import pymongo
 from celery.signals import worker_process_init
 import uuid
 
+
 from hunyuan3d_worker import (
             initialize_hunyuan3d_processors, 
             generate_3d_from_image_core,
@@ -17,8 +18,9 @@ from hunyuan3d_worker import (
             cleanup_models
         )
 
+
 # Initialize logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 task_logger = logging.getLogger('celery_tasks')
 
 # Initialize default values
