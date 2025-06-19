@@ -176,13 +176,14 @@ def main():
     argv = sys.argv
     args = argv[argv.index("--") + 1:] if "--" in argv else []
     if len(args) < 3:
-        print("Usage: script.py <TF> <Mode> <Param> [vhds_res] [vhds_smooth]")
+        print("Usage: script.py <TF> <Mode> <Param> [vhds_res] [vhds_factor]")
         return
     tf = int(args[0])
     mode = args[1].upper()
     param = float(args[2])
+    # optional VHDS parameters
     vhds_res = float(args[3]) if len(args) > 3 else 0.1
-    vhds_smooth = int(args[4]) if len(args) > 4 else 5
+    vhds_factor = float(args[4]) if len(args) > 4 else 0.5
 
     clear_scene()
     template = import_template_mesh()
@@ -199,8 +200,9 @@ def main():
         bpy.context.view_layer.objects.active = obj
         bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
 
-    # Align base meshes
-    translation = get_bounding_box_corners(template)  # reuse earlier logic if desired
+    # Align base meshes (bottom-center snap)
+    translation = get_bounding_box_bottom_center(get_bounding_box_corners(template)) - \
+                  get_bounding_box_bottom_center(get_bounding_box_corners(target))
     target.location += translation
 
     bpy.ops.object.select_all(action='DESELECT')
@@ -208,62 +210,29 @@ def main():
     bpy.context.view_layer.objects.active = target
     bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
 
+    # Decimation and weight transfer
     decimate_mesh(target, tf, mode, param)
     for vg in template.vertex_groups:
         if vg.name not in target.vertex_groups:
             target.vertex_groups.new(name=vg.name)
     transfer_weights(template, target)
 
-    # Bone alignment
+    # Bone alignment pass
     bpy.context.view_layer.objects.active = arm
     bpy.ops.object.mode_set(mode='EDIT')
     mapping = {
-        "neck1": "neck1",
-        "neck2": "neck2",
-        "shoulder.L": "shoulder.L",
-        "upper_arm.L": "upper_arm.L",
-        "elbow.L": "forearm.L",
-        "wrist.L": "hand.L",
-        "shoulder.R": "shoulder.R",
-        "upper_arm.R": "upper_arm.R",
-        "elbow.R": "forearm.R",
-        "wrist.R": "hand.R",
+        "neck1": "neck1",  "neck2": "neck2",
+        "shoulder.L": "shoulder.L", "upper_arm.L": "upper_arm.L", "elbow.L": "forearm.L", "wrist.L": "hand.L",
+        "shoulder.R": "shoulder.R", "upper_arm.R": "upper_arm.R", "elbow.R": "forearm.R", "wrist.R": "hand.R",
     }
     for bone in arm.data.edit_bones:
         vgroup = mapping.get(bone.name, bone.name)
         cen = get_vgroup_centroid(target, vgroup)
         if not cen:
             continue
-        debug_marker(cen, bone.name + "_cen")
+        debug_marker(cen, f"centroid_{bone.name}")
         local_cen = arm.matrix_world.inverted() @ cen
         h0, t0 = bone.head.copy(), bone.tail.copy()
         bias = get_bias(bone.name)
         bone.head = h0 + (local_cen - h0) * bias
         bone.tail = t0 + (local_cen - t0) * bias
-    bpy.ops.object.mode_set(mode='OBJECT')
-    arm.data.display_type = 'STICK'
-
-    parent_to_armature(target, arm)
-
-    # Optional remesh
-    try:
-        bpy.ops.object.select_all(action='DESELECT')
-        target.select_set(True)
-        arm.select_set(True)
-        bpy.context.view_layer.objects.active = arm
-        bpy.ops.object.voxel_remesh(mode='BOUNDED', resolution=vhds_res)
-        bpy.ops.object.modifier_add(type='SMOOTH')
-        bpy.context.object.modifiers["Smooth"].factor = 0.5
-        bpy.context.object.modifiers["Smooth"].iterations = vhds_smooth
-        bpy.ops.object.modifier_apply(modifier="Smooth")
-    except Exception:
-        pass
-
-    # Export & upload
-    out_path = os.path.join(output_folder, f"{asset_id}_rigged.glb")
-    export_glb(out_path, target, arm)
-    url = upload_to_s3(bucket, f"processed/{asset_id}_rigged.glb", out_path)
-    update_asset_status(collection, asset_id, status="completed", output_url=url)
-
-if __name__ == "__main__":
-    main()
