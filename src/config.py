@@ -68,20 +68,43 @@ DALLE_API_KEY = os.getenv('DALLE_API_KEY')
 # --- Local Model Configuration ---
 LOCAL_MODEL_PATH = os.getenv('LOCAL_MODEL_PATH', './models/local')
 
-# --- Celery and Redis Configuration ---
-REDIS_BROKER_URL = os.getenv('REDIS_BROKER_URL', 'redis://localhost:6379/0')
-REDIS_RESULT_BACKEND = os.getenv('REDIS_RESULT_BACKEND', 'redis://localhost:6379/0')
+# --- Celery and Redis Configuration for Distributed EC2 Setup ---
+# Redis Configuration for distributed tasks across EC2 instances
+# Point to your GPU spot instance as the Redis server
+REDIS_BROKER_URL = os.getenv('REDIS_BROKER_URL', 'redis://13.203.200.155:6379/0')
+REDIS_RESULT_BACKEND = os.getenv('REDIS_RESULT_BACKEND', 'redis://13.203.200.155:6379/0')
 USE_CELERY = os.getenv('USE_CELERY', 'True').lower() == 'true'
 
-# Celery Task Routing
+# Enhanced task routing for CPU vs GPU workloads across instances
 CELERY_TASK_ROUTES = {
-    'generate_text_image': {'queue': '2d_generation'},
-    'generate_grid_image': {'queue': '2d_generation'},
-    'run_biome_generation': {'queue': '2d_generation'},
-    'batch_process_mongodb_prompts_task': {'queue': '2d_generation'},
-    'generate_3d_model_from_image': {'queue': '3d_generation'},
-    'generate_3d_model_from_prompt': {'queue': '3d_generation'},
+    # CPU tasks (stay on CPU instance)
+    'generate_text_image': {'queue': 'cpu_tasks'},
+    'generate_grid_image': {'queue': 'cpu_tasks'},
+    'run_biome_generation': {'queue': 'cpu_tasks'},
+    'batch_process_mongodb_prompts_task': {'queue': 'cpu_tasks'},
+    
+    # GPU tasks (route to GPU spot instance at 13.203.200.155)
+    'generate_3d_model_from_image': {'queue': 'gpu_tasks'},
+    'generate_3d_model_from_prompt': {'queue': 'gpu_tasks'},
+    
+    # Infrastructure tasks (can run on either instance)
     'manage_gpu_instance': {'queue': 'infrastructure'},
+}
+
+# Worker configuration for different instance types
+CPU_WORKER_QUEUES = ['cpu_tasks', 'infrastructure']
+GPU_WORKER_QUEUES = ['gpu_tasks']
+
+# Spot instance handling configuration
+AWS_GPU_IS_SPOT_INSTANCE = os.getenv('AWS_GPU_IS_SPOT_INSTANCE', 'True').lower() == 'true'
+SPOT_INSTANCE_HANDLING_ENABLED = os.getenv('SPOT_INSTANCE_HANDLING_ENABLED', 'True').lower() == 'true'
+
+# Celery retry policies for spot instance tasks
+CELERY_SPOT_INSTANCE_RETRY_POLICY = {
+    'max_retries': 3,
+    'interval_start': 30,  # Wait for spot instance startup
+    'interval_step': 60,
+    'interval_max': 300,
 }
 
 # --- Hunyuan3D Configuration ---
@@ -128,3 +151,27 @@ DEFAULT_3D_FORMAT = os.getenv('DEFAULT_3D_FORMAT', 'glb')
 TASK_TIMEOUT_3D_GENERATION = int(os.getenv('TASK_TIMEOUT_3D_GENERATION', '1800'))  # 30 minutes
 TASK_TIMEOUT_2D_GENERATION = int(os.getenv('TASK_TIMEOUT_2D_GENERATION', '300'))   # 5 minutes
 TASK_TIMEOUT_EC2_MANAGEMENT = int(os.getenv('TASK_TIMEOUT_EC2_MANAGEMENT', '600')) # 10 minutes
+
+# --- Distributed Worker Configuration ---
+# Worker type identification for different EC2 instances
+WORKER_TYPE = os.getenv('WORKER_TYPE', 'cpu')  # 'cpu' or 'gpu'
+
+# GPU Spot Instance specific configuration
+GPU_SPOT_INSTANCE_IP = os.getenv('GPU_SPOT_INSTANCE_IP', '13.203.200.155')
+GPU_INSTANCE_REDIS_PORT = int(os.getenv('GPU_INSTANCE_REDIS_PORT', '6379'))
+
+# Task monitoring and health checks
+TASK_HEALTH_CHECK_INTERVAL = int(os.getenv('TASK_HEALTH_CHECK_INTERVAL', '60'))  # 1 minute
+SPOT_INSTANCE_CHECK_INTERVAL = int(os.getenv('SPOT_INSTANCE_CHECK_INTERVAL', '300'))  # 5 minutes
+
+# Celery worker configuration based on instance type
+if WORKER_TYPE == 'gpu':
+    # GPU instance Redis configuration (local)
+    REDIS_BROKER_URL = os.getenv('REDIS_BROKER_URL', 'redis://127.0.0.1:6379/0')
+    REDIS_RESULT_BACKEND = os.getenv('REDIS_RESULT_BACKEND', 'redis://127.0.0.1:6379/0')
+    WORKER_QUEUES = GPU_WORKER_QUEUES
+else:
+    # CPU instance Redis configuration (points to GPU instance)
+    REDIS_BROKER_URL = os.getenv('REDIS_BROKER_URL', f'redis://{GPU_SPOT_INSTANCE_IP}:{GPU_INSTANCE_REDIS_PORT}/0')
+    REDIS_RESULT_BACKEND = os.getenv('REDIS_RESULT_BACKEND', f'redis://{GPU_SPOT_INSTANCE_IP}:{GPU_INSTANCE_REDIS_PORT}/0')
+    WORKER_QUEUES = CPU_WORKER_QUEUES
