@@ -29,7 +29,7 @@ from config import (
     DEFAULT_IMAGE_WIDTH, DEFAULT_IMAGE_HEIGHT, DEFAULT_NUM_IMAGES,
     OUTPUT_DIR, OUTPUT_IMAGES_DIR, OUTPUT_3D_ASSETS_DIR, 
     MONGO_DB_NAME, MONGO_BIOME_COLLECTION,
-    REDIS_BROKER_URL, # Imported, but only used if USE_CELERY is True and app.backend is used for result fetching
+    REDIS_BROKER_URL, REDIS_CONFIG, # Enhanced Redis configuration
     USE_CELERY # <--- NEW: Flag to control Celery usage
 )
 from db_helper import MongoDBHelper 
@@ -42,6 +42,34 @@ _grid_id_mapping = {}
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 _biome_logger = logging.getLogger("BiomeInspector") # Defined globally and early
+
+# --- Redis Connection Testing ---
+def test_redis_connectivity():
+    """Test Redis connectivity and log results."""
+    try:
+        redis_test = REDIS_CONFIG.test_connection()
+        logger.info(f"Redis connectivity test - Worker type: {REDIS_CONFIG.worker_type}")
+        logger.info(f"Redis write URL: {REDIS_CONFIG.write_url}")
+        logger.info(f"Redis read URL: {REDIS_CONFIG.read_url}")
+        
+        if redis_test.get('write', {}).get('success'):
+            logger.info("✅ Redis write connection successful")
+        else:
+            logger.error(f"❌ Redis write connection failed: {redis_test.get('write', {}).get('error')}")
+            
+        if redis_test.get('read', {}).get('success'):
+            logger.info("✅ Redis read connection successful")
+        else:
+            logger.error(f"❌ Redis read connection failed: {redis_test.get('read', {}).get('error')}")
+            
+        return redis_test
+    except Exception as e:
+        logger.error(f"Redis connectivity test failed: {e}")
+        return None
+
+# Test Redis connectivity on startup
+if USE_CELERY:
+    redis_test_result = test_redis_connectivity()
 
 # --- Conditional Imports based on USE_CELERY ---
 if USE_CELERY:
@@ -227,6 +255,17 @@ def submit_3d_from_image_task(image_file, with_texture, output_format, model_typ
     
     try:
         if USE_CELERY:
+            # Test Redis connectivity before submitting task
+            redis_test = REDIS_CONFIG.test_connection('write')
+            if not redis_test.get('write', {}).get('success'):
+                error_msg = redis_test.get('write', {}).get('error', 'Unknown Redis error')
+                logger.error(f"Redis write connection failed: {error_msg}")
+                
+                if "read only replica" in error_msg.lower():
+                    return None, "❌ Redis Error: Connected to read-only replica. Please configure a writable Redis master or check Redis configuration."
+                else:
+                    return None, f"❌ Redis Connection Error: {error_msg}"
+            
             # Ensure GPU spot instance is running before submitting task
             gpu_status_task = celery_manage_gpu_instance.delay("ensure_running")
             
@@ -242,15 +281,28 @@ def submit_3d_from_image_task(image_file, with_texture, output_format, model_typ
                     'interval_max': 300,
                 }
             )
-            return None, f"✅ 3D generation task submitted to GPU spot instance (ID: {task.id}). Processing on 13.203.200.155..."
+            return None, f"✅ 3D generation task submitted to GPU spot instance (ID: {task.id}). Processing on {REDIS_CONFIG.gpu_ip}..."
         else:
             # Direct processing in DEV mode (mock)
             logger.info(f"Mock 3D generation from image: {image_file}")
             result_msg = mock_generate_3d_from_image(image_file, with_texture, output_format)
             return None, f"✅ (DEV Mode Mock) {result_msg}"
     except Exception as e:
-        logger.error(f"Error submitting 3D from image task to GPU spot instance: {e}", exc_info=True)
-        return None, f"❌ Error: {e}"
+        error_msg = str(e)
+        
+        # Handle specific Redis-related errors
+        if "read only replica" in error_msg.lower():
+            logger.error(f"Redis read-only error: {e}")
+            return None, "❌ Redis Error: Cannot submit task to read-only Redis instance. Please configure a writable Redis master."
+        elif "connection" in error_msg.lower() and ("redis" in error_msg.lower() or "refused" in error_msg.lower()):
+            logger.error(f"Redis connection error: {e}")
+            return None, "❌ Redis Connection Error: Cannot connect to Redis broker. Please check Redis server status."
+        elif "operationalerror" in error_msg.lower():
+            logger.error(f"Redis operational error: {e}")
+            return None, "❌ Redis Operational Error: Redis broker is not accessible for task submission."
+        else:
+            logger.error(f"Error submitting 3D from image task to GPU spot instance: {e}", exc_info=True)
+            return None, f"❌ Error: {e}"
 
 def submit_3d_from_prompt_task(prompt, with_texture, output_format, model_type):
     """Submit 3D generation from text prompt task - routes to GPU spot instance"""
@@ -274,7 +326,7 @@ def submit_3d_from_prompt_task(prompt, with_texture, output_format, model_type):
                     'interval_max': 300,
                 }
             )
-            return None, None, f"✅ Text-to-3D task submitted to GPU spot instance (ID: {task.id}). Processing on 13.203.200.155..."
+            return None, None, f"✅ Text-to-3D task submitted to GPU spot instance (ID: {task.id}). Processing on {REDIS_CONFIG.gpu_ip}..."
         else:
             # Direct processing in DEV mode (mock)
             logger.info(f"Mock 3D generation from prompt: {prompt}")
