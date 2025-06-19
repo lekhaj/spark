@@ -8,6 +8,7 @@ import httpx # For making raw HTTP requests
 
 # Imports for local model (kept for TextProcessor's 'local' model option)
 from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
+from transformers.utils import is_flash_attn_2_available
 
 # OpenRouter configuration from config.py
 from config import OPENROUTER_API_KEY, OPENROUTER_BASE_URL 
@@ -25,30 +26,44 @@ else:
     logger.warning("OPENROUTER_API_KEY or OPENROUTER_BASE_URL not set. OpenRouter LLM client not initialized.")
 
 # Local model variables (kept for TextProcessor's 'local' model option)
-_local_model = None
-_local_tokenizer = None
+_local_model = "Qwen/Qwen3-30B-A3B"  # Local model identifier
+_local_tokenizer = AutoTokenizer.from_pretrained(_local_model, trust_remote_code=True) if openrouter_client else None
 _local_pipeline = None
+_local_model_loaded = False # Flag to track successful local model load attempt
 
 def load_local_pipeline():
     """
     Loads the local Qwen 7B model and tokenizer for text generation.
     This is a lazy loading function, so it only loads once.
+    Sets _local_model_loaded to True on success, False on failure.
     """
-    global _local_model, _local_tokenizer, _local_pipeline
-    if _local_pipeline is None:
-        logger.info("🔄 Loading local Qwen 7B model...")
-        try:
-            _local_tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen1.5-7B-Chat", trust_remote_code=True)
-            _local_model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen1.5-7B-Chat", trust_remote_code=True,
-                                                                 torch_dtype=torch.float16, device_map="auto")
-            _local_pipeline = pipeline("text-generation", model=_local_model, tokenizer=_local_tokenizer)
-            logger.info("Local Qwen 7B model loaded successfully.")
-        except Exception as e:
-            logger.error(f"Error loading local Qwen 7B model: {e}", exc_info=True)
-            _local_model = None
-            _local_tokenizer = None
-            _local_pipeline = None
-            raise # Re-raise to indicate failure to caller
+    global _local_model, _local_tokenizer, _local_pipeline, _local_model_loaded
+    
+    if _local_model_loaded: # If already successfully loaded, just return
+        return _local_pipeline
+    
+    if _local_pipeline is not None: # If already tried loading and failed, don't try again immediately
+        return _local_pipeline # Will be None if previous load failed
+
+    logger.info("🔄 Attempting to load local Qwen 7B model...")
+    try:
+        # Check for Flash Attention 2 for better performance if available
+        attn_implementation = "flash_attention_2" if is_flash_attn_2_available() else "eager"
+        
+        _local_tokenizer = AutoTokenizer.from_pretrained(_local_model, trust_remote_code=True)
+        _local_model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen3-30B-A3B", trust_remote_code=True,
+                                                             torch_dtype=torch.float16, device_map="auto",
+                                                             attn_implementation=attn_implementation)
+        _local_pipeline = pipeline("text-generation", model=_local_model, tokenizer=_local_tokenizer)
+        logger.info("Local Qwen 7B model loaded successfully.")
+        _local_model_loaded = True
+    except Exception as e:
+        logger.error(f"Error loading local Qwen 30B model: {e}", exc_info=True)
+        _local_model = None
+        _local_tokenizer = None
+        _local_pipeline = None
+        _local_model_loaded = False # Explicitly set to False on failure
+        # Do NOT re-raise here, as we want to gracefully fall back in call_online_llm
     return _local_pipeline
 
 # --- JSON Schema Definition for get_biome_generation_hints ---
@@ -110,23 +125,66 @@ GRID_HINTS_SCHEMA = {
 # General LLM call function, now with structured output capability
 async def call_online_llm(prompt: str, model_name: str = "google/gemini-2.0-flash-exp:free", output_schema: dict = None) -> str:
     """
-    Makes a general call to the online LLM (OpenRouter) with a given prompt.
-    Supports requesting structured JSON output via `output_schema`.
+    Attempts to make a call to the local LLM first.
+    If local model is not available or fails, falls back to the online LLM (OpenRouter).
+    
+    Supports requesting structured JSON output via `output_schema` for the online model.
+    For the local model, JSON formatting must be explicitly requested in the prompt.
 
     Args:
         prompt (str): The prompt to send to the LLM.
-        model_name (str): The specific model name to use on OpenRouter.
-                         Defaults to "google/gemini-1.5-flash" (a valid OpenRouter ID).
-        output_schema (dict): An optional JSON schema to include in the request
-                              to guide the LLM's output format.
+        model_name (str): The specific model name to use on OpenRouter (if falling back).
+        output_schema (dict): An optional JSON schema for the online model to adhere to.
 
     Returns:
         str: The raw text or JSON string response from the LLM, or None if an error occurs.
     """
-    global openrouter_client
+    global openrouter_client, _local_pipeline
 
+    # --- Step 1: Try Local Model First ---
+    if not USE_CELERY: # Only attempt local model if in DEV mode (not using Celery workers)
+        try:
+            local_pipe = load_local_pipeline() # Attempt to load or retrieve local pipeline
+            if local_pipe:
+                logger.info("Attempting to generate response using local LLM.")
+                # Local model expects chat-like messages, even for single prompts
+                messages_for_local_model = [
+                    {"role": "user", "content": prompt}
+                ]
+                
+                # Generate response from local model
+                # Ensure max_new_tokens is sufficient for expected output size
+                # The output_schema is ignored here; JSON must be requested in the prompt.
+                local_response_raw = local_pipe(messages_for_local_model, max_new_tokens=2048) 
+                
+                if local_response_raw and isinstance(local_response_raw, list) and local_response_raw[0].get('generated_text'):
+                    # Extract only the LLM's response part, not the original prompt and system message
+                    generated_text = local_response_raw[0]['generated_text']
+                    # Qwen's pipeline often includes the prompt in the generated_text,
+                    # so we need to extract only the actual generated part.
+                    # This is a common challenge with local transformers pipelines.
+                    # A robust way is to find where the assistant's reply starts.
+                    
+                    # For Qwen, it often looks like: user_prompt ... <|im_start|>assistant\nASSISTANT_RESPONSE<|im_end|>
+                    # A simpler heuristic for now: just return the full generated text and rely on
+                    # the calling function (e.g., extract_first_json_block) to parse.
+                    logger.debug(f"Local LLM raw response: {generated_text}")
+                    return generated_text.strip()
+                else:
+                    logger.warning("Local LLM generated empty or unexpected response structure.")
+                    _local_model_loaded = False # Reset if it produced bad output
+            else:
+                logger.info("Local LLM pipeline not available after loading attempt. Falling back to online.")
+        except Exception as e:
+            logger.error(f"Error during local LLM inference: {e}", exc_info=True)
+            _local_model_loaded = False # Mark as failed so it tries to reload or skips
+            logger.info("Local LLM failed. Falling back to online LLM.")
+    else:
+        logger.info("Skipping local LLM attempt as USE_CELERY is True.")
+
+    # --- Step 2: Fallback to Online Model if Local Fails or Not Used ---
     if openrouter_client is None:
-        logger.error("OpenRouter LLM client is not initialized. Cannot make API call.")
+        logger.error("OpenRouter LLM client is not initialized. Cannot make API call for online model.")
         return None
 
     try:
@@ -134,13 +192,17 @@ async def call_online_llm(prompt: str, model_name: str = "google/gemini-2.0-flas
         chat_messages.append({"role": "user", "content": prompt})
 
         payload = {
-            "model": model_name, # Now uses the correct OpenRouter ID for Gemini Flash
+            "model": model_name,
             "messages": chat_messages,
-            "temperature": 0.7, # Adjust as needed for creativity vs. adherence
-            "max_tokens": 2048, # Ensure enough tokens for the response
-            # OpenRouter's way to request JSON output
+            "temperature": 0.7,
+            "max_tokens": 2048,
+            # OpenRouter's way to request JSON output via response_format
             "response_format": {"type": "json_object"}, 
         }
+        
+        # If an explicit output_schema is provided, OpenRouter supports it via 'schema' field
+        if output_schema:
+            payload["schema"] = output_schema # Some OpenRouter models might directly use this
 
         api_url_path = "/api/v1/chat/completions" # OpenRouter's chat completions endpoint
 
@@ -170,7 +232,6 @@ async def call_online_llm(prompt: str, model_name: str = "google/gemini-2.0-flas
             if message_content and message_content.strip():
                 return message_content.strip()
             else:
-                # If content is empty, log and return None for robustness
                 error_message = result.get('error', {}).get('message', 'Unknown error from OpenRouter LLM (empty content).')
                 logger.error(f"[LLM ERROR] OpenRouter response did not contain expected content. Error: {error_message}. Full result: {result}")
                 return None
@@ -206,11 +267,10 @@ async def call_llm_for_structure_definitions(theme_prompt: str, structure_types:
         "The response MUST contain ONLY the JSON object, no other text or markdown fences." # CRITICAL: No markdown fences
         "\n\nExample Output Format:\n"
         "{\n"
-        "  \"Structure A\": {\"type\": \"TypeA\", \"description\": \"DescA\", \"attributes\": {\"hp\": 100}},\n"
-        "  \"Structure B\": {\"type\": \"TypeB\", \"description\": \"DescB\", \"attributes\": {\"hp\": 150}}\n"
+        "   \"Structure A\": {\"type\": \"TypeA\", \"description\": \"DescA\", \"attributes\": {\"hp\": 100}},\n"
+        "   \"Structure B\": {\"type\": \"TypeB\", \"description\": \"DescB\", \"attributes\": {\"hp\": 150}}\n"
         "}"
     )
-    # This function now calls the OpenRouter LLM with the default model,
-    # which is configured for google/gemini-1.5-flash and requests JSON output.
-    return await call_online_llm(structure_prompt)
-
+    # This function now calls the OpenRouter LLM (which will try local first)
+    # with the default model and expects JSON output.
+    return await call_online_llm(structure_prompt) # No change here, it will now use the smart fallback
