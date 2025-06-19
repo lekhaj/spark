@@ -231,47 +231,48 @@ def main():
             target.vertex_groups.new(name=vg.name)
     transfer_weights(template, target)
 
-    # debug weight check for 'neck'
+    # debug weight checks for neck and arm groups
     print("--- Weight checks ---")
-    print("Template groups:", [g.name for g in template.vertex_groups])
-    print("Target groups:", [g.name for g in target.vertex_groups])
-    check_vertex_group_weights(target, "neck")
+    for group in ["neck1", "neck2", "shoulder.L", "upper_arm.L", "forearm.L", "hand.L"]:
+        print(group, check_vertex_group_weights(target, group))
+    for group in ["shoulder.R", "upper_arm.R", "forearm.R", "hand.R"]:
+        print(group, check_vertex_group_weights(target, group))
 
     # edit bones
     bpy.context.view_layer.objects.active = arm
     bpy.ops.object.mode_set(mode='EDIT')
 
-    # use direct mapping for neck bones
+    # mapping: include elbow and wrist bones
     mapping = {
-        "neck.001": "neck.001",
-        "neck.002": "neck.002",
-        "hand.L": "wrist.L",
-        "hand.R": "wrist.R",
-        "forearm.L": "elbow.L",
-        "forearm.R": "elbow.R",
-        "upperarm.L": "upper_arm.L",
-        "upperarm.R": "upperarm.R",
+        "neck1": "neck1",
+        "neck2": "neck2",
+        "shoulder.L": "shoulder.L",
+        "upper_arm.L": "upper_arm.L",
+        "elbow.L": "forearm.L",
+        "wrist.L": "hand.L",
+        "hand.L": "hand.L",
+        "shoulder.R": "shoulder.R",
+        "upper_arm.R": "upper_arm.R",
+        "elbow.R": "forearm.R",
+        "wrist.R": "hand.R",
+        "hand.R": "hand.R",
     }
 
     for bone in arm.data.edit_bones:
-        vgroup = bone.name
-        if bone.name in mapping:
-            vgroup = mapping[bone.name]
+        vgroup = mapping.get(bone.name, bone.name)
         cen = get_vgroup_centroid(target, vgroup)
         if not cen:
             print(f"[Align] No centroid for {vgroup} → skipping {bone.name}")
             continue
 
-        # show marker
-        debug_marker(cen, f"centroid_{vgroup}")
-
+        debug_marker(cen, f"centroid_{bone.name}")
         local_centroid = arm.matrix_world.inverted() @ cen
         orig_head = bone.head.copy()
         orig_tail = bone.tail.copy()
 
-        # allow per-bone bias: neck halfway if requested
+        # bias shoulders and arms half-way if align_method=0
         method = align_method
-        if bone.name.startswith("neck") and method == 0:
+        if bone.name.startswith(("neck", "shoulder", "upper_arm", "forearm")) and method == 0:
             method = 1
 
         if method == 0:
