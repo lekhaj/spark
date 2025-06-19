@@ -5,8 +5,9 @@ set -e
 
 echo "🚀 Installing Hunyuan3D dependencies for GPU worker..."
 
-# Make sure we're in the project directory
-cd /home/ubuntu/Shashwat/spark
+# Make sure we're in the project directory (script directory)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
 # Create and activate virtual environment if it doesn't exist
 if [ ! -d "venv" ]; then

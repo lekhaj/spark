@@ -8,7 +8,8 @@ import sys
 import os
 
 # Load environment variables from .env.gpu if it exists
-env_file = "/home/ubuntu/Shashwat/spark/.env.gpu"
+script_dir = os.path.dirname(os.path.abspath(__file__))
+env_file = os.path.join(script_dir, ".env.gpu")
 if os.path.exists(env_file):
     print(f"📋 Loading environment from {env_file}")
     with open(env_file, 'r') as f:
@@ -77,9 +78,10 @@ for lib_name, package_name in libraries:
 
 # Test 5: Hunyuan3D specific modules
 print("\n5. Testing Hunyuan3D modules...")
+script_dir = os.path.dirname(os.path.abspath(__file__))
 hunyuan_paths = [
-    "/home/ubuntu/Shashwat/spark/Hunyuan3D-2",
-    "/home/ubuntu/Shashwat/spark/Hunyuan3D-1", 
+    os.path.join(script_dir, "Hunyuan3D-2"),
+    os.path.join(script_dir, "Hunyuan3D-1"), 
     "./Hunyuan3D-2",
     "./Hunyuan3D-1"
 ]
@@ -130,12 +132,21 @@ except ImportError as e:
 
 # Test 6: Check worker module
 print("\n6. Testing worker module...")
+
+# Add src directory to Python path for worker module
+script_dir = os.path.dirname(os.path.abspath(__file__))
+src_path = os.path.join(script_dir, "src")
+if os.path.exists(src_path) and src_path not in sys.path:
+    sys.path.insert(0, src_path)
+    print(f"✅ Added {src_path} to Python path")
+
 try:
     from hunyuan3d_worker import initialize_hunyuan3d_processors, generate_3d_from_image_core
     print("✅ Hunyuan3D worker functions imported successfully")
 except ImportError as e:
     print(f"❌ Worker module error: {e}")
     print("   Check if hunyuan3d_worker.py exists and is properly configured")
+    print(f"   Checked path: {src_path}")
 
 # Test 7: Environment variables
 print("\n7. Checking environment variables...")

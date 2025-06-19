@@ -6,8 +6,9 @@ set -e
 
 echo "🚀 Simple GPU worker setup..."
 
-# Configuration
-PROJECT_DIR="/home/ubuntu/Shashwat/spark"
+# Configuration - Use script directory as base
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 # Create project structure
 echo "📁 Creating directories..."
@@ -173,7 +174,9 @@ cat > "$PROJECT_DIR/scripts/start_gpu_worker.sh" << 'EOF'
 #!/bin/bash
 set -e
 
-PROJECT_ROOT="/home/ubuntu/Shashwat/spark"
+# Get project root directory relative to script location
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 SRC_DIR="$PROJECT_ROOT/src"
 
 echo "🚀 Starting simple GPU worker..."

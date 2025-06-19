@@ -4,8 +4,9 @@
 echo "🚀 Quick GPU Worker Setup and Start"
 echo "===================================="
 
-# Navigate to project directory
-cd /home/ubuntu/Shashwat/spark
+# Navigate to project directory (script directory)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
 # Install dependencies if venv doesn't exist or is missing packages
 if [ ! -d "venv" ] || [ ! -f "venv/bin/celery" ]; then

@@ -7,8 +7,11 @@ This script verifies that all 3D generation features are properly integrated.
 import sys
 import os
 
-# Add src to path
-sys.path.append('src')
+# Add src to path relative to test file location
+test_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(test_dir)
+src_path = os.path.join(project_root, 'src')
+sys.path.append(src_path)
 
 def test_3d_integration():
     """Test that 3D generation features are properly integrated."""

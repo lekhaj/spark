@@ -39,7 +39,7 @@ sudo systemctl status celery-gpu-worker
 
 ```bash
 # Ensure you have the updated code with distributed configuration
-cd /home/ubuntu/Shashwat/spark
+cd /path/to/your/spark
 
 # Load CPU environment
 source .env.cpu
@@ -55,7 +55,7 @@ python3 -c "import redis; r = redis.Redis.from_url('redis://13.203.200.155:6379/
 
 ```bash
 # On CPU instance, start your main application
-cd /home/ubuntu/Shashwat/spark/src
+cd /path/to/your/spark/src
 python3 merged_gradio_app.py
 ```
 

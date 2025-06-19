@@ -1,5 +1,16 @@
 #!/bin/bash
-# Setup script for GPU spot instance at 13.203.200.155
+# Setup script for GPU# Verify Redis is working
+echo "Testing Redis server..."
+redis-cli ping
+
+# Get project directory - assume we're in /home/ubuntu/spark
+PROJECT_DIR="/home/ubuntu/spark"
+
+# Install Python dependencies if requirements.txt exists
+if [ -f "$PROJECT_DIR/requirements.txt" ]; then
+    echo "Installing Python dependencies..."
+    pip3 install -r "$PROJECT_DIR/requirements.txt"
+fitance at 13.203.200.155
 # This script configures the spot instance with Redis, dependencies, and auto-start services
 
 set -e  # Exit on any error
@@ -37,9 +48,9 @@ echo "Testing Redis server..."
 redis-cli ping
 
 # Install Python dependencies if requirements.txt exists
-if [ -f "/home/ubuntu/spark/requirements.txt" ]; then
+if [ -f "$PROJECT_DIR/requirements.txt" ]; then
     echo "Installing Python dependencies..."
-    pip3 install -r /home/ubuntu/spark/requirements.txt
+    pip3 install -r "$PROJECT_DIR/requirements.txt"
 fi
 
 # Install additional GPU dependencies
@@ -48,7 +59,7 @@ pip3 install torch torchvision torchaudio --index-url https://download.pytorch.o
 
 # Create environment file for GPU worker
 echo "Creating GPU worker environment file..."
-cat > /home/ubuntu/spark/.env.gpu << EOF
+cat > $PROJECT_DIR/.env.gpu << EOF
 USE_CELERY=True
 REDIS_BROKER_URL=redis://127.0.0.1:6379/0
 REDIS_RESULT_BACKEND=redis://127.0.0.1:6379/0
@@ -59,7 +70,7 @@ SPOT_INSTANCE_HANDLING_ENABLED=True
 EOF
 
 # Make the GPU worker script executable
-chmod +x /home/ubuntu/spark/scripts/start_gpu_worker.sh
+chmod +x $PROJECT_DIR/scripts/start_gpu_worker.sh
 
 # Create systemd service for Celery GPU worker
 echo "Creating systemd service for Celery GPU worker..."
@@ -73,9 +84,9 @@ Requires=redis.service
 Type=simple
 User=ubuntu
 Group=ubuntu
-EnvironmentFile=/home/ubuntu/spark/.env.gpu
-WorkingDirectory=/home/ubuntu/spark/src
-ExecStart=/home/ubuntu/spark/scripts/start_gpu_worker.sh
+EnvironmentFile=$PROJECT_DIR/.env.gpu
+WorkingDirectory=$PROJECT_DIR/src
+ExecStart=$PROJECT_DIR/scripts/start_gpu_worker.sh
 Restart=always
 RestartSec=10
 KillMode=mixed

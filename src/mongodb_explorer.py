@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# filepath: /home/ubuntu/Shashwat/spark/src/mongodb_explorer.py
+# MongoDB Database Explorer
 
 from db_helper import MongoDBHelper
 import argparse
