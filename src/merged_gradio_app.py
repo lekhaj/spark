@@ -199,9 +199,12 @@ async def handler(theme: str, structure_types_str: str, db_name: str, collection
                gr.update(choices=get_biome_names(db_name, collection_name), value=None) 
     
     if USE_CELERY:
-        # Submit task to Celery
-        task = celery_run_biome_generation.delay(theme, structure_types_str) 
-        msg = f"✅ Biome generation task submitted (ID: {task.id}). Please refresh 'View Generated Biomes' after a moment to see the new entry."
+        # Submit task to Celery CPU queue
+        task = celery_run_biome_generation.apply_async(
+            args=[theme, structure_types_str],
+            queue='cpu_tasks'  # Route to CPU instance
+        )
+        msg = f"✅ Biome generation task submitted to CPU instance (ID: {task.id}). Please refresh 'View Generated Biomes' after a moment to see the new entry."
     else:
         # Direct call for development
         try:
@@ -218,45 +221,67 @@ async def handler(theme: str, structure_types_str: str, db_name: str, collection
 
 # --- 3D Generation Functions ---
 def submit_3d_from_image_task(image_file, with_texture, output_format, model_type):
-    """Submit 3D generation from image task"""
+    """Submit 3D generation from image task - routes to GPU spot instance"""
     if image_file is None:
         return None, "Error: No image uploaded"
     
     try:
         if USE_CELERY:
-            # Submit task to Celery worker
-            task = celery_generate_3d_model_from_image.delay(
-                image_file, with_texture, output_format
+            # Ensure GPU spot instance is running before submitting task
+            gpu_status_task = celery_manage_gpu_instance.delay("ensure_running")
+            
+            # Submit the actual 3D generation task to GPU queue with spot instance retry policy
+            task = celery_generate_3d_model_from_image.apply_async(
+                args=[image_file, with_texture, output_format],
+                queue='gpu_tasks',  # Route to GPU spot instance
+                retry=True,
+                retry_policy={
+                    'max_retries': 3,
+                    'interval_start': 30,  # Wait for spot instance startup
+                    'interval_step': 60,
+                    'interval_max': 300,
+                }
             )
-            return None, f"✅ 3D generation task submitted (ID: {task.id}). 3D model will be saved to '{OUTPUT_3D_ASSETS_DIR}' on the worker."
+            return None, f"✅ 3D generation task submitted to GPU spot instance (ID: {task.id}). Processing on 13.203.200.155..."
         else:
             # Direct processing in DEV mode (mock)
             logger.info(f"Mock 3D generation from image: {image_file}")
             result_msg = mock_generate_3d_from_image(image_file, with_texture, output_format)
             return None, f"✅ (DEV Mode Mock) {result_msg}"
     except Exception as e:
-        logger.error(f"Error submitting 3D from image task: {e}", exc_info=True)
+        logger.error(f"Error submitting 3D from image task to GPU spot instance: {e}", exc_info=True)
         return None, f"❌ Error: {e}"
 
 def submit_3d_from_prompt_task(prompt, with_texture, output_format, model_type):
-    """Submit 3D generation from text prompt task (Text -> Image -> 3D pipeline)"""
+    """Submit 3D generation from text prompt task - routes to GPU spot instance"""
     if not prompt:
         return None, None, "Error: No prompt provided"
     
     try:
         if USE_CELERY:
-            # Submit task to Celery worker
-            task = celery_generate_3d_model_from_prompt.delay(
-                prompt, with_texture, output_format
+            # Ensure GPU spot instance is running
+            gpu_status_task = celery_manage_gpu_instance.delay("ensure_running")
+            
+            # Submit to GPU queue with spot instance retry policy
+            task = celery_generate_3d_model_from_prompt.apply_async(
+                args=[prompt, with_texture, output_format],
+                queue='gpu_tasks',  # Route to GPU spot instance
+                retry=True,
+                retry_policy={
+                    'max_retries': 3,
+                    'interval_start': 30,  # Wait for spot instance startup
+                    'interval_step': 60,
+                    'interval_max': 300,
+                }
             )
-            return None, None, f"✅ 3D generation pipeline task submitted (ID: {task.id}). Intermediate image and 3D model will be saved to output directories on the worker."
+            return None, None, f"✅ Text-to-3D task submitted to GPU spot instance (ID: {task.id}). Processing on 13.203.200.155..."
         else:
             # Direct processing in DEV mode (mock)
             logger.info(f"Mock 3D generation from prompt: {prompt}")
             result_msg = mock_generate_3d_from_prompt(prompt, with_texture, output_format)
             return None, None, f"✅ (DEV Mode Mock) {result_msg}"
     except Exception as e:
-        logger.error(f"Error submitting 3D from prompt task: {e}", exc_info=True)
+        logger.error(f"Error submitting text-to-3D task to GPU spot instance: {e}", exc_info=True)
         return None, None, f"❌ Error: {e}"
 
 def manage_gpu_instance_task(action):
@@ -279,11 +304,17 @@ def process_image_generation_task(prompt_or_grid_content, width, height, num_ima
     """
     if USE_CELERY:
         if is_grid_input:
-            task = celery_generate_grid_image.delay(prompt_or_grid_content, width, height, num_images, model_type)
-            return None, None, f"Task submitted (ID: {task.id}). Image will be saved to '{OUTPUT_IMAGES_DIR}' on the worker."
+            task = celery_generate_grid_image.apply_async(
+                args=[prompt_or_grid_content, width, height, num_images, model_type],
+                queue='cpu_tasks'  # Route to CPU instance
+            )
+            return None, None, f"✅ Grid processing task submitted to CPU instance (ID: {task.id}). Image will be saved to '{OUTPUT_IMAGES_DIR}' on the worker."
         else:
-            task = celery_generate_text_image.delay(prompt_or_grid_content, width, height, num_images, model_type)
-            return None, f"Task submitted (ID: {task.id}). Image will be saved to '{OUTPUT_IMAGES_DIR}' on the worker."
+            task = celery_generate_text_image.apply_async(
+                args=[prompt_or_grid_content, width, height, num_images, model_type],
+                queue='cpu_tasks'  # Route to CPU instance
+            )
+            return None, f"✅ Text-to-image task submitted to CPU instance (ID: {task.id}). Image will be saved to '{OUTPUT_IMAGES_DIR}' on the worker."
     else:
         # Direct processing in DEV mode
         if _dev_pipeline is None: # Initialize if not already
@@ -554,8 +585,11 @@ def submit_batch_process_mongodb_prompts_task_ui(db_name=MONGO_DB_NAME, collecti
     logger.info(f"Processing batch processing task for {limit} prompts from {collection_name}.")
     
     if USE_CELERY:
-        task = celery_batch_process_mongodb_prompts_task.delay(db_name, collection_name, limit, width, height, model_type, update_db)
-        return f"Batch processing task submitted (ID: {task.id}). Results will be saved to '{OUTPUT_IMAGES_DIR}' on the worker."
+        task = celery_batch_process_mongodb_prompts_task.apply_async(
+            args=[db_name, collection_name, limit, width, height, model_type, update_db],
+            queue='cpu_tasks'  # Route to CPU instance
+        )
+        return f"✅ Batch processing task submitted to CPU instance (ID: {task.id}). Results will be saved to '{OUTPUT_IMAGES_DIR}' on the worker."
     else:
         # Direct batch processing in DEV mode
         try:
