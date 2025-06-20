@@ -181,7 +181,8 @@ CELERY_SPOT_INSTANCE_RETRY_POLICY = {
 
 # --- Hunyuan3D Configuration ---
 # Hunyuan3D Model Configuration - Updated for 2.1
-HUNYUAN3D_MODEL_PATH = os.getenv('HUNYUAN3D_MODEL_PATH', 'tencent/Hunyuan3D-2.1')
+# Use local cached model path since we have .ckpt file instead of .safetensors
+HUNYUAN3D_MODEL_PATH = os.getenv('HUNYUAN3D_MODEL_PATH', os.path.expanduser('~/.cache/hy3dgen/tencent/Hunyuan3D-2.1'))
 HUNYUAN3D_SUBFOLDER = os.getenv('HUNYUAN3D_SUBFOLDER', 'hunyuan3d-dit-v2-1')
 HUNYUAN3D_TEXGEN_MODEL_PATH = os.getenv('HUNYUAN3D_TEXGEN_MODEL_PATH', 'tencent/Hunyuan3D-2.1')
 

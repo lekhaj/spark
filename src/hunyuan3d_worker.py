@@ -41,6 +41,19 @@ def _fix_python_path():
             if hunyuan_dir not in sys.path:
                 sys.path.insert(0, hunyuan_dir)
                 print(f"Added {hunyuan_dir} to Python path")
+            
+            # Also add the specific subdirectories for Hunyuan3D-2.1
+            hy3dshape_path = os.path.join(hunyuan_dir, "hy3dshape")
+            hy3dpaint_path = os.path.join(hunyuan_dir, "hy3dpaint")
+            
+            if os.path.exists(hy3dshape_path) and hy3dshape_path not in sys.path:
+                sys.path.insert(0, hy3dshape_path)
+                print(f"Added {hy3dshape_path} to Python path")
+                
+            if os.path.exists(hy3dpaint_path) and hy3dpaint_path not in sys.path:
+                sys.path.insert(0, hy3dpaint_path)
+                print(f"Added {hy3dpaint_path} to Python path")
+                
             return hunyuan_dir
     
     return None
@@ -144,14 +157,18 @@ def initialize_hunyuan3d_processors():
         # Initialize shape generation pipeline for 2.1
         logger.info(f"🎯 Loading shape generation model from: {HUNYUAN3D_MODEL_PATH}")
         try:
-            # Updated import path for 2.1
-            sys.path.insert(0, './Hunyuan3D-2.1/hy3dshape')
+            # Updated import path for 2.1 - use absolute path
+            # The path should already be set by _fix_python_path(), but let's ensure it
+            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            hy3dshape_path = os.path.join(project_root, 'Hunyuan3D-2.1', 'hy3dshape')
+            if hy3dshape_path not in sys.path:
+                sys.path.insert(0, hy3dshape_path)
             from hy3dshape.pipelines import Hunyuan3DDiTFlowMatchingPipeline
             
             _hunyuan_i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
                 HUNYUAN3D_MODEL_PATH,
                 subfolder=HUNYUAN3D_SUBFOLDER,
-                use_safetensors=True,
+                use_safetensors=False,  # Changed to False since we have .ckpt file
                 device=device,
             )
             
@@ -185,8 +202,11 @@ def initialize_hunyuan3d_processors():
         if HUNYUAN3D_TEXGEN_MODEL_PATH:
             logger.info(f"🎨 Loading PBR texture generation model from: {HUNYUAN3D_TEXGEN_MODEL_PATH}")
             try:
-                # Updated import path for 2.1
-                sys.path.insert(0, './Hunyuan3D-2.1/hy3dpaint')
+                # Updated import path for 2.1 - use absolute path
+                project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                hy3dpaint_path = os.path.join(project_root, 'Hunyuan3D-2.1', 'hy3dpaint')
+                if hy3dpaint_path not in sys.path:
+                    sys.path.insert(0, hy3dpaint_path)
                 from textureGenPipeline import Hunyuan3DPaintPipeline, Hunyuan3DPaintConfig
                 
                 # Create PBR-enabled configuration

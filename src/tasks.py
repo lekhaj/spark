@@ -9,29 +9,13 @@ from PIL import Image
 from datetime import datetime
 import pymongo
 from celery.signals import worker_process_init
+from celery.utils.log import get_task_logger
 import uuid
 
-
-from hunyuan3d_worker import (
-            initialize_hunyuan3d_processors, 
-            generate_3d_from_image_core,
-            get_model_info,
-            cleanup_models
-        )
+# Initialize task logger
+task_logger = get_task_logger(__name__)
 
 
-# Initialize logging
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-task_logger = logging.getLogger('celery_tasks')
-
-# Initialize default values
-DEFAULT_TEXT_MODEL = "flux"
-DEFAULT_GRID_MODEL = "flux"
-OUTPUT_DIR = "/tmp/output"
-OUTPUT_IMAGES_DIR = "/tmp/output/images"
-OUTPUT_3D_ASSETS_DIR = "/tmp/output/3d_assets"
-MONGO_DB_NAME = "biome_db"
-MONGO_BIOME_COLLECTION = "biomes"
 
 # Default implementations for missing modules
 class DummyProcessor:
@@ -91,6 +75,48 @@ generate_biome = dummy_generate_biome
 get_aws_manager = dummy_get_aws_manager
 initialize_hunyuan3d_processors = dummy_initialize_hunyuan3d_processors
 generate_3d_from_image_core = dummy_generate_3d_from_image_core
+
+import sys
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(current_dir)
+hunyuan_shape_path = os.path.join(project_root, "Hunyuan3D-2.1", "hy3dshape")
+hunyuan_paint_path = os.path.join(project_root, "Hunyuan3D-2.1", "hy3dpaint")
+
+if os.path.exists(hunyuan_shape_path):
+    sys.path.insert(0, hunyuan_shape_path)
+if os.path.exists(hunyuan_paint_path):
+    sys.path.insert(0, hunyuan_paint_path)
+
+# Try importing the specific Hunyuan3D 2.1 modules
+from hy3dshape.pipelines import Hunyuan3DDiTFlowMatchingPipeline
+from hy3dshape.postprocessors import MeshSimplifier, mesh_normalize
+from hy3dshape.rembg import BackgroundRemover
+from textureGenPipeline import Hunyuan3DPaintPipeline, Hunyuan3DPaintConfig
+import trimesh
+
+task_logger.info("✓ Hunyuan3D-2.1 core modules imported successfully")
+
+# Try importing the worker functions
+from hunyuan3d_worker import (
+    initialize_hunyuan3d_processors, 
+    generate_3d_from_image_core,
+    get_model_info,
+    cleanup_models
+)
+
+# Initialize logging
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+task_logger = logging.getLogger('celery_tasks')
+
+# Initialize default values
+DEFAULT_TEXT_MODEL = "stability"
+DEFAULT_GRID_MODEL = "stability"
+OUTPUT_DIR = "/tmp/output"
+OUTPUT_IMAGES_DIR = "/tmp/output/images"
+OUTPUT_3D_ASSETS_DIR = "/tmp/output/3d_assets"
+MONGO_DB_NAME = "biome_db"
+MONGO_BIOME_COLLECTION = "biomes"
+
 
 # Try to import real modules
 try:
@@ -161,33 +187,33 @@ except ImportError as e:
 try:
     if torch is not None:
         # Add Hunyuan3D-2.1 paths to sys.path for proper imports
-        import sys
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        project_root = os.path.dirname(current_dir)
-        hunyuan_shape_path = os.path.join(project_root, "Hunyuan3D-2.1", "hy3dshape")
-        hunyuan_paint_path = os.path.join(project_root, "Hunyuan3D-2.1", "hy3dpaint")
+        # import sys
+        # current_dir = os.path.dirname(os.path.abspath(__file__))
+        # project_root = os.path.dirname(current_dir)
+        # hunyuan_shape_path = os.path.join(project_root, "Hunyuan3D-2.1", "hy3dshape")
+        # hunyuan_paint_path = os.path.join(project_root, "Hunyuan3D-2.1", "hy3dpaint")
         
-        if os.path.exists(hunyuan_shape_path):
-            sys.path.insert(0, hunyuan_shape_path)
-        if os.path.exists(hunyuan_paint_path):
-            sys.path.insert(0, hunyuan_paint_path)
+        # if os.path.exists(hunyuan_shape_path):
+        #     sys.path.insert(0, hunyuan_shape_path)
+        # if os.path.exists(hunyuan_paint_path):
+        #     sys.path.insert(0, hunyuan_paint_path)
         
-        # Try importing the specific Hunyuan3D 2.1 modules
-        from hy3dshape.pipelines import Hunyuan3DDiTFlowMatchingPipeline
-        from hy3dshape.postprocessors import MeshSimplifier, mesh_normalize
-        from hy3dshape.rembg import BackgroundRemover
-        from textureGenPipeline import Hunyuan3DPaintPipeline, Hunyuan3DPaintConfig
-        import trimesh
+        # # Try importing the specific Hunyuan3D 2.1 modules
+        # from hy3dshape.pipelines import Hunyuan3DDiTFlowMatchingPipeline
+        # from hy3dshape.postprocessors import MeshSimplifier, mesh_normalize
+        # from hy3dshape.rembg import BackgroundRemover
+        # from textureGenPipeline import Hunyuan3DPaintPipeline, Hunyuan3DPaintConfig
+        # import trimesh
         
-        task_logger.info("✓ Hunyuan3D-2.1 core modules imported successfully")
+        # task_logger.info("✓ Hunyuan3D-2.1 core modules imported successfully")
         
-        # Try importing the worker functions
-        from hunyuan3d_worker import (
-            initialize_hunyuan3d_processors, 
-            generate_3d_from_image_core,
-            get_model_info,
-            cleanup_models
-        )
+        # # Try importing the worker functions
+        # from hunyuan3d_worker import (
+        #     initialize_hunyuan3d_processors, 
+        #     generate_3d_from_image_core,
+        #     get_model_info,
+        #     cleanup_models
+        # )
         
         task_logger.info("✓ Hunyuan3D-2.1 worker functions imported successfully")
         

@@ -14,11 +14,18 @@
 
 import os
 import cv2
-import bpy
 import math
 import numpy as np
 from io import StringIO
 from typing import Optional, Tuple, Dict, Any
+
+try:
+    import bpy
+    BPY_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: bpy not available: {e}")
+    BPY_AVAILABLE = False
+    bpy = None
 
 
 def _safe_extract_attribute(obj: Any, attr_path: str, default: Any = None) -> Any:
