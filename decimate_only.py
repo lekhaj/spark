@@ -21,20 +21,6 @@ models_folder = "/home/ubuntu/input"
 output_folder = "/home/ubuntu/output"
 mongo_uri = "mongodb://ec2-13-203-200-155.ap-south-1.compute.amazonaws.com:27017"
 
-def get_latest_glb_from_s3_shallow(bucket, prefix):
-    s3 = boto3.client('s3')
-    paginator = s3.get_paginator('list_objects_v2')
-    pages = paginator.paginate(Bucket=bucket, Prefix=prefix + '/')
-    depth = prefix.count('/') + 1
-    candidates = []
-    for page in pages:
-        for obj in page.get('Contents', []):
-            key = obj['Key']
-            if key.lower().endswith('.glb') and key.count('/') == depth:
-                candidates.append((key, obj['LastModified']))
-    if not candidates:
-        return None
-    return max(candidates, key=lambda x: x[1])[0]
 
 def clear_scene():
     bpy.ops.object.select_all(action='SELECT')
@@ -52,13 +38,14 @@ def import_glb(fp):
 
 def decimate_mesh(obj, tf, mode, p):
     fcount = len(obj.data.polygons)
-    if fcount <= tf: return
+    if fcount <= tf:
+        return
     bpy.ops.object.select_all(action='DESELECT')
     obj.select_set(True)
     bpy.context.view_layer.objects.active = obj
     m = obj.modifiers.new("Decimate", "DECIMATE")
     if mode == "COLLAPSE":
-        m.decimate_type, m.ratio = "COLLAPSE", min(1.0, tf/fcount)
+        m.decimate_type, m.ratio = "COLLAPSE", min(1.0, tf / fcount)
     elif mode == "UNSUBDIV":
         m.decimate_type, m.iterations = "UNSUBDIV", int(p)
     else:
@@ -99,42 +86,50 @@ def export_fbx(path, obj):
 
 def main():
     argv = sys.argv
-    if "--" not in argv: return
-    args = argv[argv.index("--")+1:]
-    if len(args) < 3: return
+    if "--" not in argv:
+        return
+    args = argv[argv.index("--") + 1:]
+    if len(args) < 3:
+        return
     tf, mode, param = int(args[0]), args[1].upper(), float(args[2])
 
     coll = get_mongo_collection(mongo_uri)
     clear_scene()
 
-    latest_key = get_latest_glb_from_s3_shallow(bucket_name, s3_prefix)
-    if not latest_key:
-        update_asset_status(coll, None, "error", message="No GLB in root folder")
+    pending_assets = list(coll.find({"status": "pending"}))
+    if not pending_assets:
+        print("[Info] No pending assets in MongoDB")
         return
 
-    asset_id = os.path.splitext(os.path.basename(latest_key))[0]
-    local_glb = os.path.join(models_folder, os.path.basename(latest_key))
-    download_from_s3(bucket_name, latest_key, local_glb)
+    for doc in pending_assets:
+        asset_id = doc["_id"]
+        s3_key = doc.get("s3_key", f"{s3_prefix}/{asset_id}.glb")
+        local_glb = os.path.join(models_folder, os.path.basename(s3_key))
 
-    obj = import_glb(local_glb)
-    if not obj:
-        update_asset_status(coll, asset_id, "error", message="Import failed")
-        return
+        try:
+            print(f"[MongoDB] Processing asset {asset_id}")
+            download_from_s3(bucket_name, s3_key, local_glb)
+            obj = import_glb(local_glb)
+            if not obj:
+                raise Exception("GLB Import failed")
 
-    update_asset_status(coll, asset_id, "processing")
+            update_asset_status(coll, asset_id, "processing")
 
-    decimate_mesh(obj, tf, mode, param)
-    set_origin_to_bottom_face_cursor(obj)
+            decimate_mesh(obj, tf, mode, param)
+            set_origin_to_bottom_face_cursor(obj)
 
-    out_name = f"{asset_id}_decimated.fbx"
-    local_fbx = os.path.join(output_folder, out_name)
-    export_fbx(local_fbx, obj)
+            out_name = f"{asset_id}_decimated.fbx"
+            local_fbx = os.path.join(output_folder, out_name)
+            export_fbx(local_fbx, obj)
 
-    s3_dest = f"{s3_prefix}/{out_name}"
-    upload_to_s3(bucket_name, s3_dest, local_fbx)
+            s3_dest = f"{s3_prefix}/{out_name}"
+            upload_to_s3(bucket_name, s3_dest, local_fbx)
 
-    final_url = f"s3://{bucket_name}/{s3_dest}"
-    update_asset_status(coll, asset_id, "completed", output_url=final_url)
+            final_url = f"s3://{bucket_name}/{s3_dest}"
+            update_asset_status(coll, asset_id, "completed", output_url=final_url)
+        except Exception as e:
+            print(f"[Error] Failed to process {asset_id}: {str(e)}")
+            update_asset_status(coll, asset_id, "error", message=str(e))
 
-if __name__=="__main__":
+if __name__ == "__main__":
     main()
