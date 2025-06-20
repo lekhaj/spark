@@ -6,7 +6,6 @@ import glob
 from mathutils import Vector
 
 # Bring in S3 and Mongo helpers
-import sys
 sys.path.append(os.path.dirname(__file__))
 from io_helper_connect import (
     download_from_s3,
@@ -25,7 +24,7 @@ template_mesh_name = "villager"
 bucket             = "sparkassets"
 mongo_uri          = "mongodb://ec2-13-203-200-155.ap-south-1.compute.amazonaws.com:27017"
 
-# Bias per bone
+# Bias per bone for interpolation
 bias_map = {
     'neck1': 0.75, 'neck2': 0.75,
     'shoulder.L': 0.6, 'upper_arm.L': 0.7, 'forearm.L': 0.65,
@@ -33,6 +32,7 @@ bias_map = {
     'thigh.L': 0.6, 'shin.L': 0.65,
     'thigh.R': 0.6, 'shin.R': 0.65,
 }
+
 def get_bias(name, default=0.5):
     return bias_map.get(name, default)
 
@@ -72,14 +72,11 @@ def decimate_mesh(obj, tf, mode, param):
     bpy.context.view_layer.objects.active = obj
     m = obj.modifiers.new("Decimate", "DECIMATE")
     if mode == "COLLAPSE":
-        m.decimate_type = "COLLAPSE"
-        m.ratio = min(1.0, tf/faces)
+        m.decimate_type, m.ratio = "COLLAPSE", min(1.0, tf/faces)
     elif mode == "UNSUBDIV":
-        m.decimate_type = "UNSUBDIV"
-        m.iterations = int(param)
+        m.decimate_type, m.iterations = "UNSUBDIV", int(param)
     else:
-        m.decimate_type = "PLANAR"
-        m.angle_limit = param
+        m.decimate_type, m.angle_limit = "PLANAR", param
     bpy.ops.object.modifier_apply(modifier=m.name)
 
 
@@ -132,15 +129,18 @@ def align_by_bbox(template, target):
 def align_bones(arm, mesh):
     bpy.context.view_layer.objects.active = arm
     bpy.ops.object.mode_set(mode='EDIT')
+    # preserve original bone direction/length
     for bone in arm.data.edit_bones:
         cen = get_vgroup_centroid(mesh, bone.name)
         if not cen: continue
         local = arm.matrix_world.inverted() @ cen
-        bias = get_bias(bone.name)
+        bias  = get_bias(bone.name)
         direction = (bone.tail - bone.head).normalized()
-        length = (bone.tail - bone.head).length
-        bone.head = bone.head.lerp(local, bias)
-        bone.tail = bone.head + direction * length
+        length    = (bone.tail - bone.head).length
+        # move head towards centroid
+        new_head = bone.head.lerp(local, bias)
+        bone.head = new_head
+        bone.tail = new_head + direction * length
     bpy.ops.object.mode_set(mode='OBJECT')
 
 
@@ -186,7 +186,6 @@ def export_fbx(path, mesh, arm):
 
 
 def main():
-    # Setup
     collection = get_mongo_collection(mongo_uri)
     latest = get_latest_glb_from_s3(bucket, prefix="3d_assets/")
     if not latest: return
@@ -200,14 +199,14 @@ def main():
     target   = import_glb(local)
     if not all([template, arm, target]): return
 
-    # Freeze transforms
+    # freeze transforms
     for o in (template, arm):
         bpy.ops.object.select_all(action='DESELECT')
         o.select_set(True)
         bpy.context.view_layer.objects.active = o
         bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
 
-    # Align mesh & armature
+    # align mesh & armature
     delta = align_by_bbox(template, target)
     arm.location += delta
     bpy.ops.object.select_all(action='DESELECT')
@@ -215,23 +214,23 @@ def main():
     bpy.context.view_layer.objects.active = arm
     bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
 
-    # Decimation
+    # decimation args
     argv = sys.argv[sys.argv.index("--")+1:]
     tf, mode, param = int(argv[0]), argv[1].upper(), float(argv[2])
     decimate_mesh(target, tf, mode, param)
 
-    # Weights
+    # weight transfer
     for vg in template.vertex_groups:
         if vg.name not in target.vertex_groups:
             target.vertex_groups.new(name=vg.name)
     transfer_weights(template, target)
 
-    # Rigging
+    # rig
     align_bones(arm, target)
     parent_to_armature(target, arm)
     set_origin_to_bottom_face(target)
 
-    # Export & update
+    # export & update
     out = os.path.join(output_folder, f"{os.path.splitext(lid)[0]}_rigged.fbx")
     export_fbx(out, target, arm)
     url = upload_to_s3(bucket, f"processed/{os.path.splitext(lid)[0]}_rigged.fbx", out)
