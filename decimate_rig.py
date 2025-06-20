@@ -4,8 +4,8 @@ import sys
 import glob
 import bmesh
 from mathutils import Vector
-sys.path.append(os.path.dirname(__file__))
 
+sys.path.append(os.path.dirname(__file__))
 from io_helper_connect import (
     download_from_s3,
     upload_to_s3,
@@ -49,7 +49,6 @@ def clear_scene():
     if hasattr(bpy.ops.outliner, "orphans_purge"):
         bpy.ops.outliner.orphans_purge(do_local_ids=True, do_linked_ids=True, do_recursive=True)
 
-
 def import_glb(fp):
     bpy.ops.import_scene.gltf(filepath=fp)
     for o in bpy.context.selected_objects:
@@ -57,7 +56,6 @@ def import_glb(fp):
             bpy.context.view_layer.objects.active = o
             return o
     return None
-
 
 def append_object(blend, name):
     with bpy.data.libraries.load(blend, link=False) as (src, dst):
@@ -69,7 +67,6 @@ def append_object(blend, name):
         obj.select_set(True)
     return obj
 
-
 def decimate_mesh(obj, tf, mode, param):
     faces = len(obj.data.polygons)
     if faces <= tf:
@@ -78,63 +75,60 @@ def decimate_mesh(obj, tf, mode, param):
     obj.select_set(True)
     bpy.context.view_layer.objects.active = obj
     m = obj.modifiers.new("Decimate", "DECIMATE")
-    if mode == "COLLAPSE": m.decimate_type, m.ratio = "COLLAPSE", min(1.0, tf/faces)
-    elif mode == "UNSUBDIV": m.decimate_type, m.iterations = "UNSUBDIV", int(param)
-    else: m.decimate_type, m.angle_limit = "PLANAR", param
+    if mode == "COLLAPSE":
+        m.decimate_type, m.ratio = "COLLAPSE", min(1.0, tf/faces)
+    elif mode == "UNSUBDIV":
+        m.decimate_type, m.iterations = "UNSUBDIV", int(param)
+    else:
+        m.decimate_type, m.angle_limit = "PLANAR", param
     bpy.ops.object.modifier_apply(modifier=m.name)
-
 
 def transfer_weights(src, dst):
     bpy.ops.object.select_all(action='DESELECT')
-    src.select_set(True); dst.select_set(True)
+    src.select_set(True)
+    dst.select_set(True)
     bpy.context.view_layer.objects.active = dst
-    bpy.ops.object.mode_set(mode='OBJECT')
     dt = dst.modifiers.new("WeightTransfer", "DATA_TRANSFER")
     dt.object, dt.use_vert_data = src, True
     dt.data_types_verts = {'VGROUP_WEIGHTS'}
     dt.vert_mapping = 'NEAREST'
     bpy.ops.object.modifier_apply(modifier=dt.name)
 
-
 def get_vgroup_centroid(mesh, name):
     vg = mesh.vertex_groups.get(name)
-    if not vg: return None
+    if not vg:
+        return None
     total, pos = 0.0, Vector()
     for v in mesh.data.vertices:
         for g in v.groups:
-            if mesh.vertex_groups[g.group].name == name and g.weight>0:
+            if mesh.vertex_groups[g.group].name == name and g.weight > 0:
                 pos += mesh.matrix_world @ v.co * g.weight
                 total += g.weight
-    return pos/total if total>0 else None
-
+    return (pos / total) if total > 0 else None
 
 def get_bb_corners(obj):
     return [obj.matrix_world @ Vector(c) for c in obj.bound_box]
 
-
 def get_bb_bottom_center(corners):
     minz = min(c.z for c in corners)
-    pts = [c for c in corners if abs(c.z-minz)<1e-6]
-    return Vector(((min(p.x for p in pts)+max(p.x for p in pts))*0.5,
-                   (min(p.y for p in pts)+max(p.y for p in pts))*0.5,
-                   minz))
-
+    pts = [c for c in corners if abs(c.z - minz) < 1e-6]
+    return Vector((
+        (min(p.x for p in pts) + max(p.x for p in pts)) * 0.5,
+        (min(p.y for p in pts) + max(p.y for p in pts)) * 0.5,
+        minz
+    ))
 
 def align_centers(template, target):
-    # Align X/Y centers based on bounding boxes
     t_c = get_bb_bottom_center(get_bb_corners(template))
     o_c = get_bb_bottom_center(get_bb_corners(target))
-    # compute x,y differences
     dx = t_c.x - o_c.x
     dy = t_c.y - o_c.y
     target.location.x += dx
     target.location.y += dy
-    # apply transforms after centering
     bpy.ops.object.select_all(action='DESELECT')
     target.select_set(True)
     bpy.context.view_layer.objects.active = target
     bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
-
 
 def align_on_ground(template, target):
     tbb = get_bb_bottom_center(get_bb_corners(template))
@@ -145,25 +139,31 @@ def align_on_ground(template, target):
     bpy.context.view_layer.objects.active = target
     bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
 
-
 def align_bones(arm, target):
     bpy.context.view_layer.objects.active = arm
     bpy.ops.object.mode_set(mode='EDIT')
     for bone in arm.data.edit_bones:
         cen = get_vgroup_centroid(target, bone.name)
-        if not cen: continue
+        if not cen:
+            continue
         local = arm.matrix_world.inverted() @ cen
-        bone.head = bone.head.lerp(local, get_bias(bone.name))
-        bone.tail = bone.tail.lerp(local, get_bias(bone.name))
-    bpy.ops.object.mode_set(mode='OBJECT')
+        bias = get_bias(bone.name)
 
+        direction = (bone.tail - bone.head).normalized()
+        length    = (bone.tail - bone.head).length
+
+        new_head = bone.head.lerp(local, bias)
+        bone.head = new_head
+        bone.tail = new_head + direction * length
+
+    bpy.ops.object.mode_set(mode='OBJECT')
 
 def parent_to_armature(mesh, arm):
     bpy.ops.object.select_all(action='DESELECT')
-    mesh.select_set(True); arm.select_set(True)
+    mesh.select_set(True)
+    arm.select_set(True)
     bpy.context.view_layer.objects.active = arm
     bpy.ops.object.parent_set(type='ARMATURE_NAME')
-
 
 def set_origin_to_bottom_face(obj):
     bpy.ops.object.select_all(action='DESELECT')
@@ -177,13 +177,13 @@ def set_origin_to_bottom_face(obj):
     bpy.ops.object.mode_set(mode='OBJECT')
     bpy.context.scene.cursor.location = cen
     bpy.ops.object.origin_set(type='ORIGIN_CURSOR')
-    obj.location = (0,0,0)
-
+    obj.location = (0, 0, 0)
 
 def export_fbx(path, mesh, arm):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     bpy.ops.object.select_all(action='DESELECT')
-    mesh.select_set(True); arm.select_set(True)
+    mesh.select_set(True)
+    arm.select_set(True)
     bpy.context.view_layer.objects.active = mesh
     bpy.ops.export_scene.fbx(
         filepath=path,
@@ -198,40 +198,52 @@ def export_fbx(path, mesh, arm):
         axis_up='Y'
     )
 
-
 def main():
     collection = get_mongo_collection(mongo_uri)
     latest = get_latest_glb_from_s3(bucket, prefix="3d_assets/")
-    if not latest: return
+    if not latest:
+        return
+
     lid = os.path.basename(latest)
     local = os.path.join(input_folder, lid)
     download_from_s3(bucket, latest, local)
 
     clear_scene()
     template = append_object(template_blend, template_mesh_name)
-    arm = append_object(template_blend, arm_name)
-    target = import_glb(local)
-    if not all([template, arm, target]): return
+    arm      = append_object(template_blend, arm_name)
+    target   = import_glb(local)
+    if not all([template, arm, target]):
+        return
 
+    # Apply transforms on template and arm before moving
     for o in (template, arm):
         bpy.ops.object.select_all(action='DESELECT')
         o.select_set(True)
         bpy.context.view_layer.objects.active = o
         bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
 
+    # Align mesh and armature to ground/template
     align_on_ground(template, target)
-    argv = sys.argv[sys.argv.index("--")+1:]
+    align_on_ground(template, arm)
+    # (optional) align_centers(template, arm)
+
+    # Read decimation params
+    argv = sys.argv[sys.argv.index("--") + 1:]
     tf, mode, param = int(argv[0]), argv[1].upper(), float(argv[2])
+
     decimate_mesh(target, tf, mode, param)
 
+    # Ensure all vgroups exist then transfer weights
     for vg in template.vertex_groups:
         if vg.name not in target.vertex_groups:
             target.vertex_groups.new(name=vg.name)
     transfer_weights(template, target)
+
     align_bones(arm, target)
     parent_to_armature(target, arm)
     set_origin_to_bottom_face(target)
 
+    # Export, upload, and update status
     out = os.path.join(output_folder, f"{os.path.splitext(lid)[0]}_rigged.fbx")
     export_fbx(out, target, arm)
 
