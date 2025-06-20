@@ -1,5 +1,5 @@
 # src/tasks.py
-# Updated for Hunyuan3D-2.1 compatibility
+# Updated for Hunyuan3D-2.1 compatibility with S3 integration
 
 import os
 import logging
@@ -11,6 +11,7 @@ import pymongo
 from celery.signals import worker_process_init
 from celery.utils.log import get_task_logger
 import uuid
+import tempfile
 
 # Initialize task logger
 task_logger = get_task_logger(__name__)
@@ -531,14 +532,23 @@ def batch_process_mongodb_prompts_task(db_name: str, collection_name: str, limit
     return {"status": "success", "message": "\n".join(results)}
 
 @app.task(name='generate_3d_model_from_image', bind=True)
-def generate_3d_model_from_image(self, image_path, with_texture=False, output_format='glb'):
+def generate_3d_model_from_image(self, image_s3_key_or_path, with_texture=False, output_format='glb', doc_id=None, update_collection=None):
     """
     Celery task to generate a 3D model from an image using Hunyuan3D.
+    Now supports S3 integration for both input and output.
+    
+    Args:
+        image_s3_key_or_path: S3 key or local path to image
+        with_texture: Whether to generate textures
+        output_format: Output format (glb, obj, etc.)
+        doc_id: MongoDB document ID to update with results
+        update_collection: Collection name to update
     """
-    task_logger.info(f"🚀 Starting 3D model generation task")
-    task_logger.info(f"   Image path: {image_path}")
+    task_logger.info("🚀 Starting 3D model generation task")
+    task_logger.info(f"   Image path/key: {image_s3_key_or_path}")
     task_logger.info(f"   With texture: {with_texture}")
     task_logger.info(f"   Output format: {output_format}")
+    task_logger.info(f"   MongoDB doc_id: {doc_id}")
     task_logger.info(f"   Hunyuan3D modules loaded: {TASK_3D_MODULES_LOADED}")
     
     if not TASK_3D_MODULES_LOADED:
@@ -546,12 +556,42 @@ def generate_3d_model_from_image(self, image_path, with_texture=False, output_fo
         task_logger.error(f"❌ {error_msg}")
         return {"status": "error", "message": error_msg}
     
-    # Initialize processors if needed
+    # Initialize S3 and MongoDB helpers
+    s3_mgr = get_s3_manager()
+    mongo_mgr = get_mongo_helper()
+    
+    local_image_path = None
+    temp_dir = None
+    
     try:
+        # Step 1: Download image from S3 if needed
+        self.update_state(state='PROGRESS', meta={'progress': 5, 'status': 'Downloading image from S3...'})
+        
+        if image_s3_key_or_path.startswith('s3://') or not os.path.exists(image_s3_key_or_path):
+            # Treat as S3 key, download to temp location
+            if s3_mgr is None:
+                return {"status": "error", "message": "S3 manager not available for image download"}
+            
+            import tempfile
+            temp_dir = tempfile.mkdtemp()
+            s3_key = image_s3_key_or_path.replace('s3://', '').split('/', 1)[1] if image_s3_key_or_path.startswith('s3://') else image_s3_key_or_path
+            
+            download_result = s3_mgr.download_image(s3_key, temp_dir)
+            if download_result.get("status") != "success":
+                return {"status": "error", "message": f"Failed to download image from S3: {download_result.get('message')}"}
+            
+            local_image_path = download_result["local_path"]
+            task_logger.info(f"✅ Downloaded image from S3: {s3_key} -> {local_image_path}")
+        else:
+            # Use local path directly
+            local_image_path = image_s3_key_or_path
+            task_logger.info(f"✅ Using local image path: {local_image_path}")
+        
+        # Step 2: Initialize processors if needed
         task_logger.info("🔧 Checking Hunyuan3D processor initialization...")
         if _hunyuan_i23d_worker is None:
             task_logger.info("⚙️ Initializing Hunyuan3D processors...")
-            self.update_state(state='PROGRESS', meta={'progress': 5, 'status': 'Initializing Hunyuan3D processors...'})
+            self.update_state(state='PROGRESS', meta={'progress': 10, 'status': 'Initializing Hunyuan3D processors...'})
             
             if not initialize_hunyuan3d_processors():
                 error_msg = "Failed to initialize Hunyuan3D processors."
@@ -561,46 +601,136 @@ def generate_3d_model_from_image(self, image_path, with_texture=False, output_fo
             task_logger.info("✅ Hunyuan3D processors initialized successfully")
         else:
             task_logger.info("✅ Hunyuan3D processors already initialized")
-    except Exception as e:
-        error_msg = f"Error during processor initialization: {str(e)}"
-        task_logger.error(f"❌ {error_msg}")
-        return {"status": "error", "message": error_msg}
-    
-    # Generate 3D model
-    try:
+        
+        # Step 3: Generate 3D model
         task_logger.info("🎯 Starting 3D model generation...")
-        self.update_state(state='PROGRESS', meta={'progress': 10, 'status': 'Generating 3D model...'})
+        self.update_state(state='PROGRESS', meta={'progress': 20, 'status': 'Generating 3D model...'})
         
         result = generate_3d_from_image_core(
-            image_path, 
+            local_image_path, 
             with_texture, 
             output_format, 
             progress_callback=lambda p, s: self.update_state(
                 state='PROGRESS', 
-                meta={'progress': min(p, 95), 'status': s}
+                meta={'progress': 20 + int(p * 0.6), 'status': s}  # 20-80% range
             )
         )
         
-        if result.get('status') == 'success':
-            task_logger.info(f"✅ 3D model generated successfully: {result.get('model_path', 'No path returned')}")
-            self.update_state(state='PROGRESS', meta={'progress': 100, 'status': 'Completed successfully'})
-        else:
+        if result.get('status') != 'success':
             task_logger.error(f"❌ 3D model generation failed: {result.get('message', 'Unknown error')}")
+            return result
+        
+        # Step 4: Upload 3D assets to S3
+        self.update_state(state='PROGRESS', meta={'progress': 85, 'status': 'Uploading 3D assets to S3...'})
+        
+        model_path = result.get('model_path')
+        s3_urls = {}
+        
+        if s3_mgr and model_path:
+            # Extract source image name for consistent naming
+            source_image_name = None
+            if image_s3_key_or_path:
+                if image_s3_key_or_path.startswith('s3://') or not os.path.exists(image_s3_key_or_path):
+                    # S3 key - extract filename
+                    source_image_name = s3_mgr.get_filename_from_s3_key(image_s3_key_or_path)
+                else:
+                    # Local path - extract filename
+                    source_image_name = os.path.basename(image_s3_key_or_path)
             
+            upload_result = s3_mgr.upload_3d_asset(model_path, "generated", source_image_name)
+            
+            if upload_result.get("status") == "success":
+                s3_urls['model'] = upload_result.get("s3_url")
+                result['s3_model_url'] = s3_urls['model']
+                task_logger.info(f"✅ Uploaded 3D model to S3: {s3_urls['model']}")
+            else:
+                task_logger.warning(f"Failed to upload 3D model to S3: {upload_result.get('message')}")
+        
+        # Step 5: Update MongoDB with results and status
+        if mongo_mgr and doc_id and update_collection:
+            self.update_state(state='PROGRESS', meta={'progress': 95, 'status': 'Updating database...'})
+            
+            try:
+                from config import MONGO_DB_NAME
+                
+                # Initial update with pending status
+                initial_update_data = {
+                    "model_generation_started": True,
+                    "model_generation_started_at": datetime.now(),
+                    "model_format": output_format,
+                    "model_with_texture": with_texture,
+                    "status": "pending"
+                }
+                
+                # Add final status and URLs - always set to pending
+                if result.get('status') == 'success':
+                    final_update_data = {
+                        "model_generated": True,
+                        "model_generated_at": datetime.now(),
+                        "model_status": "pending",  # Always set to pending
+                        "status": "pending"  # Always set to pending
+                    }
+                    
+                    if s3_urls.get('model'):
+                        final_update_data["model_s3_url"] = s3_urls['model']
+                    
+                    if result.get('model_path'):
+                        final_update_data["model_local_path"] = result['model_path']
+                    
+                    # Combine updates
+                    update_data = {**initial_update_data, **final_update_data}
+                else:
+                    # Failed generation
+                    update_data = {
+                        **initial_update_data,
+                        "model_status": "failed",
+                        "status": "failed",
+                        "error_message": result.get('message', 'Unknown error')
+                    }
+                
+                update_result = mongo_mgr.update_by_id(MONGO_DB_NAME, update_collection, doc_id, update_data)
+                task_logger.info(f"✅ Updated MongoDB document {doc_id}: {update_result} records modified")
+                result['mongodb_updated'] = True
+                result['doc_id'] = doc_id
+                
+            except Exception as e:
+                task_logger.error(f"Failed to update MongoDB: {e}")
+                result['mongodb_error'] = str(e)
+        
+        # Cleanup temp directory
+        if temp_dir and os.path.exists(temp_dir):
+            import shutil
+            shutil.rmtree(temp_dir)
+            task_logger.info("🧹 Cleaned up temporary files")
+        
+        self.update_state(state='PROGRESS', meta={'progress': 100, 'status': 'Completed successfully'})
+        task_logger.info(f"✅ 3D model generated successfully with S3 integration")
+        
         return result
         
     except Exception as e:
         error_msg = f"Error generating 3D model: {str(e)}"
         task_logger.error(f"❌ {error_msg}", exc_info=True)
+        
+        # Cleanup on error
+        if temp_dir and os.path.exists(temp_dir):
+            import shutil
+            shutil.rmtree(temp_dir)
+        
         return {"status": "error", "message": error_msg}
 
 @app.task(name='generate_3d_model_from_prompt', bind=True)
-def generate_3d_model_from_prompt(self, text_prompt, with_texture=False, output_format='glb'):
+def generate_3d_model_from_prompt(self, text_prompt, with_texture=False, output_format='glb', doc_id=None, update_collection=None):
     """
     Celery task to generate a 3D model from a text prompt using Hunyuan3D.
+    Includes S3 storage and MongoDB integration.
     """
     if not TASK_3D_MODULES_LOADED or not TASK_2D_MODULES_LOADED:
         return {"status": "error", "message": "Required modules not loaded on this worker."}
+    
+    # Initialize helpers
+    s3_mgr = get_s3_manager()
+    mongo_mgr = get_mongo_helper()
     
     try:
         task_logger.info(f"Starting text-to-3D pipeline for prompt: '{text_prompt[:50]}...'")
@@ -621,6 +751,9 @@ def generate_3d_model_from_prompt(self, text_prompt, with_texture=False, output_
         
         # Generate image from text
         task_logger.info(f"Generating image from text prompt: '{text_prompt[:50]}'")
+        if _pipeline is None:
+            return {"status": "error", "message": "Pipeline not initialized"}
+            
         images = _pipeline.process_text(text_prompt)
         
         if not images or len(images) == 0:
@@ -629,29 +762,98 @@ def generate_3d_model_from_prompt(self, text_prompt, with_texture=False, output_
         # Save the generated image
         os.makedirs(OUTPUT_IMAGES_DIR, exist_ok=True)
         unique_id = str(uuid.uuid4())[:8]
-        image_path = os.path.join(OUTPUT_IMAGES_DIR, f"text_to_3d_{unique_id}.png")
-        images[0].save(image_path)
+        image_filename = f"text_to_3d_{unique_id}.png"
+        local_image_path = os.path.join(OUTPUT_IMAGES_DIR, image_filename)
+        images[0].save(local_image_path)
+        
+        # Upload image to S3
+        image_s3_url = None
+        if s3_mgr:
+            image_upload_result = s3_mgr.upload_image(local_image_path, "text_to_3d")
+            if image_upload_result.get("status") == "success":
+                image_s3_url = image_upload_result.get("s3_url")
+                task_logger.info(f"✅ Uploaded generated image to S3: {image_s3_url}")
         
         # Update task progress
         self.update_state(state='PROGRESS', meta={'progress': 50, 'status': 'Converting image to 3D...'})
         
         # Now generate 3D model from the image
-        task_logger.info(f"Generating 3D model from generated image: {image_path}")
+        task_logger.info(f"Generating 3D model from generated image: {local_image_path}")
         
         # Call the core 3D generation logic
         result = _generate_3d_from_image_core(
-            image_path, 
+            local_image_path, 
             with_texture, 
             output_format, 
             progress_callback=lambda p, s: self.update_state(
                 state='PROGRESS', 
-                meta={'progress': 50 + (p * 0.5), 'status': s}
+                meta={'progress': 50 + int(p * 0.4), 'status': s}  # 50-90% range
             )
         )
         
+        # Upload 3D assets to S3
+        if result.get("status") == "success" and s3_mgr:
+            self.update_state(state='PROGRESS', meta={'progress': 90, 'status': 'Uploading 3D assets to S3...'})
+            
+            model_path = result.get('model_path')
+            if model_path:
+                # Use the generated image filename for consistent naming
+                source_image_name = os.path.basename(local_image_path)
+                upload_result = s3_mgr.upload_3d_asset(model_path, "text_to_3d", source_image_name)
+                if upload_result.get("status") == "success":
+                    result['s3_model_url'] = upload_result.get("s3_url")
+                    task_logger.info(f"✅ Uploaded 3D model to S3: {result['s3_model_url']}")
+        
+        # Update MongoDB if requested
+        if mongo_mgr and doc_id and update_collection and result.get("status") == "success":
+            self.update_state(state='PROGRESS', meta={'progress': 95, 'status': 'Updating database...'})
+            
+            try:
+                from config import MONGO_DB_NAME
+                
+                # Create comprehensive update data with status tracking
+                update_data = {
+                    "text_to_3d_started": True,
+                    "text_to_3d_started_at": datetime.now(),
+                    "generated_image_path": local_image_path,
+                    "model_format": output_format,
+                    "model_with_texture": with_texture,
+                    "text_prompt": text_prompt[:500],  # Store truncated prompt
+                }
+                
+                # Add status based on success - always set to pending for successful generations
+                if result.get("status") == "success":
+                    update_data.update({
+                        "text_to_3d_completed": True,
+                        "text_to_3d_completed_at": datetime.now(),
+                        "status": "pending"  # Always set to pending for successful generations
+                    })
+                    
+                    if image_s3_url:
+                        update_data["generated_image_s3_url"] = image_s3_url
+                        
+                    if result.get('s3_model_url'):
+                        update_data["model_s3_url"] = result['s3_model_url']
+                        
+                    if result.get('model_path'):
+                        update_data["model_local_path"] = result['model_path']
+                else:
+                    update_data.update({
+                        "status": "failed",
+                        "error_message": result.get('message', 'Unknown error')
+                    })
+                
+                mongo_mgr.update_by_id(MONGO_DB_NAME, update_collection, doc_id, update_data)
+                task_logger.info(f"✅ Updated MongoDB document {doc_id}")
+                
+            except Exception as e:
+                task_logger.error(f"Failed to update MongoDB: {e}")
+                result['mongodb_error'] = str(e)
+        
         # Combine results
         if result["status"] == "success":
-            result["image_path"] = image_path
+            result["image_path"] = local_image_path
+            result["image_s3_url"] = image_s3_url
             result["message"] = f"Successfully generated 3D model from text prompt: '{text_prompt[:50]}...'"
         
         # Update task progress
@@ -812,3 +1014,133 @@ def cleanup_old_assets(max_age_hours=24):
     except Exception as e:
         task_logger.error(f"Error during asset cleanup: {e}", exc_info=True)
         return {"status": "error", "message": f"Cleanup failed: {e}"}
+
+# S3 and MongoDB integration imports
+s3_manager = None
+mongo_helper = None
+
+def get_s3_manager():
+    """Get S3 manager instance (lazy loading)"""
+    global s3_manager
+    if s3_manager is None:
+        try:
+            from s3_manager import S3Manager
+            from config import USE_S3_STORAGE
+            if USE_S3_STORAGE:
+                s3_manager = S3Manager()
+                task_logger.info("✅ S3 Manager initialized")
+            else:
+                task_logger.info("S3 storage disabled in config")
+        except Exception as e:
+            task_logger.error(f"Failed to initialize S3 manager: {e}")
+            s3_manager = None
+    return s3_manager
+
+def get_mongo_helper():
+    """Get MongoDB helper instance (lazy loading)"""
+    global mongo_helper
+    if mongo_helper is None:
+        try:
+            from db_helper import MongoDBHelper
+            mongo_helper = MongoDBHelper()
+            task_logger.info("✅ MongoDB Helper initialized")
+        except Exception as e:
+            task_logger.error(f"Failed to initialize MongoDB helper: {e}")
+            mongo_helper = None
+    return mongo_helper
+
+@app.task(name='process_image_for_3d_generation', bind=True)
+def process_image_for_3d_generation(self, image_s3_key, doc_id, collection_name, processing_options=None):
+    """
+    GPU-side task to process an image from S3 and generate 3D assets.
+    
+    Args:
+        image_s3_key: S3 key of the image to process
+        doc_id: MongoDB document ID to update
+        collection_name: MongoDB collection name
+        processing_options: Dict with processing options (texture, format, etc.)
+    """
+    if processing_options is None:
+        processing_options = {}
+    
+    with_texture = processing_options.get('with_texture', False)
+    output_format = processing_options.get('output_format', 'glb')
+    
+    task_logger.info(f"🔄 Processing image from S3 for 3D generation")
+    task_logger.info(f"   S3 Key: {image_s3_key}")
+    task_logger.info(f"   Document ID: {doc_id}")
+    task_logger.info(f"   Collection: {collection_name}")
+    task_logger.info(f"   Options: {processing_options}")
+    
+    # Call the main 3D generation task with S3 integration
+    return generate_3d_model_from_image(
+        self,
+        image_s3_key_or_path=image_s3_key,
+        with_texture=with_texture,
+        output_format=output_format,
+        doc_id=doc_id,
+        update_collection=collection_name
+    )
+
+@app.task(name='batch_process_s3_images_for_3d', bind=True)
+def batch_process_s3_images_for_3d(self, image_s3_keys, processing_options=None):
+    """
+    Batch process multiple images from S3 for 3D generation.
+    
+    Args:
+        image_s3_keys: List of S3 keys for images to process
+        processing_options: Dict with processing options
+    """
+    if processing_options is None:
+        processing_options = {}
+    
+    task_logger.info(f"🔄 Batch processing {len(image_s3_keys)} images from S3")
+    
+    results = []
+    
+    for i, s3_key in enumerate(image_s3_keys):
+        self.update_state(
+            state='PROGRESS', 
+            meta={
+                'progress': int((i / len(image_s3_keys)) * 100), 
+                'status': f'Processing image {i+1}/{len(image_s3_keys)}: {s3_key}'
+            }
+        )
+        
+        try:
+            result = generate_3d_model_from_image(
+                self,
+                image_s3_key_or_path=s3_key,
+                with_texture=processing_options.get('with_texture', False),
+                output_format=processing_options.get('output_format', 'glb'),
+                doc_id=None,
+                update_collection=None
+            )
+            
+            results.append({
+                "s3_key": s3_key,
+                "status": result.get("status"),
+                "message": result.get("message"),
+                "model_s3_url": result.get("s3_model_url"),
+                "local_model_path": result.get("model_path")
+            })
+            
+        except Exception as e:
+            task_logger.error(f"Error processing {s3_key}: {e}")
+            results.append({
+                "s3_key": s3_key,
+                "status": "error",
+                "message": str(e)
+            })
+    
+    self.update_state(state='PROGRESS', meta={'progress': 100, 'status': 'Batch processing complete'})
+    
+    success_count = sum(1 for r in results if r.get("status") == "success")
+    
+    return {
+        "status": "completed",
+        "total_processed": len(image_s3_keys),
+        "successful": success_count,
+        "failed": len(image_s3_keys) - success_count,
+        "results": results
+    }

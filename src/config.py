@@ -171,9 +171,12 @@ CELERY_TASK_ROUTES = {
     'generate_grid_image': {'queue': 'cpu_tasks'},
     'run_biome_generation': {'queue': 'cpu_tasks'},
     'batch_process_mongodb_prompts_task': {'queue': 'cpu_tasks'},
-      # GPU tasks (route to GPU spot instance)
+    
+    # GPU tasks (route to GPU spot instance) - with S3 integration
     'generate_3d_model_from_image': {'queue': 'gpu_tasks'},
     'generate_3d_model_from_prompt': {'queue': 'gpu_tasks'},
+    'process_image_for_3d_generation': {'queue': 'gpu_tasks'},
+    'batch_process_s3_images_for_3d': {'queue': 'gpu_tasks'},
     
     # Infrastructure tasks (can run on either instance)
     'manage_gpu_instance': {'queue': 'infrastructure'},
@@ -277,3 +280,13 @@ else:
     REDIS_BROKER_URL = os.getenv('REDIS_BROKER_URL', f'redis://{GPU_SPOT_INSTANCE_IP}:{GPU_INSTANCE_REDIS_PORT}/0')
     REDIS_RESULT_BACKEND = os.getenv('REDIS_RESULT_BACKEND', f'redis://{GPU_SPOT_INSTANCE_IP}:{GPU_INSTANCE_REDIS_PORT}/0')
     WORKER_QUEUES = CPU_WORKER_QUEUES
+
+# --- S3 Configuration ---
+S3_BUCKET_NAME = os.getenv('S3_BUCKET_NAME', 'sparkassets')
+S3_REGION = os.getenv('S3_REGION', 'ap-south-1')
+S3_IMAGES_PREFIX = 'images/'
+S3_3D_ASSETS_PREFIX = '3d_assets/'
+
+# S3 Integration settings
+USE_S3_STORAGE = os.getenv('USE_S3_STORAGE', 'True').lower() == 'true'
+S3_PUBLIC_READ = os.getenv('S3_PUBLIC_READ', 'False').lower() == 'true'
