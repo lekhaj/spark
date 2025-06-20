@@ -3,6 +3,7 @@ import os
 import sys
 import glob
 from mathutils import Vector
+import bmesh
 sys.path.append(os.path.dirname(__file__))
 
 from io_helper_connect import (
@@ -66,8 +67,7 @@ def append_object(blend, name):
         obj.select_set(True)
     return obj
 
-# Decimation
- def decimate_mesh(obj, tf, mode, param):
+def decimate_mesh(obj, tf, mode, param):
     faces = len(obj.data.polygons)
     if faces <= tf:
         return
@@ -86,8 +86,7 @@ def append_object(blend, name):
         m.angle_limit = param
     bpy.ops.object.modifier_apply(modifier=m.name)
 
-# Weight transfer
- def transfer_weights(src, dst):
+def transfer_weights(src, dst):
     bpy.ops.object.select_all(action='DESELECT')
     src.select_set(True)
     dst.select_set(True)
@@ -100,7 +99,6 @@ def append_object(blend, name):
     dt.vert_mapping = 'NEAREST'
     bpy.ops.object.modifier_apply(modifier=dt.name)
 
-# Bone alignment
 def get_vgroup_centroid(mesh, name):
     vg = mesh.vertex_groups.get(name)
     if not vg:
@@ -111,22 +109,22 @@ def get_vgroup_centroid(mesh, name):
             if mesh.vertex_groups[g.group].name == name and g.weight > 0:
                 pos += mesh.matrix_world @ v.co * g.weight
                 total += g.weight
-    return pos/total if total>0 else None
+    return pos / total if total > 0 else None
 
 def get_bb_corners(obj):
     return [obj.matrix_world @ Vector(c) for c in obj.bound_box]
 
 def get_bb_bottom_center(corners):
     minz = min(c.z for c in corners)
-    pts = [c for c in corners if abs(c.z-minz)<1e-6]
-    return Vector(((min(p.x for p in pts)+max(p.x for p in pts))/2,
-                   (min(p.y for p in pts)+max(p.y for p in pts))/2,
-                    minz))
+    pts = [c for c in corners if abs(c.z - minz) < 1e-6]
+    return Vector(((min(p.x for p in pts) + max(p.x for p in pts)) / 2,
+                   (min(p.y for p in pts) + max(p.y for p in pts)) / 2,
+                   minz))
 
 def align_on_ground(template, target):
     tbb = get_bb_bottom_center(get_bb_corners(template))
     obb = get_bb_bottom_center(get_bb_corners(target))
-    target.location += tbb-obb
+    target.location += tbb - obb
     bpy.ops.object.select_all(action='DESELECT')
     target.select_set(True)
     bpy.context.view_layer.objects.active = target
@@ -137,39 +135,39 @@ def align_bones(arm, target):
     bpy.ops.object.mode_set(mode='EDIT')
     for bone in arm.data.edit_bones:
         cen = get_vgroup_centroid(target, bone.name)
-        if not cen: continue
+        if not cen:
+            continue
         local = arm.matrix_world.inverted() @ cen
         bone.head = bone.head.lerp(local, get_bias(bone.name))
         bone.tail = bone.tail.lerp(local, get_bias(bone.name))
     bpy.ops.object.mode_set(mode='OBJECT')
 
-# Parent
- def parent_to_armature(mesh, arm):
+def parent_to_armature(mesh, arm):
     bpy.ops.object.select_all(action='DESELECT')
-    mesh.select_set(True); arm.select_set(True)
+    mesh.select_set(True)
+    arm.select_set(True)
     bpy.context.view_layer.objects.active = arm
     bpy.ops.object.parent_set(type='ARMATURE_NAME')
 
-# Pivot fix
- def set_origin_to_bottom_face(obj):
+def set_origin_to_bottom_face(obj):
     bpy.ops.object.select_all(action='DESELECT')
     obj.select_set(True)
     bpy.context.view_layer.objects.active = obj
     bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
     bpy.ops.object.mode_set(mode='EDIT')
     bm = bmesh.from_edit_mesh(obj.data)
-    f = min(bm.faces, key=lambda f: sum((obj.matrix_world@v.co).z for v in f.verts)/len(f.verts))
-    cen = sum(((obj.matrix_world@v.co) for v in f.verts), Vector())/len(f.verts)
+    f = min(bm.faces, key=lambda f: sum((obj.matrix_world @ v.co).z for v in f.verts) / len(f.verts))
+    cen = sum(((obj.matrix_world @ v.co) for v in f.verts), Vector()) / len(f.verts)
     bpy.ops.object.mode_set(mode='OBJECT')
     bpy.context.scene.cursor.location = cen
     bpy.ops.object.origin_set(type='ORIGIN_CURSOR')
-    obj.location = (0,0,0)
+    obj.location = (0, 0, 0)
 
-# Export FBX
- def export_fbx(path, mesh, arm):
+def export_fbx(path, mesh, arm):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     bpy.ops.object.select_all(action='DESELECT')
-    mesh.select_set(True); arm.select_set(True)
+    mesh.select_set(True)
+    arm.select_set(True)
     bpy.context.view_layer.objects.active = mesh
     bpy.ops.export_scene.fbx(
         filepath=path,
@@ -184,11 +182,11 @@ def align_bones(arm, target):
         axis_up='Y'
     )
 
-# MAIN
- def main():
+def main():
     collection = get_mongo_collection(mongo_uri)
     latest = get_latest_glb_from_s3(bucket, prefix="3d_assets/")
-    if not latest: return
+    if not latest:
+        return
     lid = os.path.basename(latest)
     local = os.path.join(input_folder, lid)
     download_from_s3(bucket, latest, local)
@@ -197,7 +195,8 @@ def align_bones(arm, target):
     template = append_object(template_blend, template_mesh_name)
     arm = append_object(template_blend, arm_name)
     target = import_glb(local)
-    if not all([template, arm, target]): return
+    if not all([template, arm, target]):
+        return
 
     for o in (template, arm):
         bpy.ops.object.select_all(action='DESELECT')
@@ -206,16 +205,14 @@ def align_bones(arm, target):
         bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
 
     align_on_ground(template, target)
-
-    argv = sys.argv[sys.argv.index("--")+1:]
-    tf,mode,param = int(argv[0]),argv[1].upper(),float(argv[2])
+    argv = sys.argv[sys.argv.index("--") + 1:]
+    tf, mode, param = int(argv[0]), argv[1].upper(), float(argv[2])
     decimate_mesh(target, tf, mode, param)
 
     for vg in template.vertex_groups:
         if vg.name not in target.vertex_groups:
             target.vertex_groups.new(name=vg.name)
     transfer_weights(template, target)
-
     align_bones(arm, target)
     parent_to_armature(target, arm)
     set_origin_to_bottom_face(target)
@@ -226,5 +223,5 @@ def align_bones(arm, target):
     url = upload_to_s3(bucket, f"processed/{os.path.splitext(lid)[0]}_rigged.fbx", out)
     update_asset_status(collection, os.path.splitext(lid)[0], status="completed", output_url=url)
 
-if __name__=="__main__":
+if __name__ == "__main__":
     main()
