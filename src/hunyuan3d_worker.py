@@ -156,6 +156,7 @@ def initialize_hunyuan3d_processors():
         
         # Initialize shape generation pipeline for 2.1
         logger.info(f"🎯 Loading shape generation model from: {HUNYUAN3D_MODEL_PATH}")
+        _log_memory_usage("before shape model loading")
         try:
             # Updated import path for 2.1 - use absolute path
             # The path should already be set by _fix_python_path(), but let's ensure it
@@ -163,21 +164,23 @@ def initialize_hunyuan3d_processors():
             hy3dshape_path = os.path.join(project_root, 'Hunyuan3D-2.1', 'hy3dshape')
             if hy3dshape_path not in sys.path:
                 sys.path.insert(0, hy3dshape_path)
-            from hy3dshape.pipelines import Hunyuan3DDiTFlowMatchingPipeline
             
-            _hunyuan_i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+            # Import and load model directly to GPU to avoid CPU memory usage
+            logger.info("🚀 Loading model directly to GPU to avoid system RAM usage...")
+            _hunyuan_i23d_worker = _load_hunyuan3d_directly_to_gpu(
                 HUNYUAN3D_MODEL_PATH,
-                subfolder=HUNYUAN3D_SUBFOLDER,
-                use_safetensors=False,  # Changed to False since we have .ckpt file
+                HUNYUAN3D_SUBFOLDER,
                 device=device,
+                dtype=torch.float16
             )
             
-            # Enable FlashVDM for 2.1
+            _log_memory_usage("after direct GPU loading")
+            
+            # Enable FlashVDM for 2.1 with GPU configuration
             _hunyuan_i23d_worker.enable_flashvdm(mc_algo='mc')
             
-            if hasattr(_hunyuan_i23d_worker, 'to'):
-                _hunyuan_i23d_worker = _hunyuan_i23d_worker.to(device)
-            logger.info("✓ Shape generation model loaded successfully")
+            logger.info(f"✓ Shape generation model loaded successfully to {device}")
+            logger.info(f"GPU memory allocated: {torch.cuda.memory_allocated()/1024**3:.2f} GB" if torch.cuda.is_available() else "CPU mode")
             
             if HUNYUAN3D_COMPILE and hasattr(_hunyuan_i23d_worker, 'compile'):
                 logger.info("⚡ Compiling Hunyuan3D model for optimization...")
@@ -209,10 +212,11 @@ def initialize_hunyuan3d_processors():
                     sys.path.insert(0, hy3dpaint_path)
                 from textureGenPipeline import Hunyuan3DPaintPipeline, Hunyuan3DPaintConfig
                 
-                # Create PBR-enabled configuration
+                # Create PBR-enabled configuration for GPU loading
                 paint_config = Hunyuan3DPaintConfig(
                     max_num_view=HUNYUAN3D_PAINT_CONFIG_MAX_VIEWS,
-                    resolution=HUNYUAN3D_PAINT_CONFIG_RESOLUTION
+                    resolution=HUNYUAN3D_PAINT_CONFIG_RESOLUTION,
+                    torch_dtype=torch.float16,  # Use float16 for memory efficiency
                 )
                 paint_config.realesrgan_ckpt_path = "hy3dpaint/ckpt/RealESRGAN_x4plus.pth"
                 paint_config.multiview_cfg_path = "hy3dpaint/cfgs/hunyuan-paint-pbr.yaml"
@@ -220,9 +224,10 @@ def initialize_hunyuan3d_processors():
                 
                 _hunyuan_texgen_worker = Hunyuan3DPaintPipeline(paint_config)
                 
+                # Explicitly move to GPU and ensure it stays there
                 if hasattr(_hunyuan_texgen_worker, 'to'):
                     _hunyuan_texgen_worker = _hunyuan_texgen_worker.to(device)
-                logger.info("✓ PBR texture generation model loaded successfully")
+                logger.info(f"✓ PBR texture generation model loaded successfully to {device}")
             except Exception as e:
                 logger.warning(f"⚠️  Failed to load texture generation model: {e}")
                 _hunyuan_texgen_worker = None
@@ -238,6 +243,28 @@ def initialize_hunyuan3d_processors():
         logger.error(f"❌ Failed to initialize Hunyuan3D-2.1 processors: {e}")
         return False
 
+
+# Memory monitoring function
+def _log_memory_usage(stage=""):
+    """Log current RAM and GPU memory usage."""
+    try:
+        import psutil
+        # RAM usage
+        ram_usage = psutil.virtual_memory()
+        ram_used_gb = ram_usage.used / (1024**3)
+        ram_total_gb = ram_usage.total / (1024**3)
+        
+        # GPU usage
+        if torch.cuda.is_available():
+            gpu_allocated = torch.cuda.memory_allocated() / (1024**3)
+            gpu_reserved = torch.cuda.memory_reserved() / (1024**3)
+            logger.info(f"📊 Memory usage {stage}:")
+            logger.info(f"   RAM: {ram_used_gb:.2f}/{ram_total_gb:.2f} GB ({ram_usage.percent:.1f}%)")
+            logger.info(f"   GPU: {gpu_allocated:.2f} GB allocated, {gpu_reserved:.2f} GB reserved")
+        else:
+            logger.info(f"📊 RAM usage {stage}: {ram_used_gb:.2f}/{ram_total_gb:.2f} GB ({ram_usage.percent:.1f}%)")
+    except Exception as e:
+        logger.warning(f"Could not get memory usage: {e}")
 
 def get_model_info():
     """Get information about loaded models."""
@@ -591,6 +618,163 @@ def generate_3d_from_image_core(
         error_msg = f"Unexpected error during 3D generation: {str(e)}"
         logger.error(f"💥 {error_msg}", exc_info=True)
         return {"status": "error", "message": error_msg}
+
+
+def _load_hunyuan3d_direct_to_gpu(device):
+    """
+    Load Hunyuan3D model directly to GPU to avoid using system RAM.
+    This bypasses the default CPU loading in the original implementation.
+    """
+    import yaml
+    import torch
+    import os
+    from hy3dshape.pipelines import Hunyuan3DDiTFlowMatchingPipeline
+    from hy3dshape.utils.utils import instantiate_from_config
+    
+    # Get model paths
+    model_path = os.path.expanduser(HUNYUAN3D_MODEL_PATH)
+    config_path = os.path.join(model_path, HUNYUAN3D_SUBFOLDER, 'config.yaml')
+    ckpt_path = os.path.join(model_path, HUNYUAN3D_SUBFOLDER, 'model.fp16.ckpt')
+    
+    logger.info(f"Loading config from: {config_path}")
+    logger.info(f"Loading checkpoint from: {ckpt_path}")
+    
+    # Load config
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    
+    # Load checkpoint directly to GPU
+    logger.info(f"📥 Loading checkpoint directly to {device}...")
+    _log_memory_usage("before checkpoint loading")
+    
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=True)
+    
+    _log_memory_usage("after checkpoint loaded to GPU")
+    
+    # Create model components and load directly to GPU
+    logger.info("🏗️ Creating model components...")
+    
+    # Create model
+    model = instantiate_from_config(config['model'])
+    model.load_state_dict(ckpt['model'])
+    model.to(device, dtype=torch.float16)
+    
+    # Create VAE
+    vae = instantiate_from_config(config['vae'])
+    vae.load_state_dict(ckpt['vae'], strict=False)
+    vae.to(device, dtype=torch.float16)
+    
+    # Create conditioner
+    conditioner = instantiate_from_config(config['conditioner'])
+    if 'conditioner' in ckpt:
+        conditioner.load_state_dict(ckpt['conditioner'])
+    conditioner.to(device, dtype=torch.float16)
+    
+    # Create other components
+    image_processor = instantiate_from_config(config['image_processor'])
+    scheduler = instantiate_from_config(config['scheduler'])
+    
+    # Free checkpoint memory
+    del ckpt
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
+    
+    _log_memory_usage("after checkpoint freed")
+    
+    # Create pipeline
+    pipeline = Hunyuan3DDiTFlowMatchingPipeline(
+        vae=vae,
+        model=model,
+        scheduler=scheduler,
+        conditioner=conditioner,
+        image_processor=image_processor,
+        device=device,
+        dtype=torch.float16,
+    )
+    
+    # Verify all components are on GPU
+    vae_device = next(pipeline.vae.parameters()).device
+    model_device = next(pipeline.model.parameters()).device
+    conditioner_device = next(pipeline.conditioner.parameters()).device
+    
+    logger.info(f"✅ Model loaded directly to GPU!")
+    logger.info(f"📍 Component locations - VAE: {vae_device}, Model: {model_device}, Conditioner: {conditioner_device}")
+    
+    return pipeline
+
+
+def _load_hunyuan3d_directly_to_gpu(model_path, subfolder, device='cuda', dtype=torch.float16):
+    """
+    Custom loading function that loads the Hunyuan3D model directly to GPU
+    to avoid using system RAM during the loading process.
+    """
+    import yaml
+    import os
+    from hy3dshape.utils.utils import smart_load_model
+    from hy3dshape.utils.misc import instantiate_from_config
+    from hy3dshape.pipelines import Hunyuan3DDiTFlowMatchingPipeline
+    
+    logger.info(f"🚀 Loading Hunyuan3D model directly to GPU: {device}")
+    
+    # Get config and checkpoint paths
+    config_path, ckpt_path = smart_load_model(
+        model_path, subfolder=subfolder, use_safetensors=False, variant='fp16'
+    )
+    
+    # Expand the model path properly
+    base_dir = os.environ.get('HY3DGEN_MODELS', '~/.cache/hy3dgen')
+    full_model_path = os.path.expanduser(os.path.join(base_dir, model_path))
+    config_path = os.path.join(full_model_path, subfolder, 'config.yaml')
+    ckpt_path = os.path.join(full_model_path, subfolder, 'model.fp16.ckpt')
+    
+    logger.info(f"📁 Config path: {config_path}")
+    logger.info(f"📁 Checkpoint path: {ckpt_path}")
+    
+    # Load config
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    
+    # Load checkpoint directly to GPU
+    logger.info(f"⬇️  Loading checkpoint directly to {device}...")
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=True)
+    
+    # Initialize models directly on GPU
+    logger.info("🏗️  Creating model components...")
+    model = instantiate_from_config(config['model']).to(device, dtype=dtype)
+    model.load_state_dict(ckpt['model'])
+    
+    vae = instantiate_from_config(config['vae']).to(device, dtype=dtype)
+    vae.load_state_dict(ckpt['vae'], strict=False)
+    
+    conditioner = instantiate_from_config(config['conditioner']).to(device, dtype=dtype)
+    if 'conditioner' in ckpt:
+        conditioner.load_state_dict(ckpt['conditioner'])
+    
+    image_processor = instantiate_from_config(config['image_processor'])
+    scheduler = instantiate_from_config(config['scheduler'])
+    
+    # Create pipeline with required kwargs
+    pipeline = Hunyuan3DDiTFlowMatchingPipeline(
+        vae=vae,
+        model=model,
+        scheduler=scheduler,
+        conditioner=conditioner,
+        image_processor=image_processor,
+        device=device,
+        dtype=dtype,
+        from_pretrained_kwargs=dict(
+            model_path=model_path,
+            subfolder=subfolder,
+            use_safetensors=False,
+            variant='fp16',
+            dtype=dtype,
+            device=device,
+        )
+    )
+    
+    logger.info("✅ Model loaded directly to GPU successfully")
+    return pipeline
 
 
 def get_model_info() -> Dict[str, Any]:

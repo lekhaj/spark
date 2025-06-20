@@ -96,18 +96,34 @@ python3 test_hunyuan3d_setup.py
 # Check if test passed
 if [ $? -eq 0 ]; then
     echo ""
-    echo "🚀 Starting GPU worker..."
+    echo "🚀 Starting GPU worker - loading models to GPU VRAM..."
+    
+    # Set GPU optimization environment variables for direct GPU loading
+    export CUDA_VISIBLE_DEVICES=0
+    export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:2048,expandable_segments:True
+    export HUNYUAN3D_LOW_VRAM_MODE=False
+    export CUDA_LAUNCH_BLOCKING=0
+    
+    # Clear GPU memory cache before starting
+    python3 -c "import torch; torch.cuda.empty_cache() if torch.cuda.is_available() else None; print('🧹 GPU cache cleared')"
+    
+    # Show GPU memory status
+    echo "📊 GPU memory status before starting worker:"
+    nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader,nounits
+    
     cd src
     
     # Kill any existing Celery workers
     pkill -f "celery.*worker" || true
     sleep 2
     
-    # Start Celery worker with proper configuration for 2.1
+    echo "🎮 Loading models directly to GPU VRAM..."
+    
+    # Start Celery worker with GPU-focused configuration
     exec celery -A tasks worker \
         --loglevel=info \
         --queues=gpu_tasks \
-        --hostname=gpu-worker-2.1@$(hostname) \
+        --hostname=gpu-worker-2.1-gpu@$(hostname) \
         --concurrency=1 \
         --pool=solo \
         --events \
