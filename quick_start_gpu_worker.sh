@@ -91,7 +91,7 @@ except Exception as e:
 
 # Test Hunyuan3D-2.1 setup
 echo "🧪 Testing Hunyuan3D-2.1 setup..."
-python3 verify_gpu_deployment.py
+python3 test_hunyuan3d_setup.py
 
 # Check if test passed
 if [ $? -eq 0 ]; then
