@@ -14,6 +14,13 @@ from typing import Optional, Dict, Any, Callable
 from PIL import Image as PILImage
 import torch
 
+# Import configurations for Hunyuan3D-2.1
+from .config import (
+    HUNYUAN3D_MODEL_PATH, HUNYUAN3D_SUBFOLDER, HUNYUAN3D_TEXGEN_MODEL_PATH,
+    HUNYUAN3D_COMPILE, HUNYUAN3D_ENABLE_FLASHVDM, HUNYUAN3D_DEVICE,
+    HUNYUAN3D_PAINT_CONFIG_MAX_VIEWS, HUNYUAN3D_PAINT_CONFIG_RESOLUTION
+)
+
 # Fix Python path for Hunyuan3D imports
 def _fix_python_path():
     """Add Hunyuan3D directory to Python path if needed."""
@@ -21,10 +28,12 @@ def _fix_python_path():
     project_root = os.path.dirname(current_dir)
     
     hunyuan_dirs = [
+        os.path.join(project_root, "Hunyuan3D-2.1"),
         os.path.join(project_root, "Hunyuan3D-2"),
         os.path.join(project_root, "Hunyuan3D-1"),
-        os.path.join(project_root, "models", "Hunyuan3D-1"),
-        os.path.join(project_root, "models", "Hunyuan3D-2")
+        os.path.join(project_root, "models", "Hunyuan3D-2.1"),
+        os.path.join(project_root, "models", "Hunyuan3D-2"),
+        os.path.join(project_root, "models", "Hunyuan3D-1")
     ]
     
     for hunyuan_dir in hunyuan_dirs:
@@ -97,7 +106,7 @@ def initialize_hunyuan3d_processors():
     Returns:
         bool: True if initialization successful, False otherwise
     """
-    global _hunyuan_i23d_worker, _hunyuan_rembg_worker, _hunyuan_texgen_worker
+    global _hunyuan_i23d_worker, _hunyuan_texgen_worker, _hunyuan_rembg_worker
     global _models_initialized, _initialization_error
     
     if _models_initialized:
@@ -108,61 +117,29 @@ def initialize_hunyuan3d_processors():
         logger.error(f"❌ Previous initialization failed: {_initialization_error}")
         return False
     
-    if not _dependencies_available:
-        _initialization_error = "Required dependencies not available"
-        logger.error(f"❌ {_initialization_error}")
-        return False
-    
     try:
-        logger.info("🚀 Starting Hunyuan3D processor initialization...")
+        logger.info("🚀 Initializing Hunyuan3D-2.1 processors...")
+        device = get_device()
         
-        # Try to import Hunyuan3D modules
+        # Initialize shape generation pipeline for 2.1
+        logger.info(f"🎯 Loading shape generation model from: {HUNYUAN3D_MODEL_PATH}")
         try:
-            from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
-            from hy3dgen.rembg import BackgroundRemover
-            from hy3dgen.texgen import Hunyuan3DPaintPipeline
-            logger.info("✓ Hunyuan3D modules imported successfully")
-        except ImportError as e:
-            logger.error(f"❌ Failed to import Hunyuan3D modules: {e}")
-            logger.error("   Please ensure Hunyuan3D is properly installed")
-            logger.error("   Check if you have the Hunyuan3D-2 directory with hy3dgen module")
-            _initialization_error = f"Hunyuan3D modules not found: {e}"
-            return False
-        
-        # Try to import config
-        try:
-            from config import (
-                HUNYUAN3D_MODEL_PATH, HUNYUAN3D_SUBFOLDER, HUNYUAN3D_TEXGEN_MODEL_PATH,
-                HUNYUAN3D_COMPILE, HUNYUAN3D_LOW_VRAM_MODE, HUNYUAN3D_DEVICE
-            )
-            logger.info("✓ Configuration loaded successfully")
-        except ImportError as e:
-            logger.warning(f"⚠️  Config import failed, using defaults: {e}")
-            # Set default values
-            HUNYUAN3D_MODEL_PATH = "Tencent/Hunyuan3D-1"
-            HUNYUAN3D_SUBFOLDER = "lite"
-            HUNYUAN3D_TEXGEN_MODEL_PATH = None
-            HUNYUAN3D_COMPILE = False
-            HUNYUAN3D_LOW_VRAM_MODE = True
-            HUNYUAN3D_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-        
-        logger.info("🔧 Initializing Hunyuan3D processors...")
-        
-        # Determine device
-        device = HUNYUAN3D_DEVICE if torch.cuda.is_available() else "cpu"
-        logger.info(f"🎯 Using device: {device}")
-        
-        # Initialize 3D shape generation pipeline
-        logger.info(f"📦 Loading Hunyuan3D shape generation model from: {HUNYUAN3D_MODEL_PATH}")
-        try:
+            # Updated import path for 2.1
+            sys.path.insert(0, './Hunyuan3D-2.1/hy3dshape')
+            from hy3dshape.pipelines import Hunyuan3DDiTFlowMatchingPipeline
+            
             _hunyuan_i23d_worker = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
                 HUNYUAN3D_MODEL_PATH,
                 subfolder=HUNYUAN3D_SUBFOLDER,
-                torch_dtype=torch.float16 if HUNYUAN3D_LOW_VRAM_MODE else torch.float32,
+                use_safetensors=True,
+                device=device,
             )
             
-            # Move to GPU if available
-            _hunyuan_i23d_worker = _hunyuan_i23d_worker.to(device)
+            # Enable FlashVDM for 2.1
+            _hunyuan_i23d_worker.enable_flashvdm(mc_algo='mc')
+            
+            if hasattr(_hunyuan_i23d_worker, 'to'):
+                _hunyuan_i23d_worker = _hunyuan_i23d_worker.to(device)
             logger.info("✓ Shape generation model loaded successfully")
             
             if HUNYUAN3D_COMPILE and hasattr(_hunyuan_i23d_worker, 'compile'):
@@ -177,22 +154,32 @@ def initialize_hunyuan3d_processors():
         # Initialize background remover
         logger.info("🖼️  Loading background removal model...")
         try:
+            from hy3dgen.rembg import BackgroundRemover
             _hunyuan_rembg_worker = BackgroundRemover()
             logger.info("✓ Background removal model loaded successfully")
         except Exception as e:
             logger.warning(f"⚠️  Failed to load background removal model: {e}")
             _hunyuan_rembg_worker = None
         
-        # Initialize texture generation pipeline (optional)
+        # Initialize texture generation pipeline for 2.1 (with PBR)
         if HUNYUAN3D_TEXGEN_MODEL_PATH:
-            logger.info(f"🎨 Loading texture generation model from: {HUNYUAN3D_TEXGEN_MODEL_PATH}")
+            logger.info(f"🎨 Loading PBR texture generation model from: {HUNYUAN3D_TEXGEN_MODEL_PATH}")
             try:
-                _hunyuan_texgen_worker = Hunyuan3DPaintPipeline.from_pretrained(
-                    HUNYUAN3D_TEXGEN_MODEL_PATH,
+                # Updated import path for 2.1
+                sys.path.insert(0, './Hunyuan3D-2.1/hy3dpaint')
+                from textureGenPipeline import Hunyuan3DPaintPipeline, Hunyuan3DPaintConfig
+                
+                # Create PBR-enabled configuration
+                paint_config = Hunyuan3DPaintConfig(
+                    max_num_view=HUNYUAN3D_PAINT_CONFIG_MAX_VIEWS,
+                    resolution=HUNYUAN3D_PAINT_CONFIG_RESOLUTION
                 )
+                
+                _hunyuan_texgen_worker = Hunyuan3DPaintPipeline(paint_config)
+                
                 if hasattr(_hunyuan_texgen_worker, 'to'):
                     _hunyuan_texgen_worker = _hunyuan_texgen_worker.to(device)
-                logger.info("✓ Texture generation model loaded successfully")
+                logger.info("✓ PBR texture generation model loaded successfully")
             except Exception as e:
                 logger.warning(f"⚠️  Failed to load texture generation model: {e}")
                 _hunyuan_texgen_worker = None
@@ -200,12 +187,12 @@ def initialize_hunyuan3d_processors():
             logger.info("⏭️  Texture generation model not configured (optional)")
         
         _models_initialized = True
-        logger.info("🎉 Hunyuan3D processors initialized successfully!")
+        logger.info("🎉 Hunyuan3D-2.1 processors initialized successfully!")
         return True
         
     except Exception as e:
         _initialization_error = str(e)
-        logger.error(f"💥 Failed to initialize Hunyuan3D processors: {e}", exc_info=True)
+        logger.error(f"❌ Failed to initialize Hunyuan3D-2.1 processors: {e}")
         return False
 
 

@@ -173,6 +173,38 @@ try:
 except Exception as e:
     print(f"❌ Model loading error: {e}")
 
+# Update paths and import tests
+hunyuan_paths = [
+    "Hunyuan3D-2.1",
+    "./Hunyuan3D-2.1", 
+    "../Hunyuan3D-2.1"
+]
+
+hunyuan_found = False
+for path in hunyuan_paths:
+    if os.path.exists(path):
+        print(f"✅ Found Hunyuan3D-2.1 directory: {path}")
+        hunyuan_found = True
+        break
+
+if not hunyuan_found:
+    print("❌ Hunyuan3D-2.1 directory not found")
+    print("   Expected locations:", hunyuan_paths)
+    print("   Please clone Hunyuan3D-2.1 repository:")
+    print("   git clone https://github.com/Tencent/Hunyuan3D-2.1.git")
+
+# Test new imports
+try:
+    sys.path.insert(0, './Hunyuan3D-2.1/hy3dshape')
+    sys.path.insert(0, './Hunyuan3D-2.1/hy3dpaint')
+    
+    from hy3dshape.pipelines import Hunyuan3DDiTFlowMatchingPipeline
+    from textureGenPipeline import Hunyuan3DPaintPipeline, Hunyuan3DPaintConfig
+    print("✅ Hunyuan3D-2.1 modules imported successfully")
+    
+except ImportError as e:
+    print(f"❌ Failed to import Hunyuan3D-2.1 modules: {e}")
+
 print("\n" + "=" * 50)
 print("🏁 Hunyuan3D setup test completed!")
 print("\nIf you see errors above, install missing dependencies:")

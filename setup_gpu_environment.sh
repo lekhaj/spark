@@ -1,33 +1,42 @@
 #!/bin/bash
-# setup_gpu_environment.sh - Complete GPU environment setup for Hunyuan3D
+# setup_gpu_environment.sh - Complete GPU environment setup for Hunyuan3D-2.1
+# This script runs all necessary setup scripts in sequence
 
 set -e
 
-echo "🚀 Setting up GPU environment for Hunyuan3D..."
-echo "=============================================="
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
 
-# Get script directory
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$SCRIPT_DIR"
+# Function to print colored output
+print_status() {
+    echo -e "${BLUE}[INFO]${NC} $1"
+}
 
-echo "📍 Project root: $PROJECT_ROOT"
+print_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
+}
 
-# Step 1: Create virtual environment
-echo ""
-echo "📦 Step 1: Setting up Python virtual environment..."
-if [ ! -d "$PROJECT_ROOT/venv" ]; then
-    echo "Creating virtual environment..."
-    python3 -m venv "$PROJECT_ROOT/venv"
-    echo "✅ Virtual environment created"
-else
-    echo "✅ Virtual environment already exists"
-fi
+print_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
+}
 
-# Activate virtual environment
-source "$PROJECT_ROOT/venv/bin/activate"
-echo "✅ Virtual environment activated"
+print_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
 
-# Step 2: Upgrade pip and install basic dependencies
+# Function to check if script exists and is executable
+check_script() {
+    if [ -f "$1" ]; then
+        chmod +x "$1"
+        return 0
+    else
+        return 1
+    fi
+}
 echo ""
 echo "🔧 Step 2: Installing basic dependencies..."
 pip install --upgrade pip
