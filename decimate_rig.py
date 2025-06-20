@@ -5,7 +5,7 @@ import sys
 import glob
 from mathutils import Vector
 
-# Bring in S3 and Mongo helpers
+# —— S3 & MongoDB SETUP ——
 sys.path.append(os.path.dirname(__file__))
 from io_helper_connect import (
     download_from_s3,
@@ -14,17 +14,18 @@ from io_helper_connect import (
     update_asset_status,
     get_latest_glb_from_s3
 )
+bucket    = "sparkassets"
+mongo_uri = "mongodb://ec2-13-203-200-155.ap-south-1.compute.amazonaws.com:27017"
+# —— End S3/Mongo setup ——
 
-# --- CONFIG ---
-input_folder        = "/home/ubuntu/sarthak/input"
-output_folder       = "/home/ubuntu/sarthak/output"
-template_blend      = "/home/ubuntu/sarthak/logs/royal1.blend"
-arm_name            = "metarig.001"
-template_mesh_name  = "villager"
-bucket              = "sparkassets"
-mongo_uri           = "mongodb://ec2-13-203-200-155.ap-south-1.compute.amazonaws.com:27017"
+# --- CONFIG (EC2 paths) ---
+# your local logic expects models_folder, but here we download directly into input_folder
+input_folder       = "/home/ubuntu/sarthak/input"
+output_folder      = "/home/ubuntu/sarthak/output"
+template_blend     = "/home/ubuntu/sarthak/logs/royal1.blend"
+arm_name           = "metarig.001"
+template_mesh_name = "villager"
 
-# Per-bone bias factors (0.0 = no move, 1.0 = full snap)
 bias_map = {
     'neck1': 0.75,
     'neck2': 0.75,
@@ -54,6 +55,7 @@ def import_glb(filepath):
     bpy.ops.import_scene.gltf(filepath=filepath)
     for o in bpy.context.selected_objects:
         if o.type == "MESH":
+            bpy.context.view_layer.objects.active = o
             return o
     return None
 
@@ -73,7 +75,7 @@ def import_template_mesh():
 def decimate_mesh(obj, tf, mode, p):
     faces = len(obj.data.polygons)
     if faces <= tf:
-        print(f"[Decimate] Skip (faces {faces} ≤ threshold {tf})")
+        print("[Decimate] Skip; under threshold")
         return
     bpy.ops.object.select_all(action='DESELECT')
     obj.select_set(True)
@@ -104,12 +106,19 @@ def transfer_weights(src, dst):
     bpy.ops.object.modifier_apply(modifier=dt.name)
     print("[Weights] Transferred template → target")
 
+def debug_marker(at, name):
+    empty = bpy.data.objects.new(name, None)
+    empty.location = at
+    bpy.context.collection.objects.link(empty)
+
 def parent_to_armature(mesh, arm):
     bpy.ops.object.select_all(action='DESELECT')
     mesh.select_set(True)
     arm.select_set(True)
     bpy.context.view_layer.objects.active = arm
     bpy.ops.object.parent_set(type='ARMATURE_NAME')
+    mod = mesh.modifiers.get("Armature") or mesh.modifiers.new("Armature", "ARMATURE")
+    mod.object = arm
     print("[Parent] Mesh → Armature")
 
 def export_fbx(path, mesh, arm):
@@ -140,7 +149,7 @@ def get_vgroup_centroid(mesh, group_name):
     vg = mesh.vertex_groups.get(group_name)
     if not vg:
         return None
-    total_w, sum_pos = 0.0, Vector()
+    total_w, sum_pos = 0.0, Vector((0.0,0.0,0.0))
     for v in mesh.data.vertices:
         for g in v.groups:
             if mesh.vertex_groups[g.group].name == group_name and g.weight > 0:
@@ -149,22 +158,31 @@ def get_vgroup_centroid(mesh, group_name):
     return (sum_pos / total_w) if total_w else None
 
 def get_bounding_box_corners(obj):
-    return [obj.matrix_world @ Vector(c) for c in obj.bound_box]
+    return [obj.matrix_world @ Vector(b) for b in obj.bound_box]
 
 def get_bounding_box_bottom_center(corners):
     bottom_z = min(c.z for c in corners)
-    bottom_pts = [c for c in corners if abs(c.z - bottom_z) < 1e-6]
-    cx = sum(c.x for c in bottom_pts) / len(bottom_pts)
-    cy = sum(c.y for c in bottom_pts) / len(bottom_pts)
+    bottom = [c for c in corners if abs(c.z - bottom_z) < 1e-6]
+    cx = sum(c.x for c in bottom) / len(bottom)
+    cy = sum(c.y for c in bottom) / len(bottom)
     return Vector((cx, cy, bottom_z))
 
 def align_bones(target, arm):
     bpy.context.view_layer.objects.active = arm
     bpy.ops.object.mode_set(mode='EDIT')
+    mapping = {
+        "neck1": "neck1", "neck2": "neck2",
+        "shoulder.L": "shoulder.L", "upper_arm.L": "upper_arm.L", "forearm.L": "forearm.L", "hand.L": "hand.L",
+        "shoulder.R": "shoulder.R", "upper_arm.R": "upper_arm.R", "forearm.R": "forearm.R", "hand.R": "hand.R",
+        "thigh.L": "thigh.L", "shin.L": "shin.L", "foot.L": "foot.L",
+        "thigh.R": "thigh.R", "shin.R": "shin.R", "foot.R": "foot.R",
+    }
     for bone in arm.data.edit_bones:
-        cen = get_vgroup_centroid(target, bone.name)
+        vgroup = mapping.get(bone.name, bone.name)
+        cen = get_vgroup_centroid(target, vgroup)
         if not cen:
             continue
+        debug_marker(cen, f"centroid_{bone.name}")
         local_cen = arm.matrix_world.inverted() @ cen
         h0, t0 = bone.head.copy(), bone.tail.copy()
         bias = get_bias(bone.name)
@@ -172,80 +190,73 @@ def align_bones(target, arm):
         bone.tail = t0 + (local_cen - t0) * bias
     bpy.ops.object.mode_set(mode='OBJECT')
     arm.data.display_type = 'STICK'
-    print("[Bones] Aligned via centroid bias")
 
-# --- MAIN PIPELINE ---
 def main():
-    # 1) Fetch latest from S3
+    # 1) Download latest GLB from S3 into input_folder
     collection = get_mongo_collection(mongo_uri)
-    latest = get_latest_glb_from_s3(bucket, prefix="3d_assets/")
-    if not latest:
-        print("[Error] No asset found in S3"); return
-    lid = os.path.basename(latest)
-    local_fp = os.path.join(input_folder, lid)
-    download_from_s3(bucket, latest, local_fp)
+    latest_s3 = get_latest_glb_from_s3(bucket, prefix="3d_assets/")
+    if latest_s3:
+        fname = os.path.basename(latest_s3)
+        local_fp = os.path.join(input_folder, fname)
+        download_from_s3(bucket, latest_s3, local_fp)
+        print(f"[S3→Local] {latest_s3} → {local_fp}")
+    else:
+        print("[Error] No asset in S3"); return
 
-    # 2) Clear & import
+    # 2) Exactly your local script, but using that single file
     clear_scene()
     template = import_template_mesh()
     arm      = append_object(template_blend, arm_name)
     target   = import_glb(local_fp)
-    if not (template and arm and target):
-        print("[Error] Missing template, armature or target"); return
+    if not all([template, arm, target]):
+        print("[Error] Missing template, armature, or target mesh"); return
 
-    # 3) Freeze transforms
     for o in (template, arm):
         bpy.ops.object.select_all(action='DESELECT')
         o.select_set(True)
         bpy.context.view_layer.objects.active = o
         bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
 
-    # 4) Align by bounding-box bottom-center
-    t_corners = get_bounding_box_corners(template)
-    o_corners = get_bounding_box_corners(target)
-    t_bb = get_bounding_box_bottom_center(t_corners)
-    o_bb = get_bounding_box_bottom_center(o_corners)
-    delta = t_bb - o_bb
-    target.location += delta
+    translation = get_bounding_box_bottom_center(get_bounding_box_corners(template)) - \
+                  get_bounding_box_bottom_center(get_bounding_box_corners(target))
+    target.location += translation
     bpy.ops.object.select_all(action='DESELECT')
     target.select_set(True)
     bpy.context.view_layer.objects.active = target
     bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
-    # Apply same to armature
-    arm.location += delta
+
+    arm.location += translation
     bpy.ops.object.select_all(action='DESELECT')
     arm.select_set(True)
     bpy.context.view_layer.objects.active = arm
     bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
 
-    # 5) Decimate
-    argv = sys.argv[sys.argv.index("--") + 1:]
-    if len(argv) < 3:
-        print("Usage: decimate_rig.py <threshold> <MODE> <param>"); return
-    tf, mode, param = int(argv[0]), argv[1].upper(), float(argv[2])
-    decimate_mesh(target, tf, mode, param)
+    argv = sys.argv
+    args = argv[argv.index("--") + 1:] if "--" in argv else []
+    if len(args) < 3:
+        print("Usage: script.py <TF> <Mode> <Param>"); return
+    tf = int(args[0])
+    mode = args[1].upper()
+    param = float(args[2])
 
-    # 6) Transfer weights
+    decimate_mesh(target, tf, mode, param)
     for vg in template.vertex_groups:
         if vg.name not in target.vertex_groups:
             target.vertex_groups.new(name=vg.name)
     transfer_weights(template, target)
-
-    # 7) Align bones & parent
     align_bones(target, arm)
     parent_to_armature(target, arm)
-
-    # 8) Set origin & export
-    # (same as local: origin→bottom face)
     set_origin_to_bottom_face(target)
 
-    out_fp = os.path.join(output_folder, f"{os.path.splitext(lid)[0]}_rigged.fbx")
-    export_fbx(out_fp, target, arm)
+    out_path = os.path.join(output_folder, f"{os.path.splitext(fname)[0]}_rigged.fbx")
+    export_fbx(out_path, target, arm)
 
-    # 9) Upload & update
-    url = upload_to_s3(bucket, f"processed/{os.path.splitext(lid)[0]}_rigged.fbx", out_fp)
-    update_asset_status(collection, os.path.splitext(lid)[0],
+    # 3) Upload & status update
+    s3_key = f"processed/{os.path.splitext(fname)[0]}_rigged.fbx"
+    url = upload_to_s3(bucket, s3_key, out_path)
+    update_asset_status(collection, os.path.splitext(fname)[0],
                         status="completed", output_url=url)
+    print(f"[Done] Uploaded → {s3_key} and updated MongoDB")
 
 if __name__ == "__main__":
     main()
