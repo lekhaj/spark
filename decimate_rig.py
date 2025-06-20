@@ -70,30 +70,42 @@ def append_object(blend, name):
 def decimate_mesh(obj, tf, mode, param):
     faces = len(obj.data.polygons)
     if faces <= tf:
+        print("[Decimate] Skip; under threshold")
         return
     bpy.ops.object.select_all(action='DESELECT')
     obj.select_set(True)
     bpy.context.view_layer.objects.active = obj
     m = obj.modifiers.new("Decimate", "DECIMATE")
-    if mode == "COLLAPSE": m.decimate_type, m.ratio = "COLLAPSE", min(1.0, tf/faces)
-    elif mode == "UNSUBDIV": m.decimate_type, m.iterations = "UNSUBDIV", int(param)
-    else: m.decimate_type, m.angle_limit = "PLANAR", param
+    if mode == "COLLAPSE":
+        m.decimate_type, m.ratio = "COLLAPSE", min(1.0, tf/faces * 1.5)
+    elif mode == "UNSUBDIV":
+        m.decimate_type, m.iterations = "UNSUBDIV", int(param)
+    else:
+        m.decimate_type, m.angle_limit = "PLANAR", param
     bpy.ops.object.modifier_apply(modifier=m.name)
+    print(f"[Decimate] {faces} → {len(obj.data.polygons)} faces")
 
 def transfer_weights(src, dst):
     bpy.ops.object.select_all(action='DESELECT')
-    src.select_set(True); dst.select_set(True)
+    src.select_set(True)
+    dst.select_set(True)
     bpy.context.view_layer.objects.active = dst
-    bpy.ops.object.mode_set(mode='OBJECT')
     dt = dst.modifiers.new("WeightTransfer", "DATA_TRANSFER")
     dt.object, dt.use_vert_data = src, True
     dt.data_types_verts = {'VGROUP_WEIGHTS'}
     dt.vert_mapping = 'NEAREST'
     bpy.ops.object.modifier_apply(modifier=dt.name)
+    print("[Weights] Transferred template → target")
+
+def debug_marker(at, name):
+    empty = bpy.data.objects.new(name, None)
+    empty.location = at
+    bpy.context.collection.objects.link(empty)
 
 def get_vgroup_centroid(mesh, name):
     vg = mesh.vertex_groups.get(name)
-    if not vg: return None
+    if not vg:
+        return None
     total, pos = 0.0, Vector()
     for v in mesh.data.vertices:
         for g in v.groups:
@@ -102,73 +114,60 @@ def get_vgroup_centroid(mesh, name):
                 total += g.weight
     return pos / total if total > 0 else None
 
-def get_bb_corners(obj):
+def get_bounding_box_corners(obj):
     return [obj.matrix_world @ Vector(c) for c in obj.bound_box]
 
-def get_bb_bottom_center(corners):
-    minz = min(c.z for c in corners)
-    pts = [c for c in corners if abs(c.z - minz) < 1e-6]
-    return Vector(((min(p.x for p in pts)+max(p.x for p in pts))*0.5,
-                   (min(p.y for p in pts)+max(p.y for p in pts))*0.5,
-                   minz))
+def get_bounding_box_bottom_center(corners):
+    bottom_z = min(c.z for c in corners)
+    bottom = [c for c in corners if abs(c.z - bottom_z) < 1e-6]
+    cx = sum(c.x for c in bottom) / len(bottom)
+    cy = sum(c.y for c in bottom) / len(bottom)
+    return Vector((cx, cy, bottom_z))
 
-def align_centers(template, target):
-    t_c = get_bb_bottom_center(get_bb_corners(template))
-    o_c = get_bb_bottom_center(get_bb_corners(target))
-    dx = t_c.x - o_c.x
-    dy = t_c.y - o_c.y
-    target.location.x += dx
-    target.location.y += dy
-    bpy.ops.object.select_all(action='DESELECT')
-    target.select_set(True)
-    bpy.context.view_layer.objects.active = target
-    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
-
-def align_on_ground(template, target):
-    tbb = get_bb_bottom_center(get_bb_corners(template))
-    obb = get_bb_bottom_center(get_bb_corners(target))
-    target.location += tbb - obb
-    bpy.ops.object.select_all(action='DESELECT')
-    target.select_set(True)
-    bpy.context.view_layer.objects.active = target
-    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
-
-def align_bones(arm, target):
+def align_bones(target, arm):
     bpy.context.view_layer.objects.active = arm
     bpy.ops.object.mode_set(mode='EDIT')
+    mapping = {
+        "neck1": "neck1", "neck2": "neck2",
+        "shoulder.L": "shoulder.L", "upper_arm.L": "upper_arm.L", "forearm.L": "forearm.L", "hand.L": "hand.L",
+        "shoulder.R": "shoulder.R", "upper_arm.R": "upper_arm.R", "forearm.R": "forearm.R", "hand.R": "hand.R",
+        "thigh.L": "thigh.L", "shin.L": "shin.L", "foot.L": "foot.L",
+        "thigh.R": "thigh.R", "shin.R": "shin.R", "foot.R": "foot.R",
+    }
     for bone in arm.data.edit_bones:
-        cen = get_vgroup_centroid(target, bone.name)
-        if not cen: continue
-        local = arm.matrix_world.inverted() @ cen
-        bone.head = bone.head.lerp(local, get_bias(bone.name))
-        bone.tail = bone.tail.lerp(local, get_bias(bone.name))
+        vgroup = mapping.get(bone.name, bone.name)
+        cen = get_vgroup_centroid(target, vgroup)
+        if not cen:
+            continue
+        debug_marker(cen, f"centroid_{bone.name}")
+        local_cen = arm.matrix_world.inverted() @ cen
+        h0, t0 = bone.head.copy(), bone.tail.copy()
+        bias = get_bias(bone.name)
+        bone.head = h0 + (local_cen - h0) * bias
+        bone.tail = t0 + (local_cen - t0) * bias
     bpy.ops.object.mode_set(mode='OBJECT')
+    arm.data.display_type = 'STICK'
 
 def parent_to_armature(mesh, arm):
     bpy.ops.object.select_all(action='DESELECT')
-    mesh.select_set(True); arm.select_set(True)
+    mesh.select_set(True)
+    arm.select_set(True)
     bpy.context.view_layer.objects.active = arm
     bpy.ops.object.parent_set(type='ARMATURE_NAME')
-
-def set_origin_to_bottom_face(obj):
-    bpy.ops.object.select_all(action='DESELECT')
-    obj.select_set(True)
-    bpy.context.view_layer.objects.active = obj
-    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
-    bpy.ops.object.mode_set(mode='EDIT')
-    bm = bmesh.from_edit_mesh(obj.data)
-    f = min(bm.faces, key=lambda f: sum((obj.matrix_world @ v.co).z for v in f.verts)/len(f.verts))
-    cen = sum(((obj.matrix_world @ v.co) for v in f.verts), Vector())/len(f.verts)
-    bpy.ops.object.mode_set(mode='OBJECT')
-    bpy.context.scene.cursor.location = cen
-    bpy.ops.object.origin_set(type='ORIGIN_CURSOR')
-    obj.location = (0, 0, 0)
+    mod = mesh.modifiers.get("Armature") or mesh.modifiers.new("Armature", "ARMATURE")
+    mod.object = arm
+    print("[Parent] Mesh → Armature")
 
 def export_fbx(path, mesh, arm):
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    nm = os.path.splitext(os.path.basename(path))[0]
+    mesh.name = nm
+    mesh.data.name = nm
     bpy.ops.object.select_all(action='DESELECT')
-    mesh.select_set(True); arm.select_set(True)
+    mesh.select_set(True)
+    arm.select_set(True)
     bpy.context.view_layer.objects.active = mesh
+    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
     bpy.ops.export_scene.fbx(
         filepath=path,
         use_selection=True,
@@ -181,11 +180,14 @@ def export_fbx(path, mesh, arm):
         axis_forward='-Z',
         axis_up='Y'
     )
+    print(f"[Export] {path}")
 
 def main():
     collection = get_mongo_collection(mongo_uri)
     latest = get_latest_glb_from_s3(bucket, prefix="3d_assets/")
-    if not latest: return
+    if not latest:
+        print("[Error] No GLB found")
+        return
     lid = os.path.basename(latest)
     local = os.path.join(input_folder, lid)
     download_from_s3(bucket, latest, local)
@@ -194,7 +196,9 @@ def main():
     template = append_object(template_blend, template_mesh_name)
     arm = append_object(template_blend, arm_name)
     target = import_glb(local)
-    if not all([template, arm, target]): return
+    if not all([template, arm, target]):
+        print("[Error] Missing template, armature, or target mesh")
+        return
 
     for o in (template, arm):
         bpy.ops.object.select_all(action='DESELECT')
@@ -202,8 +206,18 @@ def main():
         bpy.context.view_layer.objects.active = o
         bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
 
-    align_on_ground(template, target)
-    argv = sys.argv[sys.argv.index("--") + 1:]
+    translation = get_bounding_box_bottom_center(get_bounding_box_corners(template)) - \
+                  get_bounding_box_bottom_center(get_bounding_box_corners(target))
+    target.location += translation
+    bpy.ops.object.select_all(action='DESELECT')
+    target.select_set(True)
+    bpy.context.view_layer.objects.active = target
+    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+
+    argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
+    if len(argv) < 3:
+        print("Usage: script.py <TF> <Mode> <Param>")
+        return
     tf, mode, param = int(argv[0]), argv[1].upper(), float(argv[2])
     decimate_mesh(target, tf, mode, param)
 
@@ -211,9 +225,8 @@ def main():
         if vg.name not in target.vertex_groups:
             target.vertex_groups.new(name=vg.name)
     transfer_weights(template, target)
-    align_bones(arm, target)
+    align_bones(target, arm)
     parent_to_armature(target, arm)
-    set_origin_to_bottom_face(target)
 
     out = os.path.join(output_folder, f"{os.path.splitext(lid)[0]}_rigged.fbx")
     export_fbx(out, target, arm)
