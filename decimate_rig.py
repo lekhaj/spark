@@ -1,4 +1,5 @@
 import bpy
+import bmesh
 import os
 import sys
 import glob
