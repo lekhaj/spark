@@ -80,8 +80,10 @@ for lib_name, package_name in libraries:
 print("\n5. Testing Hunyuan3D modules...")
 script_dir = os.path.dirname(os.path.abspath(__file__))
 hunyuan_paths = [
+    os.path.join(script_dir, "Hunyuan3D-2.1"),
     os.path.join(script_dir, "Hunyuan3D-2"),
     os.path.join(script_dir, "Hunyuan3D-1"), 
+    "./Hunyuan3D-2.1",
     "./Hunyuan3D-2",
     "./Hunyuan3D-1"
 ]
@@ -92,7 +94,17 @@ for path in hunyuan_paths:
         print(f"✅ Found Hunyuan3D directory: {path}")
         hunyuan_found = True
         
-        # Check if hy3dgen module exists
+        # Check if hy3dshape module exists (for 2.1)
+        hy3dshape_path = os.path.join(path, "hy3dshape")
+        if os.path.exists(hy3dshape_path):
+            print(f"✅ Found hy3dshape module: {hy3dshape_path}")
+            
+            # Add to Python path temporarily
+            if path not in sys.path:
+                sys.path.insert(0, path)
+                print(f"✅ Added {path} to Python path")
+        
+        # Check if hy3dgen module exists (for older versions)
         hy3dgen_path = os.path.join(path, "hy3dgen")
         if os.path.exists(hy3dgen_path):
             print(f"✅ Found hy3dgen module: {hy3dgen_path}")
@@ -107,28 +119,46 @@ if not hunyuan_found:
     print("❌ Hunyuan3D directory not found")
     print("   Expected locations:", hunyuan_paths)
     print("   Please clone Hunyuan3D repository:")
-    print("   git clone https://github.com/Tencent/Hunyuan3D-1.git")
+    print("   git clone https://github.com/Tencent/Hunyuan3D-2.1.git  # For latest version")
+    print("   git clone https://github.com/Tencent/Hunyuan3D-1.git   # For legacy version")
 
-# Try importing hy3dgen modules
+# Try importing Hunyuan3D modules
 try:
-    import hy3dgen
-    print("✅ hy3dgen base module imported")
-    
-    from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
-    print("✅ Hunyuan3DDiTFlowMatchingPipeline imported")
-    
-    from hy3dgen.rembg import BackgroundRemover
-    print("✅ BackgroundRemover imported")
-    
-    from hy3dgen.texgen import Hunyuan3DPaintPipeline
-    print("✅ Hunyuan3DPaintPipeline imported")
-    
+    # Try importing 2.1 modules first
+    try:
+        from hy3dshape.pipelines import Hunyuan3DDiTFlowMatchingPipeline
+        print("✅ Hunyuan3DDiTFlowMatchingPipeline imported (2.1)")
+        
+        from hy3dshape.rembg import BackgroundRemover
+        print("✅ BackgroundRemover imported (2.1)")
+        
+        from textureGenPipeline import Hunyuan3DPaintPipeline
+        print("✅ Hunyuan3DPaintPipeline imported (2.1)")
+        
+        print("✅ Hunyuan3D-2.1 modules imported successfully")
+        
+    except ImportError:
+        # Fall back to older versions
+        import hy3dgen
+        print("✅ hy3dgen base module imported")
+        
+        from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
+        print("✅ Hunyuan3DDiTFlowMatchingPipeline imported")
+        
+        from hy3dgen.rembg import BackgroundRemover
+        print("✅ BackgroundRemover imported")
+        
+        from hy3dgen.texgen import Hunyuan3DPaintPipeline
+        print("✅ Hunyuan3DPaintPipeline imported")
+        
+        print("✅ Hunyuan3D modules imported successfully (legacy)")
+
 except ImportError as e:
     print(f"❌ Hunyuan3D modules error: {e}")
     print("   Solutions:")
     print("   1. Make sure Hunyuan3D is cloned in the project directory")
-    print("   2. Install Hunyuan3D requirements: pip install -r Hunyuan3D-2/requirements.txt")
-    print("   3. Check if the hy3dgen module is properly structured")
+    print("   2. Install Hunyuan3D requirements: pip install -r Hunyuan3D-2.1/requirements.txt")
+    print("   3. Check if the hy3dshape/hy3dgen module is properly structured")
 
 # Test 6: Check worker module
 print("\n6. Testing worker module...")

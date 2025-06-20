@@ -1,4 +1,5 @@
 # src/tasks.py
+# Updated for Hunyuan3D-2.1 compatibility
 
 import os
 import logging
@@ -98,6 +99,9 @@ try:
         OUTPUT_DIR, OUTPUT_IMAGES_DIR, OUTPUT_3D_ASSETS_DIR,
         MONGO_DB_NAME, MONGO_BIOME_COLLECTION,
         HUNYUAN3D_MODEL_PATH, HUNYUAN3D_SUBFOLDER, HUNYUAN3D_TEXGEN_MODEL_PATH,
+        HUNYUAN3D_PAINT_CONFIG_MAX_VIEWS, HUNYUAN3D_PAINT_CONFIG_RESOLUTION,
+        HUNYUAN3D_REALESRGAN_CKPT_PATH, HUNYUAN3D_MULTIVIEW_CFG_PATH, HUNYUAN3D_CUSTOM_PIPELINE_PATH,
+        HUNYUAN3D_APPLY_TORCHVISION_FIX,
         HUNYUAN3D_STEPS, HUNYUAN3D_GUIDANCE_SCALE, HUNYUAN3D_OCTREE_RESOLUTION,
         HUNYUAN3D_REMOVE_BACKGROUND, HUNYUAN3D_NUM_CHUNKS, HUNYUAN3D_ENABLE_FLASHVDM,
         HUNYUAN3D_COMPILE, HUNYUAN3D_LOW_VRAM_MODE, HUNYUAN3D_DEVICE,
@@ -156,14 +160,26 @@ except ImportError as e:
 # Step 3: Try to import Hunyuan3D modules
 try:
     if torch is not None:
-        # Try importing the specific Hunyuan3D modules
-        from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
-        from hy3dgen.shapegen import FaceReducer, FloaterRemover, DegenerateFaceRemover
-        from hy3dgen.rembg import BackgroundRemover
-        from hy3dgen.texgen import Hunyuan3DPaintPipeline
+        # Add Hunyuan3D-2.1 paths to sys.path for proper imports
+        import sys
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(current_dir)
+        hunyuan_shape_path = os.path.join(project_root, "Hunyuan3D-2.1", "hy3dshape")
+        hunyuan_paint_path = os.path.join(project_root, "Hunyuan3D-2.1", "hy3dpaint")
+        
+        if os.path.exists(hunyuan_shape_path):
+            sys.path.insert(0, hunyuan_shape_path)
+        if os.path.exists(hunyuan_paint_path):
+            sys.path.insert(0, hunyuan_paint_path)
+        
+        # Try importing the specific Hunyuan3D 2.1 modules
+        from hy3dshape.pipelines import Hunyuan3DDiTFlowMatchingPipeline
+        from hy3dshape.postprocessors import MeshSimplifier, mesh_normalize
+        from hy3dshape.rembg import BackgroundRemover
+        from textureGenPipeline import Hunyuan3DPaintPipeline, Hunyuan3DPaintConfig
         import trimesh
         
-        task_logger.info("✓ Hunyuan3D core modules imported successfully")
+        task_logger.info("✓ Hunyuan3D-2.1 core modules imported successfully")
         
         # Try importing the worker functions
         from hunyuan3d_worker import (
@@ -173,17 +189,17 @@ try:
             cleanup_models
         )
         
-        task_logger.info("✓ Hunyuan3D worker functions imported successfully")
+        task_logger.info("✓ Hunyuan3D-2.1 worker functions imported successfully")
         
         TASK_3D_MODULES_LOADED = True
-        task_logger.info("✅ All necessary Hunyuan3D modules loaded for Celery worker.")
+        task_logger.info("✅ All necessary Hunyuan3D-2.1 modules loaded for Celery worker.")
         
 except ImportError as e:
-    task_logger.error(f"✗ Could not load Hunyuan3D modules for Celery worker: {e}")
-    task_logger.error("   Make sure you have installed: transformers, diffusers, torch with CUDA support")
+    task_logger.error(f"✗ Could not load Hunyuan3D-2.1 modules for Celery worker: {e}")
+    task_logger.error("   Make sure you have installed: transformers, diffusers, torch with CUDA support, and Hunyuan3D-2.1")
     TASK_3D_MODULES_LOADED = False
 except Exception as e:
-    task_logger.error(f"✗ Unexpected error loading Hunyuan3D modules: {e}")
+    task_logger.error(f"✗ Unexpected error loading Hunyuan3D-2.1 modules: {e}")
     TASK_3D_MODULES_LOADED = False
 
 # Create function aliases
@@ -240,9 +256,7 @@ _pipeline = None
 _hunyuan_i23d_worker = None
 _hunyuan_rembg_worker = None
 _hunyuan_texgen_worker = None
-_hunyuan_floater_remove_worker = None
-_hunyuan_degenerate_face_remove_worker = None
-_hunyuan_face_reduce_worker = None
+_hunyuan_mesh_simplifier = None
 
 @worker_process_init.connect
 def initialize_processors_for_worker(**kwargs):

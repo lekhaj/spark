@@ -1,4 +1,5 @@
 # src/config.py
+# Updated for Hunyuan3D-2.1 compatibility
 import os
 from dotenv import load_dotenv
 
@@ -187,6 +188,14 @@ HUNYUAN3D_TEXGEN_MODEL_PATH = os.getenv('HUNYUAN3D_TEXGEN_MODEL_PATH', 'tencent/
 # New 2.1 specific configurations
 HUNYUAN3D_PAINT_CONFIG_MAX_VIEWS = int(os.getenv('HUNYUAN3D_PAINT_CONFIG_MAX_VIEWS', '6'))
 HUNYUAN3D_PAINT_CONFIG_RESOLUTION = int(os.getenv('HUNYUAN3D_PAINT_CONFIG_RESOLUTION', '512'))
+
+# 2.1 PBR Texture Generation Paths
+HUNYUAN3D_REALESRGAN_CKPT_PATH = os.getenv('HUNYUAN3D_REALESRGAN_CKPT_PATH', 'hy3dpaint/ckpt/RealESRGAN_x4plus.pth')
+HUNYUAN3D_MULTIVIEW_CFG_PATH = os.getenv('HUNYUAN3D_MULTIVIEW_CFG_PATH', 'hy3dpaint/cfgs/hunyuan-paint-pbr.yaml')
+HUNYUAN3D_CUSTOM_PIPELINE_PATH = os.getenv('HUNYUAN3D_CUSTOM_PIPELINE_PATH', 'hy3dpaint/hunyuanpaintpbr')
+
+# 2.1 Torchvision compatibility
+HUNYUAN3D_APPLY_TORCHVISION_FIX = os.getenv('HUNYUAN3D_APPLY_TORCHVISION_FIX', 'True').lower() == 'true'
 
 # Hunyuan3D Processing Parameters
 HUNYUAN3D_STEPS = int(os.getenv('HUNYUAN3D_STEPS', '30'))

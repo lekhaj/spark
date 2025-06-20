@@ -98,6 +98,13 @@ def _check_dependencies():
 _check_dependencies()
 
 
+def get_device():
+    """Get the appropriate device for Hunyuan3D processing."""
+    device = HUNYUAN3D_DEVICE if torch.cuda.is_available() else "cpu"
+    logger.info(f"Using device: {device}")
+    return device
+
+
 def initialize_hunyuan3d_processors():
     """
     Initialize Hunyuan3D processors for 3D generation.
@@ -120,6 +127,19 @@ def initialize_hunyuan3d_processors():
     try:
         logger.info("🚀 Initializing Hunyuan3D-2.1 processors...")
         device = get_device()
+        
+        # Apply torchvision compatibility fix for 2.1
+        try:
+            # Import torchvision fix from Hunyuan3D-2.1
+            hunyuan_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Hunyuan3D-2.1")
+            torchvision_fix_path = os.path.join(hunyuan_path, "torchvision_fix.py")
+            if os.path.exists(torchvision_fix_path):
+                sys.path.insert(0, hunyuan_path)
+                from torchvision_fix import apply_fix
+                apply_fix()
+                logger.info("✓ Applied torchvision compatibility fix")
+        except Exception as e:
+            logger.warning(f"⚠️  Could not apply torchvision fix: {e}")
         
         # Initialize shape generation pipeline for 2.1
         logger.info(f"🎯 Loading shape generation model from: {HUNYUAN3D_MODEL_PATH}")
@@ -154,7 +174,7 @@ def initialize_hunyuan3d_processors():
         # Initialize background remover
         logger.info("🖼️  Loading background removal model...")
         try:
-            from hy3dgen.rembg import BackgroundRemover
+            from hy3dshape.rembg import BackgroundRemover
             _hunyuan_rembg_worker = BackgroundRemover()
             logger.info("✓ Background removal model loaded successfully")
         except Exception as e:
@@ -174,6 +194,9 @@ def initialize_hunyuan3d_processors():
                     max_num_view=HUNYUAN3D_PAINT_CONFIG_MAX_VIEWS,
                     resolution=HUNYUAN3D_PAINT_CONFIG_RESOLUTION
                 )
+                paint_config.realesrgan_ckpt_path = "hy3dpaint/ckpt/RealESRGAN_x4plus.pth"
+                paint_config.multiview_cfg_path = "hy3dpaint/cfgs/hunyuan-paint-pbr.yaml"
+                paint_config.custom_pipeline = "hy3dpaint/hunyuanpaintpbr"
                 
                 _hunyuan_texgen_worker = Hunyuan3DPaintPipeline(paint_config)
                 
@@ -392,18 +415,14 @@ def generate_3d_from_image_core(
         
         # Apply mesh cleaning operations if available
         try:
-            # Try to import mesh processing tools
-            from hy3dgen.shapegen import FaceReducer, FloaterRemover, DegenerateFaceRemover
+            # Try to import mesh processing tools from 2.1
+            from hy3dshape.postprocessors import MeshSimplifier, mesh_normalize
             
             if hasattr(mesh, 'vertices') and hasattr(mesh, 'faces'):
-                # Use built-in mesh cleaners
-                face_reducer = FaceReducer()
-                floater_remover = FloaterRemover()
-                degenerate_remover = DegenerateFaceRemover()
-                
-                mesh = face_reducer(mesh)
-                mesh = floater_remover(mesh)
-                mesh = degenerate_remover(mesh)
+                # Use built-in mesh cleaners from 2.1
+                mesh_simplifier = MeshSimplifier()
+                mesh = mesh_simplifier(mesh)
+                mesh = mesh_normalize(mesh)
                 
                 logger.info("✓ Applied mesh cleaning operations")
         except ImportError:
