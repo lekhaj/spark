@@ -76,6 +76,20 @@ for lib_name, package_name in libraries:
         print(f"❌ {lib_name} error: {e}")
         print(f"   Install with: pip install {package_name}")
 
+# Test 4.5: Local src modules
+print("\n4.5. Testing local src modules...")
+src_dir = os.path.join(script_dir, "src")
+if src_dir not in sys.path:
+    sys.path.insert(0, src_dir)
+
+src_modules = ["s3_manager", "db_helper", "config", "aws_manager"]
+for module_name in src_modules:
+    try:
+        __import__(module_name)
+        print(f"✅ {module_name} imported successfully")
+    except Exception as e:
+        print(f"❌ {module_name} error: {e}")
+
 # Test 5: Hunyuan3D specific modules
 print("\n5. Testing Hunyuan3D modules...")
 script_dir = os.path.dirname(os.path.abspath(__file__))
