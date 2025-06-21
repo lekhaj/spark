@@ -573,14 +573,31 @@ def generate_3d_model_from_image(self, image_s3_key_or_path, with_texture=False,
         # Step 1: Download image from S3 if needed
         self.update_state(state='PROGRESS', meta={'progress': 5, 'status': 'Downloading image from S3...'})
         
-        if image_s3_key_or_path.startswith('s3://') or not os.path.exists(image_s3_key_or_path):
-            # Treat as S3 key, download to temp location
+        if image_s3_key_or_path.startswith('s3://') or image_s3_key_or_path.startswith('https://') or not os.path.exists(image_s3_key_or_path):
+            # Treat as S3 key or URL, download to temp location
             if s3_mgr is None:
                 return {"status": "error", "message": "S3 manager not available for image download"}
             
             import tempfile
             temp_dir = tempfile.mkdtemp()
-            s3_key = image_s3_key_or_path.replace('s3://', '').split('/', 1)[1] if image_s3_key_or_path.startswith('s3://') else image_s3_key_or_path
+            
+            # Parse S3 key from different URL formats
+            # First, remove any s3://bucket/ prefix that might have been incorrectly added
+            clean_path = image_s3_key_or_path
+            if clean_path.startswith('s3://sparkassets/'):
+                clean_path = clean_path.replace('s3://sparkassets/', '')
+            
+            if clean_path.startswith('s3://'):
+                # s3://bucket/key format
+                s3_key = clean_path.replace('s3://', '').split('/', 1)[1]
+            elif clean_path.startswith('https://'):
+                # https://bucket.s3.region.amazonaws.com/key format
+                from urllib.parse import urlparse
+                parsed_url = urlparse(clean_path)
+                s3_key = parsed_url.path.lstrip('/')  # Remove leading slash
+            else:
+                # Assume it's already an S3 key
+                s3_key = clean_path
             
             download_result = s3_mgr.download_image(s3_key, temp_dir)
             if download_result.get("status") != "success":

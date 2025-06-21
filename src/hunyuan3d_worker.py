@@ -391,6 +391,16 @@ def generate_3d_from_image_core(
         try:
             image = PILImage.open(image_path).convert('RGB')
             logger.info(f"✓ Loaded image: {image.size}")
+            
+            # Validate image dimensions
+            if image.size[0] < 50 or image.size[1] < 50:
+                logger.warning(f"⚠️  Image is very small: {image.size}")
+            
+            if image.size[0] > 2048 or image.size[1] > 2048:
+                logger.info(f"ℹ️  Resizing large image from {image.size} to max 1024x1024")
+                image.thumbnail((1024, 1024), PILImage.Resampling.LANCZOS)
+                logger.info(f"✓ Resized image to: {image.size}")
+                
         except Exception as e:
             error_msg = f"Failed to load image: {e}"
             logger.error(f"❌ {error_msg}")
@@ -445,10 +455,36 @@ def generate_3d_from_image_core(
         
         # Get the generated mesh
         try:
-            if hasattr(mesh_result, 'meshes') and len(mesh_result.meshes) > 0:
+            logger.info(f"🔍 Analyzing mesh_result type: {type(mesh_result)}")
+            logger.info(f"🔍 Mesh_result attributes: {dir(mesh_result)}")
+            
+            # Hunyuan3D pipeline returns a list of meshes, get the first one
+            if isinstance(mesh_result, list) and len(mesh_result) > 0:
+                mesh = mesh_result[0]
+                logger.info(f"✓ Extracted mesh from list[0], type: {type(mesh)}")
+            elif hasattr(mesh_result, 'meshes') and len(mesh_result.meshes) > 0:
                 mesh = mesh_result.meshes[0]
+                logger.info(f"✓ Extracted mesh from meshes[0], type: {type(mesh)}")
             else:
                 mesh = mesh_result
+                logger.info(f"✓ Using mesh_result directly, type: {type(mesh)}")
+            
+            # Check if mesh has vertices and faces
+            if hasattr(mesh, 'vertices'):
+                vertices = mesh.vertices.cpu().numpy() if hasattr(mesh.vertices, 'cpu') else mesh.vertices
+                logger.info(f"🔍 Mesh has {len(vertices)} vertices")
+            else:
+                logger.warning("⚠️  Mesh has no vertices attribute")
+                
+            if hasattr(mesh, 'faces'):
+                faces = mesh.faces.cpu().numpy() if hasattr(mesh.faces, 'cpu') else mesh.faces
+                logger.info(f"🔍 Mesh has {len(faces)} faces")
+            else:
+                logger.warning("⚠️  Mesh has no faces attribute")
+            
+            # Additional debugging for mesh object
+            logger.info(f"🔍 Mesh object type: {type(mesh)}")
+            logger.info(f"🔍 Mesh object attributes: {[attr for attr in dir(mesh) if not attr.startswith('_')]}")
             
             logger.info("✓ Extracted mesh from generation result")
         except Exception as e:
@@ -490,12 +526,27 @@ def generate_3d_from_image_core(
                 if hasattr(mesh, 'vertices') and hasattr(mesh, 'faces'):
                     vertices = mesh.vertices.cpu().numpy() if hasattr(mesh.vertices, 'cpu') else mesh.vertices
                     faces = mesh.faces.cpu().numpy() if hasattr(mesh.faces, 'cpu') else mesh.faces
+                    
+                    # Validate mesh data
+                    if len(vertices) == 0:
+                        error_msg = "Invalid mesh: no vertices found"
+                        logger.error(f"❌ {error_msg}")
+                        return {"status": "error", "message": error_msg}
+                    
+                    if len(faces) == 0:
+                        error_msg = "Invalid mesh: no faces found"
+                        logger.error(f"❌ {error_msg}")
+                        return {"status": "error", "message": error_msg}
+                    
+                    logger.info(f"✓ Creating trimesh with {len(vertices)} vertices and {len(faces)} faces")
                     mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
                     logger.info("✓ Converted to trimesh format")
                 else:
-                    error_msg = "Invalid mesh format generated - no vertices/faces found"
+                    error_msg = f"Invalid mesh format generated - missing vertices/faces attributes. Mesh type: {type(mesh)}, attributes: {dir(mesh)}"
                     logger.error(f"❌ {error_msg}")
                     return {"status": "error", "message": error_msg}
+            else:
+                logger.info("✓ Mesh is already in trimesh format")
             
         except ImportError:
             error_msg = "Trimesh library not available for mesh export"

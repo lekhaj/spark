@@ -67,3 +67,4 @@ logs/
 /gradio_cache
 
 config.py
+/outputs
