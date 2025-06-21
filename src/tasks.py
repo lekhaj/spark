@@ -2,6 +2,7 @@
 # Updated for Hunyuan3D-2.1 compatibility with S3 integration
 
 import os
+import sys
 import logging
 from celery import Celery
 import numpy as np
@@ -12,6 +13,11 @@ from celery.signals import worker_process_init
 from celery.utils.log import get_task_logger
 import uuid
 import tempfile
+
+# Ensure current directory is in Python path for local module imports
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
 
 # Initialize task logger
 task_logger = get_task_logger(__name__)
