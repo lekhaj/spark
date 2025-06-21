@@ -85,6 +85,14 @@ STRUCTURE_TYPES = {
 # --- Local SDXL Turbo Configuration ---
 LOCAL_MODEL_PATH = os.getenv('LOCAL_MODEL_PATH', './models/local')
 
+# --- Distributed Worker Configuration ---
+# Worker type identification for different EC2 instances
+WORKER_TYPE = os.getenv('WORKER_TYPE', 'cpu')  # 'cpu' or 'gpu'
+
+# GPU Spot Instance specific configuration
+GPU_SPOT_INSTANCE_IP = os.getenv('GPU_SPOT_INSTANCE_IP', '13.233.154.181')
+GPU_INSTANCE_REDIS_PORT = int(os.getenv('GPU_INSTANCE_REDIS_PORT', '6379'))
+
 # Enhanced Redis Configuration
 class RedisConfiguration:
     """Redis configuration manager with separate read/write connections."""
@@ -257,13 +265,6 @@ TASK_TIMEOUT_2D_GENERATION = int(os.getenv('TASK_TIMEOUT_2D_GENERATION', '300'))
 TASK_TIMEOUT_EC2_MANAGEMENT = int(os.getenv('TASK_TIMEOUT_EC2_MANAGEMENT', '600')) # 10 minutes
 
 # --- Distributed Worker Configuration ---
-# Worker type identification for different EC2 instances
-WORKER_TYPE = os.getenv('WORKER_TYPE', 'cpu')  # 'cpu' or 'gpu'
-
-# GPU Spot Instance specific configuration
-GPU_SPOT_INSTANCE_IP = os.getenv('GPU_SPOT_INSTANCE_IP', '13.233.154.181')
-GPU_INSTANCE_REDIS_PORT = int(os.getenv('GPU_INSTANCE_REDIS_PORT', '6379'))
-
 # Task monitoring and health checks
 TASK_HEALTH_CHECK_INTERVAL = int(os.getenv('TASK_HEALTH_CHECK_INTERVAL', '60'))  # 1 minute
 SPOT_INSTANCE_CHECK_INTERVAL = int(os.getenv('SPOT_INSTANCE_CHECK_INTERVAL', '300'))  # 5 minutes
