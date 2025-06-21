@@ -4,7 +4,7 @@ import sys
 
 # Set up environment for testing
 os.environ['WORKER_TYPE'] = 'cpu'
-os.environ['GPU_SPOT_INSTANCE_IP'] = '3.109.55.217'
+os.environ['GPU_SPOT_INSTANCE_IP'] = '13.233.154.181'
 os.environ['USE_CELERY'] = 'True'
 
 # Add src to path

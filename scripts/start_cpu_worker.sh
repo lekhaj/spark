@@ -27,13 +27,13 @@ if [ -f "$ENV_FILE" ]; then
 fi
 
 # Set environment variables for CPU instance (with fallbacks)
-export REDIS_BROKER_URL="${REDIS_BROKER_URL:-redis://3.109.55.217:6379/0}"
-export REDIS_RESULT_BACKEND="${REDIS_RESULT_BACKEND:-redis://3.109.55.217:6379/0}"
+export REDIS_BROKER_URL="${REDIS_BROKER_URL:-redis://13.233.154.181:6379/0}"
+export REDIS_RESULT_BACKEND="${REDIS_RESULT_BACKEND:-redis://13.233.154.181:6379/0}"
 export REDIS_WRITE_URL="${REDIS_WRITE_URL:-$REDIS_BROKER_URL}"
 export REDIS_READ_URL="${REDIS_READ_URL:-$REDIS_BROKER_URL}"
 export USE_CELERY=True
 export WORKER_TYPE=cpu
-export GPU_SPOT_INSTANCE_IP="${GPU_SPOT_INSTANCE_IP:-3.109.55.217}"
+export GPU_SPOT_INSTANCE_IP="${GPU_SPOT_INSTANCE_IP:-13.233.154.181}"
 
 # CPU worker configuration
 export CPU_WORKER_QUEUES="cpu_tasks,infrastructure"

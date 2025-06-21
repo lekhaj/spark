@@ -4,6 +4,8 @@ import torch
 import logging
 from PIL import Image
 import numpy as np
+from typing import List, Optional, Union
+import time
 from typing import List, Optional
 
 # Set up logging
@@ -54,16 +56,27 @@ class LocalModel:
             model_id = "runwayml/stable-diffusion-v1-5"
             logger.info(f"Loading fallback model {model_id}")
             
-            # Load the pipeline with low precision to save memory
+            # Try to load the model with optimal settings
+            torch_dtype = torch.float16 if self.device == "cuda" else torch.float32
+            
+            # Load the pipeline
             self.pipe = StableDiffusionPipeline.from_pretrained(
-                model_id,
-                torch_dtype=torch.float16 if self.device == "cuda" else torch.float32
+                target_model,
+                torch_dtype=torch_dtype,
+                safety_checker=None,  # Disable safety checker for faster loading
+                requires_safety_checker=False,
+                use_safetensors=True  # Use safer tensor format if available
+            )
+            
+            # Use DPM-Solver++ scheduler for better quality and speed
+            self.pipe.scheduler = DPMSolverMultistepScheduler.from_config(
+                self.pipe.scheduler.config
             )
             
             # Move to device
             self.pipe = self.pipe.to(self.device)
             
-            # Optimize for memory if on CUDA
+            # Memory optimizations
             if self.device == "cuda":
                 self.pipe.enable_attention_slicing()
             
@@ -71,21 +84,36 @@ class LocalModel:
             return True
             
         except Exception as e:
-            logger.error(f"Error loading model: {str(e)}")
+            logger.error(f"❌ Error loading model {target_model}: {str(e)}")
+            
+            # Try alternative models if the default fails
+            if target_model == self.default_model_id:
+                for alt_model in self.alternative_models:
+                    if alt_model != target_model:
+                        logger.info(f"Trying alternative model: {alt_model}")
+                        if self.load_model(alt_model):
+                            return True
+            
+            self.is_loaded = False
             return False
 
-    def generate_image(self, input_data, width=512, height=512, num_images=1):
+    def generate_image(self, input_data: str, width: int = 512, height: int = 512, 
+                      num_images: int = 1, guidance_scale: float = 7.5, 
+                      num_inference_steps: int = 20, seed: Optional[int] = None) -> List[Image.Image]:
         """
         Generate images using SDXL Turbo or fallback SD v1.5
         
         Args:
-            input_data (str): Text prompt or grid description
-            width (int): Image width
-            height (int): Image height
-            num_images (int): Number of images to generate
+            input_data: Text prompt or description
+            width: Image width (must be divisible by 8)
+            height: Image height (must be divisible by 8) 
+            num_images: Number of images to generate
+            guidance_scale: How closely to follow the prompt (1.0 to 20.0)
+            num_inference_steps: Number of denoising steps (more = higher quality, slower)
+            seed: Random seed for reproducibility
             
         Returns:
-            list: List of PIL Image objects
+            List[Image.Image]: List of generated PIL Image objects
         """
         try:
             # Try SDXL Turbo first
@@ -120,9 +148,15 @@ class LocalModel:
             if self.pipe is None:
                 raise Exception("No model available for generation")
             
-            # Ensure dimensions are multiples of 8 as required by most models
-            width = (width // 8) * 8
-            height = (height // 8) * 8
+            # Validate and fix dimensions (must be multiples of 8)
+            width = max(256, (width // 8) * 8)
+            height = max(256, (height // 8) * 8)
+            
+            # Validate guidance scale
+            guidance_scale = max(1.0, min(20.0, guidance_scale))
+            
+            # Validate inference steps
+            num_inference_steps = max(10, min(50, num_inference_steps))
             
             logger.info(f"Generating {num_images} image(s) with SD v1.5: {input_data}")
             

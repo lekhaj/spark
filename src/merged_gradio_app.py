@@ -84,7 +84,9 @@ if USE_CELERY:
                       run_biome_generation as celery_run_biome_generation, \
                       batch_process_mongodb_prompts_task as celery_batch_process_mongodb_prompts_task, \
                       generate_3d_model_from_image as celery_generate_3d_model_from_image, \
-                      manage_gpu_instance as celery_manage_gpu_instance
+                      manage_gpu_instance as celery_manage_gpu_instance, \
+                      generate_local_image as celery_generate_local_image, \
+                      process_local_generation as celery_process_local_generation
     # No direct model processor imports needed here, as they run on the worker.
     # from celery import Celery # Might need this if you want to track task results directly
     # from tasks import app as celery_app_instance # if you need to access backend results
@@ -1784,8 +1786,6 @@ if __name__ == "__main__":
                             placeholder="e.g., A lush forest with ancient ruins"
                         )
                         fallback_biome_inspector_structure_types_input = gr.Textbox(
-                            label="Enter Structure Types (comma-separated) (Fallback)",
-                            placeholder="e.g., House, Shop, Tower"
                         )
                         fallback_biome_inspector_generate_button = gr.Button("Generate Biome (Fallback)")
                         fallback_biome_inspector_output_message = gr.Textbox(label="Generation Status (Fallback)", interactive=False)

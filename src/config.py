@@ -85,12 +85,8 @@ STRUCTURE_TYPES = {
 # --- Local SDXL Turbo Configuration ---
 LOCAL_MODEL_PATH = os.getenv('LOCAL_MODEL_PATH', './models/local')
 
-# --- Worker Type Detection ---
-WORKER_TYPE = os.getenv('WORKER_TYPE', 'cpu')  # 'gpu' or 'cpu'
-GPU_SPOT_INSTANCE_IP = os.getenv('GPU_SPOT_INSTANCE_IP', '3.109.55.217')
-
-# --- Enhanced Redis Configuration for Read/Write Separation ---
-class RedisConfig:
+# Enhanced Redis Configuration
+class RedisConfiguration:
     """Redis configuration manager with separate read/write connections."""
     
     def __init__(self):
@@ -157,7 +153,7 @@ class RedisConfig:
         return results
 
 # Initialize Redis configuration
-REDIS_CONFIG = RedisConfig()
+REDIS_CONFIG = RedisConfiguration()
 
 # Celery and Redis Configuration for backward compatibility
 REDIS_BROKER_URL = os.getenv('REDIS_BROKER_URL', REDIS_CONFIG.write_url)
@@ -265,7 +261,7 @@ TASK_TIMEOUT_EC2_MANAGEMENT = int(os.getenv('TASK_TIMEOUT_EC2_MANAGEMENT', '600'
 WORKER_TYPE = os.getenv('WORKER_TYPE', 'cpu')  # 'cpu' or 'gpu'
 
 # GPU Spot Instance specific configuration
-GPU_SPOT_INSTANCE_IP = os.getenv('GPU_SPOT_INSTANCE_IP', '3.109.55.217')
+GPU_SPOT_INSTANCE_IP = os.getenv('GPU_SPOT_INSTANCE_IP', '13.233.154.181')
 GPU_INSTANCE_REDIS_PORT = int(os.getenv('GPU_INSTANCE_REDIS_PORT', '6379'))
 
 # Task monitoring and health checks
@@ -293,3 +289,39 @@ S3_3D_ASSETS_PREFIX = '3d_assets/'
 # S3 Integration settings
 USE_S3_STORAGE = os.getenv('USE_S3_STORAGE', 'True').lower() == 'true'
 S3_PUBLIC_READ = os.getenv('S3_PUBLIC_READ', 'False').lower() == 'true'
+
+# Local Model Configuration
+LOCAL_MODEL_ENABLED = True
+LOCAL_MODEL_ID = "runwayml/stable-diffusion-v1-5"
+LOCAL_MODEL_DEVICE = "auto"  # "auto", "cuda", "cpu"
+LOCAL_MODEL_MEMORY_EFFICIENT = True
+LOCAL_MODEL_CPU_OFFLOAD = False  # Enable for limited VRAM (< 6GB)
+LOCAL_MODEL_TORCH_COMPILE = False  # Enable for PyTorch 2.0+ (experimental)
+LOCAL_MODEL_USE_XFORMERS = True  # Enable xFormers for memory efficiency
+LOCAL_MODEL_SAFETY_CHECKER = False  # Disable safety checker for faster loading
+
+# Local Model Generation Settings
+LOCAL_MODEL_DEFAULT_GUIDANCE_SCALE = 7.5
+LOCAL_MODEL_DEFAULT_NUM_INFERENCE_STEPS = 20
+LOCAL_MODEL_MAX_INFERENCE_STEPS = 50
+LOCAL_MODEL_MIN_INFERENCE_STEPS = 10
+LOCAL_MODEL_DEFAULT_SCHEDULER = "DPMSolverMultistep"  # "DPMSolverMultistep", "DDIM", "LMSDiscrete"
+
+# Local Model Memory Management
+LOCAL_MODEL_MAX_BATCH_SIZE = 4  # Maximum images per batch
+LOCAL_MODEL_ENABLE_CPU_OFFLOAD_THRESHOLD = 6  # GB of VRAM, below which CPU offload is enabled
+LOCAL_MODEL_ENABLE_ATTENTION_SLICING = True
+LOCAL_MODEL_ENABLE_VAE_SLICING = True
+
+# Local Model Task Configuration
+LOCAL_TASK_QUEUE = "local_tasks"
+LOCAL_TASK_TIMEOUT = 300  # 5 minutes
+LOCAL_TASK_SOFT_TIMEOUT = 240  # 4 minutes
+LOCAL_TASK_MAX_RETRIES = 2
+
+# Alternative local models (fallbacks)
+LOCAL_MODEL_ALTERNATIVES = [
+    "stabilityai/stable-diffusion-2-1-base",
+    "CompVis/stable-diffusion-v1-4",
+    "runwayml/stable-diffusion-v1-5"
+]
