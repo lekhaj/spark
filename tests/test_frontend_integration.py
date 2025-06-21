@@ -155,58 +155,7 @@ class Test3DGenerationUIFunctions(unittest.TestCase):
         
         self.assertIsNone(result_file)
         self.assertIn('No image uploaded', message)
-    
-    @patch('merged_gradio_app.USE_CELERY', True)
-    @patch('merged_gradio_app.celery_generate_3d_model_from_prompt')
-    def test_submit_3d_from_prompt_task_celery_mode(self, mock_celery_task):
-        """Test 3D from prompt submission in Celery mode."""
-        from merged_gradio_app import submit_3d_from_prompt_task
-        
-        # Mock Celery task
-        mock_task = Mock()
-        mock_task.id = 'task-456'
-        mock_celery_task.delay.return_value = mock_task
-        
-        intermediate_img, result_file, message = submit_3d_from_prompt_task(
-            'A red sports car', True, 'glb', 'hunyuan3d'
-        )
-        
-        self.assertIsNone(intermediate_img)
-        self.assertIsNone(result_file)
-        self.assertIn('task submitted', message)
-        self.assertIn('task-456', message)
-        mock_celery_task.delay.assert_called_once_with('A red sports car', True, 'glb')
-    
-    @patch('merged_gradio_app.USE_CELERY', False)
-    @patch('merged_gradio_app.mock_generate_3d_from_prompt')
-    def test_submit_3d_from_prompt_task_dev_mode(self, mock_generate):
-        """Test 3D from prompt submission in development mode."""
-        from merged_gradio_app import submit_3d_from_prompt_task
-        
-        # Mock development function
-        mock_generate.return_value = 'Mock 3D generation from prompt result'
-        
-        intermediate_img, result_file, message = submit_3d_from_prompt_task(
-            'A blue car', True, 'glb', 'hunyuan3d'
-        )
-        
-        self.assertIsNone(intermediate_img)
-        self.assertIsNone(result_file)
-        self.assertIn('DEV Mode Mock', message)
-        mock_generate.assert_called_once_with('A blue car', True, 'glb')
-    
-    def test_submit_3d_from_prompt_task_no_prompt(self):
-        """Test 3D from prompt submission with no prompt."""
-        from merged_gradio_app import submit_3d_from_prompt_task
-        
-        intermediate_img, result_file, message = submit_3d_from_prompt_task(
-            '', True, 'glb', 'hunyuan3d'
-        )
-        
-        self.assertIsNone(intermediate_img)
-        self.assertIsNone(result_file)
-        self.assertIn('No prompt provided', message)
-    
+
     @patch('merged_gradio_app.USE_CELERY', True)
     @patch('merged_gradio_app.celery_manage_gpu_instance')
     def test_manage_gpu_instance_task_celery_mode(self, mock_celery_task):
@@ -460,23 +409,6 @@ class TestErrorHandling(unittest.TestCase):
         self.assertIsNone(result_file)
         self.assertIn('Error:', message)
         self.assertIn('Celery connection error', message)
-    
-    @patch('merged_gradio_app.celery_generate_3d_model_from_prompt')
-    def test_3d_prompt_task_exception(self, mock_celery_task):
-        """Test 3D from prompt task exception handling."""
-        from merged_gradio_app import submit_3d_from_prompt_task
-        
-        # Mock Celery task raising exception
-        mock_celery_task.delay.side_effect = Exception("Redis connection failed")
-        
-        intermediate_img, result_file, message = submit_3d_from_prompt_task(
-            'A car', True, 'glb', 'hunyuan3d'
-        )
-        
-        self.assertIsNone(intermediate_img)
-        self.assertIsNone(result_file)
-        self.assertIn('Error:', message)
-        self.assertIn('Redis connection failed', message)
 
 
 if __name__ == '__main__':

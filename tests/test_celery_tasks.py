@@ -357,69 +357,6 @@ class Test3DGenerationTasks(unittest.TestCase):
     @patch('tasks.initialize_hunyuan3d_processors')
     @patch('tasks._pipeline')
     @patch('tasks._generate_3d_from_image_core')
-    @patch('tasks.uuid.uuid4')
-    def test_generate_3d_model_from_prompt_success(self, mock_uuid, mock_generate_core, mock_pipeline, mock_init_processors):
-        """Test successful 3D model generation from text prompt."""
-        from tasks import generate_3d_model_from_prompt
-        
-        # Mock initialization
-        mock_init_processors.return_value = True
-        
-        # Mock image generation from text
-        mock_image = Mock()
-        mock_image.save = Mock()
-        mock_pipeline.process_text.return_value = [mock_image]
-        
-        # Mock 3D generation
-        mock_generate_core.return_value = {
-            'status': 'success',
-            'message': '3D model generated',
-            'white_mesh_path': '/path/to/model.glb'
-        }
-        
-        # Mock UUID
-        mock_uuid.return_value = Mock()
-        mock_uuid.return_value.__str__ = Mock(return_value='12345678-1234-1234-1234-123456789012')
-        
-        # Create a mock task instance
-        mock_task = Mock()
-        mock_task.update_state = Mock()
-        
-        result = generate_3d_model_from_prompt.apply(
-            args=['A red car', True, 'glb'],
-            task=mock_task
-        ).result
-        
-        self.assertEqual(result['status'], 'success')
-        self.assertIn('image_path', result)
-        mock_pipeline.process_text.assert_called_once_with('A red car')
-    
-    @patch('tasks.TASK_3D_MODULES_LOADED', True)
-    @patch('tasks.TASK_2D_MODULES_LOADED', True)
-    @patch('tasks.initialize_hunyuan3d_processors')
-    @patch('tasks._pipeline')
-    def test_generate_3d_model_from_prompt_no_image(self, mock_pipeline, mock_init_processors):
-        """Test 3D generation from prompt when image generation fails."""
-        from tasks import generate_3d_model_from_prompt
-        
-        # Mock initialization
-        mock_init_processors.return_value = True
-        
-        # Mock failed image generation
-        mock_pipeline.process_text.return_value = []
-        
-        # Create a mock task instance
-        mock_task = Mock()
-        mock_task.update_state = Mock()
-        
-        result = generate_3d_model_from_prompt.apply(
-            args=['A red car', True, 'glb'],
-            task=mock_task
-        ).result
-        
-        self.assertEqual(result['status'], 'error')
-        self.assertIn('Failed to generate image', result['message'])
-
 
 class TestGPUManagementTask(unittest.TestCase):
     """Test GPU instance management Celery task."""

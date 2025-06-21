@@ -72,9 +72,9 @@ cpu_task = generate_text_image.apply_async(
 )
 
 # Test GPU task (should run on GPU spot instance)
-from tasks import generate_3d_model_from_prompt
-gpu_task = generate_3d_model_from_prompt.apply_async(
-    args=["a red cube", True, "glb"],
+from tasks import generate_3d_model_from_image
+gpu_task = generate_3d_model_from_image.apply_async(
+    args=["/path/to/image.jpg", True, "glb"],
     queue='gpu_tasks'
 )
 

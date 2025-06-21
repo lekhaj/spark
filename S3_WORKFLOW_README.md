@@ -116,22 +116,6 @@ task_result = generate_3d_model_from_image.apply_async(
 )
 ```
 
-#### `generate_3d_model_from_prompt`
-
-```python
-# Enhanced with S3 storage for generated images
-task_result = generate_3d_model_from_prompt.apply_async(
-    args=[
-        "A red sports car",
-        True,  # with_texture
-        "glb", # output_format
-        "mongodb_doc_id",  # doc_id (optional)
-        "collection_name"  # collection (optional)
-    ],
-    queue="gpu_tasks"
-)
-```
-
 ## MongoDB Integration
 
 ### Document Updates

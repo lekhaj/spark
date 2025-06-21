@@ -87,7 +87,7 @@ LOCAL_MODEL_PATH = os.getenv('LOCAL_MODEL_PATH', './models/local')
 
 # --- Worker Type Detection ---
 WORKER_TYPE = os.getenv('WORKER_TYPE', 'cpu')  # 'gpu' or 'cpu'
-GPU_SPOT_INSTANCE_IP = os.getenv('GPU_SPOT_INSTANCE_IP', '13.201.23.51')
+GPU_SPOT_INSTANCE_IP = os.getenv('GPU_SPOT_INSTANCE_IP', '3.109.55.217')
 
 # --- Enhanced Redis Configuration for Read/Write Separation ---
 class RedisConfig:
@@ -171,10 +171,8 @@ CELERY_TASK_ROUTES = {
     'generate_grid_image': {'queue': 'cpu_tasks'},
     'run_biome_generation': {'queue': 'cpu_tasks'},
     'batch_process_mongodb_prompts_task': {'queue': 'cpu_tasks'},
-    
-    # GPU tasks (route to GPU spot instance) - with S3 integration
+      # GPU tasks (route to GPU spot instance) - with S3 integration
     'generate_3d_model_from_image': {'queue': 'gpu_tasks'},
-    'generate_3d_model_from_prompt': {'queue': 'gpu_tasks'},
     'process_image_for_3d_generation': {'queue': 'gpu_tasks'},
     'batch_process_s3_images_for_3d': {'queue': 'gpu_tasks'},
     
@@ -262,7 +260,7 @@ TASK_TIMEOUT_EC2_MANAGEMENT = int(os.getenv('TASK_TIMEOUT_EC2_MANAGEMENT', '600'
 WORKER_TYPE = os.getenv('WORKER_TYPE', 'cpu')  # 'cpu' or 'gpu'
 
 # GPU Spot Instance specific configuration
-GPU_SPOT_INSTANCE_IP = os.getenv('GPU_SPOT_INSTANCE_IP', '13.201.23.51')
+GPU_SPOT_INSTANCE_IP = os.getenv('GPU_SPOT_INSTANCE_IP', '3.109.55.217')
 GPU_INSTANCE_REDIS_PORT = int(os.getenv('GPU_INSTANCE_REDIS_PORT', '6379'))
 
 # Task monitoring and health checks

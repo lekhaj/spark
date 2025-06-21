@@ -81,7 +81,6 @@ if USE_CELERY:
                       run_biome_generation as celery_run_biome_generation, \
                       batch_process_mongodb_prompts_task as celery_batch_process_mongodb_prompts_task, \
                       generate_3d_model_from_image as celery_generate_3d_model_from_image, \
-                      generate_3d_model_from_prompt as celery_generate_3d_model_from_prompt, \
                       manage_gpu_instance as celery_manage_gpu_instance
     # No direct model processor imports needed here, as they run on the worker.
     # from celery import Celery # Might need this if you want to track task results directly
@@ -103,11 +102,6 @@ else:
         """Mock 3D generation from image for development mode."""
         logger.info(f"Mock 3D generation from image: {image_path}")
         return f"Mock 3D model generated from {image_path} (texture: {with_texture}, format: {output_format})"
-    
-    def mock_generate_3d_from_prompt(prompt, with_texture=False, output_format='glb'):
-        """Mock 3D generation from text prompt for development mode."""
-        logger.info(f"Mock 3D generation from prompt: {prompt}")
-        return f"Mock 3D model generated from prompt: '{prompt}' (texture: {with_texture}, format: {output_format})"
 
     def initialize_dev_processors():
         """Initialize the 2D processors and pipeline for direct execution in DEV mode."""
@@ -481,38 +475,6 @@ def submit_3d_from_image_task(image_file, with_texture, output_format, model_typ
         else:
             logger.error(f"Error submitting 3D from image task to GPU spot instance: {e}", exc_info=True)
             return None, f"❌ Error: {e}"
-
-def submit_3d_from_prompt_task(prompt, with_texture, output_format, model_type):
-    """Submit 3D generation from text prompt task - routes to GPU spot instance"""
-    if not prompt:
-        return None, None, "Error: No prompt provided"
-    
-    try:
-        if USE_CELERY:
-            # Ensure GPU spot instance is running
-            gpu_status_task = celery_manage_gpu_instance.delay("ensure_running")
-            
-            # Submit to GPU queue with spot instance retry policy
-            task = celery_generate_3d_model_from_prompt.apply_async(
-                args=[prompt, with_texture, output_format],
-                queue='gpu_tasks',  # Route to GPU spot instance
-                retry=True,
-                retry_policy={
-                    'max_retries': 3,
-                    'interval_start': 30,  # Wait for spot instance startup
-                    'interval_step': 60,
-                    'interval_max': 300,
-                }
-            )
-            return None, None, f"✅ Text-to-3D task submitted to GPU spot instance (ID: {task.id}). Processing on {REDIS_CONFIG.gpu_ip}..."
-        else:
-            # Direct processing in DEV mode (mock)
-            logger.info(f"Mock 3D generation from prompt: {prompt}")
-            result_msg = mock_generate_3d_from_prompt(prompt, with_texture, output_format)
-            return None, None, f"✅ (DEV Mode Mock) {result_msg}"
-    except Exception as e:
-        logger.error(f"Error submitting text-to-3D task to GPU spot instance: {e}", exc_info=True)
-        return None, None, f"❌ Error: {e}"
 
 def manage_gpu_instance_task(action):
     """Manage GPU instance (start/stop/status)"""
@@ -1083,101 +1045,53 @@ def build_app():
             # 3D Generation Tab
             with gr.TabItem("3D Generation", id="tab_3d_generation"):
                 gr.Markdown("# 3D Model Generation")
-                gr.Markdown(f"Generate 3D models from images or text prompts. {'Tasks are processed on GPU workers via Celery.' if USE_CELERY else 'Tasks are processed directly (mock mode).'}")
+                gr.Markdown(f"Generate 3D models from images. {'Tasks are processed on GPU workers via Celery.' if USE_CELERY else 'Tasks are processed directly (mock mode).'}")
                 
-                with gr.Tabs() as threaded_tabs:
-                    # Image to 3D Tab
-                    with gr.TabItem("Image to 3D", id="tab_image_to_3d"):
+                # Image to 3D Section (no tabs needed since only one option)
+                with gr.Row():
+                    with gr.Column(scale=3):
+                        threeded_image_upload = gr.File(
+                            label="Upload Image", 
+                            file_types=["image"],
+                            type="filepath"
+                        )
+                        gr.Markdown("""
+                        **Supported formats:** JPG, PNG, WEBP  
+                        **Recommended:** High-contrast images with clear subject matter work best for 3D reconstruction.
+                        """)
                         with gr.Row():
-                            with gr.Column(scale=3):
-                                threeded_image_upload = gr.File(
-                                    label="Upload Image", 
-                                    file_types=["image"],
-                                    type="filepath"
-                                )
-                                gr.Markdown("""
-                                **Supported formats:** JPG, PNG, WEBP  
-                                **Recommended:** High-contrast images with clear subject matter work best for 3D reconstruction.
-                                """)
-                                with gr.Row():
-                                    threeded_with_texture = gr.Checkbox(
-                                        label="Generate with Texture", 
-                                        value=True,
-                                        info="Include color/texture information in the 3D model"
-                                    )
-                                    threeded_output_format = gr.Dropdown(
-                                        choices=["glb", "obj", "ply"], 
-                                        value="glb", 
-                                        label="Output Format",
-                                        info="GLB: Complete format with textures, OBJ: Geometry only, PLY: Point cloud"
-                                    )
-                                threeded_model_type = gr.Dropdown(
-                                    choices=["hunyuan3d"], 
-                                    value="hunyuan3d", 
-                                    label="3D Model Type"
-                                )
-                                threeded_image_submit = gr.Button("Generate 3D Model from Image", variant="primary")
-                            
-                            with gr.Column(scale=2):
-                                threeded_image_output = gr.File(
-                                    label=f"Generated 3D Model (Check '{OUTPUT_3D_ASSETS_DIR}')", 
-                                    interactive=False
-                                )
-                                threeded_image_message = gr.Textbox(
-                                    label="Status", 
-                                    interactive=False,
-                                    lines=3
-                                )
-                                gr.Markdown("""
-                                **Download:** Once generated, you can download the 3D model file.  
-                                **Viewing:** Use software like Blender, MeshLab, or online 3D viewers to open the model.
-                                """)
+                            threeded_with_texture = gr.Checkbox(
+                                label="Generate with Texture", 
+                                value=True,
+                                info="Include color/texture information in the 3D model"
+                            )
+                            threeded_output_format = gr.Dropdown(
+                                choices=["glb", "obj", "ply"], 
+                                value="glb", 
+                                label="Output Format",
+                                info="GLB: Complete format with textures, OBJ: Geometry only, PLY: Point cloud"
+                            )
+                        threeded_model_type = gr.Dropdown(
+                            choices=["hunyuan3d"], 
+                            value="hunyuan3d", 
+                            label="3D Model Type"
+                        )
+                        threeded_image_submit = gr.Button("Generate 3D Model from Image", variant="primary")
                     
-                    # Text to 3D Tab
-                    with gr.TabItem("Text to 3D", id="tab_text_to_3d"):
-                        with gr.Row():
-                            with gr.Column(scale=3):
-                                threeded_text_prompt = gr.Textbox(
-                                    label="Text Prompt", 
-                                    placeholder="Describe the object you want to generate in 3D (e.g., 'A red sports car', 'A medieval castle')",
-                                    lines=3
-                                )
-                                gr.Markdown("""
-                                **Pipeline:** Text → Image → 3D Model  
-                                **Tips:** Be descriptive and specific. Mention colors, materials, and key features.
-                                """)
-                                with gr.Row():
-                                    threeded_text_with_texture = gr.Checkbox(
-                                        label="Generate with Texture", 
-                                        value=True,
-                                        info="Include color/texture information in the 3D model"
-                                    )
-                                    threeded_text_output_format = gr.Dropdown(
-                                        choices=["glb", "obj", "ply"], 
-                                        value="glb", 
-                                        label="Output Format"
-                                    )
-                                threeded_text_model_type = gr.Dropdown(
-                                    choices=["hunyuan3d"], 
-                                    value="hunyuan3d", 
-                                    label="3D Model Type"
-                                )
-                                threeded_text_submit = gr.Button("Generate 3D Model from Text", variant="primary")
-                            
-                            with gr.Column(scale=2):
-                                threeded_intermediate_image = gr.Image(
-                                    label=f"Intermediate Image (Check '{OUTPUT_IMAGES_DIR}')", 
-                                    interactive=False
-                                )
-                                threeded_text_output = gr.File(
-                                    label=f"Generated 3D Model (Check '{OUTPUT_3D_ASSETS_DIR}')", 
-                                    interactive=False
-                                )
-                                threeded_text_message = gr.Textbox(
-                                    label="Status", 
-                                    interactive=False,
-                                    lines=3
-                                )
+                    with gr.Column(scale=2):
+                        threeded_image_output = gr.File(
+                            label=f"Generated 3D Model (Check '{OUTPUT_3D_ASSETS_DIR}')", 
+                            interactive=False
+                        )
+                        threeded_image_message = gr.Textbox(
+                            label="Status", 
+                            interactive=False,
+                            lines=3
+                        )
+                        gr.Markdown("""
+                        **Download:** Once generated, you can download the 3D model file.  
+                        **Viewing:** Use software like Blender, MeshLab, or online 3D viewers to open the model.
+                        """)
                 
                 # GPU Instance Management Section
                 with gr.Accordion("GPU Instance Management", open=False):
@@ -1296,12 +1210,6 @@ def build_app():
             submit_3d_from_image_task,
             inputs=[threeded_image_upload, threeded_with_texture, threeded_output_format, threeded_model_type],
             outputs=[threeded_image_output, threeded_image_message]
-        )
-        
-        threeded_text_submit.click(
-            submit_3d_from_prompt_task,
-            inputs=[threeded_text_prompt, threeded_text_with_texture, threeded_text_output_format, threeded_text_model_type],
-            outputs=[threeded_intermediate_image, threeded_text_output, threeded_text_message]
         )
         
         gpu_submit.click(
