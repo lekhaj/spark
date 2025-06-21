@@ -1013,6 +1013,20 @@ def build_app():
                     - Optimizes prompt length for better processing
                     
                     This ensures your generated images will work optimally with the 3D model generation feature!
+                    
+                    ## 🚀 **SDXL Turbo: Local High-Quality Image Generation**
+                    
+                    **Complete Local 3D Generation Pipeline** - No API keys required!
+                    
+                    **SDXL Turbo Features**:
+                    - **⚡ Ultra-fast generation**: 2-4 inference steps (vs 20-50 for other models)
+                    - **🎯 High quality**: State-of-the-art image fidelity optimized for 3D
+                    - **💾 Memory efficient**: Designed for 15-20GB VRAM with HunyuanDi-3D
+                    - **🔧 3D-optimized**: Automatic prompt enhancement for better 3D assets
+                    - **🏠 Local processing**: No API costs, private and secure
+                    - **🔄 Seamless integration**: Works perfectly with HunyuanDi-3D
+                    
+                    **Perfect Local Workflow**: Text → SDXL Turbo → HunyuanDi-3D → 3D Model!
                     """)
                 
                 with gr.Row():
@@ -1027,7 +1041,12 @@ def build_app():
                             text_width = gr.Slider(minimum=256, maximum=1024, value=DEFAULT_IMAGE_WIDTH, step=64, label="Width")
                             text_height = gr.Slider(minimum=256, maximum=1024, value=DEFAULT_IMAGE_HEIGHT, step=64, label="Height")
                         text_num_images = gr.Slider(minimum=1, maximum=4, value=DEFAULT_NUM_IMAGES, step=1, label="Number of Images")
-                        text_model = gr.Dropdown(["openai", "stability", "local"], value=DEFAULT_TEXT_MODEL, label="Model")
+                        text_model = gr.Dropdown(
+                            ["sdxl-turbo"], 
+                            value="sdxl-turbo", 
+                            label="Model",
+                            info="SDXL Turbo: High-quality local GPU image generation optimized for 3D"
+                        )
                         text_submit = gr.Button("🚀 Generate Image from Text (3D-Optimized)", variant="primary")
 
                     with gr.Column(scale=2):
@@ -1058,7 +1077,12 @@ def build_app():
                             grid_width = gr.Slider(minimum=256, maximum=1024, value=DEFAULT_IMAGE_WIDTH, step=64, label="Width")
                             grid_height = gr.Slider(minimum=256, maximum=1024, value=DEFAULT_IMAGE_HEIGHT, step=64, label="Height")
                         grid_num_images = gr.Slider(minimum=1, maximum=4, value=DEFAULT_NUM_IMAGES, step=1, label="Number of Images")
-                        grid_model = gr.Dropdown(["openai", "stability", "local"], value=DEFAULT_GRID_MODEL, label="Model")
+                        grid_model = gr.Dropdown(
+                            ["sdxl-turbo"], 
+                            value="sdxl-turbo", 
+                            label="Model",
+                            info="SDXL Turbo: High-quality local GPU image generation optimized for 3D"
+                        )
                         grid_submit = gr.Button("Generate Image from Grid")
 
                     with gr.Column(scale=2):
@@ -1078,8 +1102,18 @@ def build_app():
                             file_height = gr.Slider(minimum=256, maximum=1024, value=DEFAULT_IMAGE_HEIGHT, step=64, label="Height")
                         file_num_images = gr.Slider(minimum=1, maximum=4, value=DEFAULT_NUM_IMAGES, step=1, label="Number of Images")
                         with gr.Row():
-                            file_text_model = gr.Dropdown(["openai", "stability", "local"], value=DEFAULT_TEXT_MODEL, label="Text Model")
-                            file_grid_model = gr.Dropdown(["openai", "stability", "local"], value=DEFAULT_GRID_MODEL, label="Grid Model")
+                            file_text_model = gr.Dropdown(
+                                ["sdxl-turbo"], 
+                                value="sdxl-turbo", 
+                                label="Text Model",
+                                info="SDXL Turbo for text processing"
+                            )
+                            file_grid_model = gr.Dropdown(
+                                ["sdxl-turbo"], 
+                                value="sdxl-turbo", 
+                                label="Grid Model",
+                                info="SDXL Turbo for grid processing"
+                            )
                         file_submit = gr.Button("Process File")
 
                     with gr.Column(scale=2):
