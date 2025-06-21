@@ -235,6 +235,18 @@ except Exception as e:
     task_logger.error(f"✗ Unexpected error loading Hunyuan3D-2.1 modules: {e}")
     TASK_3D_MODULES_LOADED = False
 
+# Try to import SDXL Turbo worker
+TASK_SDXL_MODULES_LOADED = False
+_sdxl_worker = None
+
+try:
+    from sdxl_turbo_worker import SDXLTurboWorker, get_sdxl_worker
+    TASK_SDXL_MODULES_LOADED = True
+    task_logger.info("✅ SDXL Turbo worker modules loaded successfully")
+except ImportError as e:
+    task_logger.error(f"✗ Failed to load SDXL Turbo worker modules: {e}")
+    TASK_SDXL_MODULES_LOADED = False
+
 # Create function aliases
 _generate_3d_from_image_core = generate_3d_from_image_core
 
@@ -1112,3 +1124,301 @@ def batch_process_s3_images_for_3d(self, image_s3_keys, processing_options=None)
         "failed": len(image_s3_keys) - success_count,
         "results": results
     }
+
+@app.task(name='generate_image_sdxl_turbo', bind=True)
+def generate_image_sdxl_turbo(
+    self, 
+    prompt, 
+    negative_prompt=None,
+    width=1024, 
+    height=1024,
+    num_inference_steps=2,
+    guidance_scale=0.0,
+    seed=None,
+    enhance_prompt=True,
+    output_s3_prefix="sdxl_turbo",
+    doc_id=None,
+    update_collection=None
+):
+    """
+    Celery task to generate high-quality images using SDXL Turbo model.
+    Optimized for 15-20GB VRAM with memory management.
+    
+    Args:
+        prompt: Text prompt for image generation
+        negative_prompt: Negative prompt (optional)
+        width: Image width (default 1024)
+        height: Image height (default 1024)  
+        num_inference_steps: Number of denoising steps (1-4 for Turbo)
+        guidance_scale: Guidance scale (0.0 for Turbo)
+        seed: Random seed for reproducibility
+        enhance_prompt: Whether to enhance prompt for 3D generation
+        output_s3_prefix: S3 prefix for uploaded image
+        doc_id: MongoDB document ID to update
+        update_collection: Collection name to update
+    """
+    task_logger.info("🚀 Starting SDXL Turbo image generation task")
+    task_logger.info(f"   Prompt: {prompt}")
+    task_logger.info(f"   Dimensions: {width}x{height}")
+    task_logger.info(f"   Steps: {num_inference_steps}")
+    task_logger.info(f"   SDXL modules loaded: {TASK_SDXL_MODULES_LOADED}")
+    
+    if not TASK_SDXL_MODULES_LOADED:
+        error_msg = "SDXL Turbo modules not loaded on this worker. Please check module installation."
+        task_logger.error(f"❌ {error_msg}")
+        return {"status": "error", "message": error_msg}
+    
+    # Initialize managers
+    s3_mgr = get_s3_manager()
+    mongo_mgr = get_mongo_helper()
+    
+    try:
+        # Step 1: Initialize SDXL worker
+        self.update_state(state='PROGRESS', meta={'progress': 5, 'status': 'Initializing SDXL Turbo...'})
+        
+        task_logger.info("🔧 Initializing SDXL Turbo worker...")
+        from sdxl_turbo_worker import get_sdxl_worker
+        
+        sdxl_worker = get_sdxl_worker()
+        
+        # Check worker health
+        health = sdxl_worker.health_check()
+        task_logger.info(f"SDXL worker health: {health}")
+        
+        # Step 2: Load model if needed
+        if not health.get('model_loaded', False):
+            self.update_state(state='PROGRESS', meta={'progress': 10, 'status': 'Loading SDXL Turbo model...'})
+            task_logger.info("⚙️ Loading SDXL Turbo model...")
+            
+            if not sdxl_worker.load_model():
+                error_msg = "Failed to load SDXL Turbo model"
+                task_logger.error(f"❌ {error_msg}")
+                return {"status": "error", "message": error_msg}
+            
+            task_logger.info("✅ SDXL Turbo model loaded successfully")
+        
+        # Step 3: Generate image
+        self.update_state(state='PROGRESS', meta={'progress': 20, 'status': 'Generating image...'})
+        task_logger.info("🎨 Starting image generation...")
+        
+        # Create temporary output directory
+        temp_output_dir = tempfile.mkdtemp()
+        
+        try:
+            # Generate and save image
+            output_path, metadata = sdxl_worker.generate_and_save(
+                prompt=prompt,
+                output_dir=temp_output_dir,
+                filename_prefix="sdxl_turbo",
+                negative_prompt=negative_prompt,
+                width=width,
+                height=height,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+                seed=seed,
+                enhance_prompt=enhance_prompt
+            )
+            
+            if output_path is None:
+                error_msg = f"Image generation failed: {metadata.get('error', 'Unknown error')}"
+                task_logger.error(f"❌ {error_msg}")
+                return {"status": "error", "message": error_msg}
+            
+            task_logger.info(f"✅ Image generated successfully: {output_path}")
+            
+            # Step 4: Upload to S3
+            self.update_state(state='PROGRESS', meta={'progress': 80, 'status': 'Uploading to S3...'})
+            
+            s3_url = None
+            if s3_mgr:
+                upload_result = s3_mgr.upload_image(
+                    output_path, 
+                    output_s3_prefix
+                )
+                
+                if upload_result.get("status") == "success":
+                    s3_url = upload_result.get("s3_url")
+                    task_logger.info(f"✅ Image uploaded to S3: {s3_url}")
+                else:
+                    task_logger.warning(f"Failed to upload image to S3: {upload_result.get('message')}")
+            
+            # Step 5: Update MongoDB
+            mongodb_updated = False
+            if mongo_mgr and doc_id and update_collection:
+                self.update_state(state='PROGRESS', meta={'progress': 90, 'status': 'Updating database...'})
+                
+                update_data = {
+                    "sdxl_turbo_image_path": output_path,
+                    "sdxl_turbo_generated_at": datetime.now(),
+                    "sdxl_turbo_metadata": metadata,
+                    "sdxl_turbo_status": "completed"
+                }
+                
+                if s3_url:
+                    update_data["sdxl_turbo_s3_url"] = s3_url
+                
+                try:
+                    result_count = mongo_mgr.update_by_id(
+                        db_name="spark_assets",
+                        collection_name=update_collection,
+                        document_id=doc_id,
+                        update={"$set": update_data}
+                    )
+                    
+                    if result_count > 0:
+                        mongodb_updated = True
+                        task_logger.info(f"✅ Updated MongoDB document {doc_id}")
+                    else:
+                        task_logger.warning(f"MongoDB document {doc_id} not found or not updated")
+                        
+                except Exception as e:
+                    task_logger.error(f"Failed to update MongoDB: {e}")
+            
+            # Step 6: Final result
+            self.update_state(state='SUCCESS', meta={'progress': 100, 'status': 'Completed successfully'})
+            
+            result = {
+                "status": "success",
+                "message": "Image generated successfully with SDXL Turbo",
+                "image_path": output_path,
+                "metadata": metadata,
+                "mongodb_updated": mongodb_updated
+            }
+            
+            if s3_url:
+                result["s3_image_url"] = s3_url
+            
+            task_logger.info("✅ SDXL Turbo image generation completed successfully")
+            return result
+            
+        finally:
+            # Cleanup temporary directory
+            try:
+                import shutil
+                if os.path.exists(temp_output_dir):
+                    shutil.rmtree(temp_output_dir)
+            except Exception as e:
+                task_logger.warning(f"Failed to cleanup temp directory: {e}")
+    
+    except Exception as e:
+        error_msg = f"SDXL Turbo image generation failed: {str(e)}"
+        task_logger.error(f"❌ {error_msg}", exc_info=True)
+        return {"status": "error", "message": error_msg}
+
+
+@app.task(name='batch_generate_images_sdxl_turbo', bind=True)
+def batch_generate_images_sdxl_turbo(
+    self,
+    prompts_list,
+    batch_settings=None,
+    output_s3_prefix="sdxl_turbo_batch"
+):
+    """
+    Batch generate multiple images using SDXL Turbo
+    
+    Args:
+        prompts_list: List of prompts to generate images for
+        batch_settings: Common settings for all images
+        output_s3_prefix: S3 prefix for batch upload
+    """
+    task_logger.info(f"🚀 Starting SDXL Turbo batch generation for {len(prompts_list)} prompts")
+    
+    if not TASK_SDXL_MODULES_LOADED:
+        error_msg = "SDXL Turbo modules not loaded on this worker"
+        task_logger.error(f"❌ {error_msg}")
+        return {"status": "error", "message": error_msg}
+    
+    # Default batch settings
+    default_settings = {
+        "width": 1024,
+        "height": 1024,
+        "num_inference_steps": 2,
+        "guidance_scale": 0.0,
+        "enhance_prompt": True
+    }
+    
+    if batch_settings:
+        default_settings.update(batch_settings)
+    
+    results = []
+    total_prompts = len(prompts_list)
+    
+    try:
+        # Initialize worker once for batch
+        from sdxl_turbo_worker import get_sdxl_worker
+        sdxl_worker = get_sdxl_worker()
+        
+        if not sdxl_worker.load_model():
+            return {"status": "error", "message": "Failed to load SDXL Turbo model"}
+        
+        for i, prompt in enumerate(prompts_list):
+            try:
+                progress = int((i / total_prompts) * 100)
+                self.update_state(
+                    state='PROGRESS', 
+                    meta={'progress': progress, 'status': f'Generating image {i+1}/{total_prompts}'}
+                )
+                
+                task_logger.info(f"Generating image {i+1}/{total_prompts}: {prompt}")
+                
+                # Create temp output dir for this image
+                temp_output_dir = tempfile.mkdtemp()
+                
+                try:
+                    output_path, metadata = sdxl_worker.generate_and_save(
+                        prompt=prompt,
+                        output_dir=temp_output_dir,
+                        filename_prefix=f"batch_{i+1}",
+                        **default_settings
+                    )
+                    
+                    if output_path:
+                        results.append({
+                            "prompt": prompt,
+                            "status": "success",
+                            "image_path": output_path,
+                            "metadata": metadata
+                        })
+                        task_logger.info(f"✅ Generated image {i+1}/{total_prompts}")
+                    else:
+                        results.append({
+                            "prompt": prompt,
+                            "status": "error",
+                            "message": metadata.get('error', 'Unknown error')
+                        })
+                        task_logger.error(f"❌ Failed to generate image {i+1}/{total_prompts}")
+                
+                finally:
+                    # Cleanup temp directory
+                    try:
+                        import shutil
+                        if os.path.exists(temp_output_dir):
+                            shutil.rmtree(temp_output_dir)
+                    except Exception as e:
+                        task_logger.warning(f"Failed to cleanup temp directory: {e}")
+                        
+            except Exception as e:
+                task_logger.error(f"Error generating image {i+1}: {e}")
+                results.append({
+                    "prompt": prompt,
+                    "status": "error", 
+                    "message": str(e)
+                })
+        
+        self.update_state(state='SUCCESS', meta={'progress': 100, 'status': 'Batch generation completed'})
+        
+        successful_count = len([r for r in results if r['status'] == 'success'])
+        task_logger.info(f"✅ Batch generation completed: {successful_count}/{total_prompts} successful")
+        
+        return {
+            "status": "success",
+            "message": f"Batch generation completed: {successful_count}/{total_prompts} successful",
+            "results": results,
+            "total_prompts": total_prompts,
+            "successful_count": successful_count
+        }
+        
+    except Exception as e:
+        error_msg = f"Batch generation failed: {str(e)}"
+        task_logger.error(f"❌ {error_msg}", exc_info=True)
+        return {"status": "error", "message": error_msg}

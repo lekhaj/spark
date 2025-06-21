@@ -15,8 +15,8 @@ OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_BASE_URL = "https://openrouter.ai"
 
 # --- Image Generation Model Defaults ---
-DEFAULT_TEXT_MODEL = "stability"  # Default for text-to-image generation (e.g., stability, openai, local)
-DEFAULT_GRID_MODEL = "stability"  # Default for grid-to-image generation (e.g., stability, openai, local)
+DEFAULT_TEXT_MODEL = "sdxl-turbo"  # Local SDXL Turbo for text-to-image generation
+DEFAULT_GRID_MODEL = "sdxl-turbo"  # Local SDXL Turbo for grid-to-image generation
 
 # --- Image Dimensions ---
 DEFAULT_IMAGE_WIDTH = 512
@@ -77,12 +77,12 @@ STRUCTURE_TYPES = {
     # Add more categories as needed
 }
 
-# --- API Configuration ---
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-STABILITY_API_KEY = os.getenv('STABILITY_API_KEY')
-DALLE_API_KEY = os.getenv('DALLE_API_KEY')
+# --- API Configuration (No longer needed - using local SDXL Turbo only) ---
+# OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+# STABILITY_API_KEY = os.getenv('STABILITY_API_KEY')
+# DALLE_API_KEY = os.getenv('DALLE_API_KEY')
 
-# --- Local Model Configuration ---
+# --- Local SDXL Turbo Configuration ---
 LOCAL_MODEL_PATH = os.getenv('LOCAL_MODEL_PATH', './models/local')
 
 # --- Worker Type Detection ---
@@ -171,10 +171,15 @@ CELERY_TASK_ROUTES = {
     'generate_grid_image': {'queue': 'cpu_tasks'},
     'run_biome_generation': {'queue': 'cpu_tasks'},
     'batch_process_mongodb_prompts_task': {'queue': 'cpu_tasks'},
-      # GPU tasks (route to GPU spot instance) - with S3 integration
+    
+    # GPU tasks (route to GPU spot instance) - with S3 integration
     'generate_3d_model_from_image': {'queue': 'gpu_tasks'},
     'process_image_for_3d_generation': {'queue': 'gpu_tasks'},
     'batch_process_s3_images_for_3d': {'queue': 'gpu_tasks'},
+    
+    # SDXL Turbo image generation tasks (GPU-optimized)
+    'generate_image_sdxl_turbo': {'queue': 'sdxl_tasks'},
+    'batch_generate_images_sdxl_turbo': {'queue': 'sdxl_tasks'},
     
     # Infrastructure tasks (can run on either instance)
     'manage_gpu_instance': {'queue': 'infrastructure'},
@@ -182,7 +187,7 @@ CELERY_TASK_ROUTES = {
 
 # Worker configuration for different instance types
 CPU_WORKER_QUEUES = ['cpu_tasks', 'infrastructure']
-GPU_WORKER_QUEUES = ['gpu_tasks']
+GPU_WORKER_QUEUES = ['gpu_tasks', 'sdxl_tasks', 'image_generation']
 
 # Spot instance handling configuration
 AWS_GPU_IS_SPOT_INSTANCE = os.getenv('AWS_GPU_IS_SPOT_INSTANCE', 'True').lower() == 'true'
