@@ -719,6 +719,71 @@ def generate_3d_model_from_image(self, image_s3_key_or_path, with_texture=False,
             except Exception as e:
                 task_logger.error(f"Failed to update MongoDB: {e}")
                 result['mongodb_error'] = str(e)
+                
+        # Step 6: Update MongoDB document by image_path for 3D asset link
+        if mongo_mgr and result.get('status') == 'success' and s3_urls.get('model'):
+            task_logger.info(f"🔍 Checking MongoDB update conditions:")
+            task_logger.info(f"   mongo_mgr: {mongo_mgr is not None}")
+            task_logger.info(f"   update_collection: {update_collection}")
+            task_logger.info(f"   result status: {result.get('status')}")
+            task_logger.info(f"   s3_model_url: {s3_urls.get('model')}")
+            
+            # Use a default collection if update_collection is not provided
+            collection_to_update = update_collection or "biomes"  # Default to biomes collection
+            
+            try:
+                from config import MONGO_DB_NAME
+                
+                task_logger.info(f"🔍 Searching for document with image_path: {image_s3_key_or_path}")
+                
+                # Debug: Show sample image paths in the collection
+                try:
+                    sample_docs = mongo_mgr.debug_image_paths(MONGO_DB_NAME, collection_to_update, limit=5)
+                    task_logger.info(f"🔍 Sample image_path values in collection:")
+                    for doc in sample_docs:
+                        task_logger.info(f"   ID: {doc.get('_id')}, image_path: {doc.get('image_path')}")
+                except Exception as e:
+                    task_logger.warning(f"Could not fetch sample image paths: {e}")
+                
+                # Find document by image_path using the helper method
+                doc = mongo_mgr.find_by_image_path(MONGO_DB_NAME, collection_to_update, image_s3_key_or_path)
+                
+                if doc:
+                    task_logger.info(f"✅ Found document: {doc.get('_id')} in collection: {collection_to_update}")
+                    
+                    # Update document with 3D asset link and set processed to false
+                    asset_update_data = {
+                        "$set": {
+                            "3d_asset_url": s3_urls['model'],
+                            "3d_asset_generated_at": datetime.now(),
+                            "3d_asset_format": output_format,
+                            "processed": False  # Set processed to false as requested
+                        }
+                    }
+                    
+                    task_logger.info(f"🔄 Updating document with data: {asset_update_data}")
+                    update_result = mongo_mgr.update_by_id(MONGO_DB_NAME, collection_to_update, str(doc['_id']), asset_update_data)
+                    task_logger.info(f"✅ Updated document with 3D asset URL and set processed=false: {update_result} records modified")
+                    result['asset_mongodb_updated'] = True
+                    result['updated_doc_id'] = str(doc['_id'])
+                    result['updated_collection'] = collection_to_update
+                else:
+                    task_logger.warning(f"⚠️ No document found with image_path matching: {image_s3_key_or_path}")
+                    task_logger.info(f"🔍 Tried searching in collection: {collection_to_update}")
+                    result['asset_mongodb_updated'] = False
+                    result['asset_mongodb_warning'] = f"No document found with image_path: {image_s3_key_or_path}"
+                
+            except Exception as e:
+                task_logger.error(f"Failed to update MongoDB with 3D asset link: {e}")
+                result['asset_mongodb_error'] = str(e)
+        else:
+            task_logger.info("⏭️ Skipping MongoDB update - conditions not met")
+            if not mongo_mgr:
+                task_logger.info("   Reason: mongo_mgr is None")
+            if result.get('status') != 'success':
+                task_logger.info(f"   Reason: result status is {result.get('status')}")
+            if not s3_urls.get('model'):
+                task_logger.info("   Reason: no S3 model URL available")
         
         # Cleanup temp directory
         if temp_dir and os.path.exists(temp_dir):
