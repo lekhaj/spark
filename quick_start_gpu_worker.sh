@@ -93,6 +93,29 @@ except Exception as e:
 echo "🧪 Testing Hunyuan3D-2.1 setup..."
 python3 test_hunyuan3d_setup.py
 
+# Additional test: Check if src modules can be imported
+echo "🧪 Testing src module imports..."
+python3 -c "
+import sys
+import os
+sys.path.insert(0, os.path.join(os.getcwd(), 'src'))
+try:
+    import s3_manager
+    print('✅ s3_manager imported successfully')
+except Exception as e:
+    print(f'❌ s3_manager import failed: {e}')
+try:
+    import db_helper
+    print('✅ db_helper imported successfully')
+except Exception as e:
+    print(f'❌ db_helper import failed: {e}')
+try:
+    import config
+    print('✅ config imported successfully')
+except Exception as e:
+    print(f'❌ config import failed: {e}')
+"
+
 # Check if test passed
 if [ $? -eq 0 ]; then
     echo ""
@@ -103,6 +126,9 @@ if [ $? -eq 0 ]; then
     export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:2048,expandable_segments:True
     export HUNYUAN3D_LOW_VRAM_MODE=False
     export CUDA_LAUNCH_BLOCKING=0
+    
+    # Set up Python path for module imports (include both src and project root)
+    export PYTHONPATH="$SCRIPT_DIR/src:$SCRIPT_DIR:$PYTHONPATH"
     
     # Clear GPU memory cache before starting
     python3 -c "import torch; torch.cuda.empty_cache() if torch.cuda.is_available() else None; print('🧹 GPU cache cleared')"
@@ -118,6 +144,26 @@ if [ $? -eq 0 ]; then
     sleep 2
     
     echo "🎮 Loading models directly to GPU VRAM..."
+    echo "📍 Python path: $PYTHONPATH"
+    echo "📍 Working directory: $(pwd)"
+    
+    # Final test of imports before starting Celery worker
+    echo "🔍 Final import check..."
+    python3 -c "
+try:
+    import s3_manager, db_helper, config
+    print('✅ All required modules imported successfully')
+except Exception as e:
+    print(f'❌ Import error: {e}')
+    import sys
+    print(f'Python path: {sys.path}')
+    exit(1)
+"
+    
+    if [ $? -ne 0 ]; then
+        echo "❌ Module import check failed. Cannot start worker."
+        exit 1
+    fi
     
     # Start Celery worker with GPU-focused configuration
     exec celery -A tasks worker \
