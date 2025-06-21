@@ -77,7 +77,7 @@ def decimate_mesh(obj, tf, mode, param):
     bpy.context.view_layer.objects.active = obj
     m = obj.modifiers.new("Decimate", "DECIMATE")
     if mode == "COLLAPSE":
-        m.decimate_type, m.ratio = "COLLAPSE", min(1.0, tf/faces * 1.5)
+        m.decimate_type, m.ratio = "COLLAPSE", min(1.0, tf/faces )
     elif mode == "UNSUBDIV":
         m.decimate_type, m.iterations = "UNSUBDIV", int(param)
     else:
