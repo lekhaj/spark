@@ -12,6 +12,7 @@ from pathlib import Path
 import json
 import httpx
 import base64
+import requests
 import pymongo # For ObjectId in MongoDB operations (local DB access)
 
 from datetime import datetime # Ensure datetime is imported
@@ -420,62 +421,6 @@ async def handler(theme: str, structure_types_str: str, db_name: str, collection
     return msg, gr.update(choices=updated_biome_names, value=selected_value)
 
 # --- 3D Generation Functions ---
-def submit_3d_from_image_task(image_file, with_texture, output_format, model_type):
-    """Submit 3D generation from image task - routes to GPU spot instance"""
-    if image_file is None:
-        return None, "Error: No image uploaded"
-    
-    try:
-        if USE_CELERY:
-            # Test Redis connectivity before submitting task
-            redis_test = REDIS_CONFIG.test_connection('write')
-            if not redis_test.get('write', {}).get('success'):
-                error_msg = redis_test.get('write', {}).get('error', 'Unknown Redis error')
-                logger.error(f"Redis write connection failed: {error_msg}")
-                
-                if "read only replica" in error_msg.lower():
-                    return None, "❌ Redis Error: Connected to read-only replica. Please configure a writable Redis master or check Redis configuration."
-                else:
-                    return None, f"❌ Redis Connection Error: {error_msg}"
-            
-            # Ensure GPU spot instance is running before submitting task
-            gpu_status_task = celery_manage_gpu_instance.delay("ensure_running")
-            
-            # Submit the actual 3D generation task to GPU queue with spot instance retry policy
-            task = celery_generate_3d_model_from_image.apply_async(
-                args=[image_file, with_texture, output_format],
-                queue='gpu_tasks',  # Route to GPU spot instance
-                retry=True,
-                retry_policy={
-                    'max_retries': 3,
-                    'interval_start': 30,  # Wait for spot instance startup
-                    'interval_step': 60,
-                    'interval_max': 300,
-                }
-            )
-            return None, f"✅ 3D generation task submitted to GPU spot instance (ID: {task.id}). Processing on {REDIS_CONFIG.gpu_ip}..."
-        else:
-            # Direct processing in DEV mode (mock)
-            logger.info(f"Mock 3D generation from image: {image_file}")
-            result_msg = mock_generate_3d_from_image(image_file, with_texture, output_format)
-            return None, f"✅ (DEV Mode Mock) {result_msg}"
-    except Exception as e:
-        error_msg = str(e)
-        
-        # Handle specific Redis-related errors
-        if "read only replica" in error_msg.lower():
-            logger.error(f"Redis read-only error: {e}")
-            return None, "❌ Redis Error: Cannot submit task to read-only Redis instance. Please configure a writable Redis master."
-        elif "connection" in error_msg.lower() and ("redis" in error_msg.lower() or "refused" in error_msg.lower()):
-            logger.error(f"Redis connection error: {e}")
-            return None, "❌ Redis Connection Error: Cannot connect to Redis broker. Please check Redis server status."
-        elif "operationalerror" in error_msg.lower():
-            logger.error(f"Redis operational error: {e}")
-            return None, "❌ Redis Operational Error: Redis broker is not accessible for task submission."
-        else:
-            logger.error(f"Error submitting 3D from image task to GPU spot instance: {e}", exc_info=True)
-            return None, f"❌ Error: {e}"
-
 def manage_gpu_instance_task(action):
     """Manage GPU instance (start/stop/status)"""
     try:
@@ -1047,36 +992,80 @@ def build_app():
                 gr.Markdown("# 3D Model Generation")
                 gr.Markdown(f"Generate 3D models from images. {'Tasks are processed on GPU workers via Celery.' if USE_CELERY else 'Tasks are processed directly (mock mode).'}")
                 
-                # Image to 3D Section (no tabs needed since only one option)
+                # MongoDB Images Section
+                with gr.Accordion("MongoDB Images", open=True):
+                    gr.Markdown("### Browse and use images from MongoDB database")
+                    
+                    with gr.Row():
+                        with gr.Column(scale=1):
+                            mongo_img_db_name = gr.Textbox(
+                                label="Database Name", 
+                                value=MONGO_DB_NAME, 
+                                placeholder="Enter database name"
+                            )
+                            mongo_img_collection = gr.Textbox(
+                                label="Collection Name", 
+                                value=MONGO_BIOME_COLLECTION, 
+                                placeholder="Enter collection name"
+                            )
+                            fetch_images_btn = gr.Button("Fetch Images from MongoDB", variant="secondary")
+                            images_status = gr.Textbox(
+                                label="Status", 
+                                interactive=False,
+                                lines=2
+                            )
+                        
+                        with gr.Column(scale=2):
+                            mongodb_images_gallery = gr.Gallery(
+                                label="Available Images from MongoDB",
+                                show_label=True,
+                                elem_id="mongodb_images",
+                                columns=3,
+                                rows=2,
+                                height="300px",
+                                interactive=True
+                            )
+                            # Hidden state to store image URLs
+                            mongodb_image_urls = gr.State([])
+                            selected_image_url = gr.Textbox(
+                                label="Selected Image URL",
+                                interactive=False,
+                                visible=True,
+                                placeholder="Click on an image above to select it"
+                            )
+                
+                # 3D Generation from MongoDB Images
                 with gr.Row():
                     with gr.Column(scale=3):
-                        threeded_image_upload = gr.File(
-                            label="Upload Image", 
-                            file_types=["image"],
-                            type="filepath"
-                        )
-                        gr.Markdown("""
-                        **Supported formats:** JPG, PNG, WEBP  
-                        **Recommended:** High-contrast images with clear subject matter work best for 3D reconstruction.
-                        """)
+                        gr.Markdown("### 3D Generation Settings")
+                        gr.Markdown("Configure settings for generating 3D models from selected MongoDB images.")
+                        
                         with gr.Row():
                             threeded_with_texture = gr.Checkbox(
                                 label="Generate with Texture", 
-                                value=True,
-                                info="Include color/texture information in the 3D model"
+                                value=True
                             )
                             threeded_output_format = gr.Dropdown(
                                 choices=["glb", "obj", "ply"], 
                                 value="glb", 
-                                label="Output Format",
-                                info="GLB: Complete format with textures, OBJ: Geometry only, PLY: Point cloud"
+                                label="Output Format"
                             )
+                        gr.Markdown("""
+                        **Texture**: Include color/texture information in the 3D model  
+                        **Format**: GLB (complete with textures), OBJ (geometry only), PLY (point cloud)
+                        """, elem_classes=["small-text"])
+                        
                         threeded_model_type = gr.Dropdown(
                             choices=["hunyuan3d"], 
                             value="hunyuan3d", 
                             label="3D Model Type"
                         )
-                        threeded_image_submit = gr.Button("Generate 3D Model from Image", variant="primary")
+                        
+                        threeded_generate_btn = gr.Button(
+                            "🚀 Generate 3D Model from Selected Image", 
+                            variant="primary",
+                            interactive=False
+                        )
                     
                     with gr.Column(scale=2):
                         threeded_image_output = gr.File(
@@ -1086,9 +1075,14 @@ def build_app():
                         threeded_image_message = gr.Textbox(
                             label="Status", 
                             interactive=False,
-                            lines=3
+                            lines=4
                         )
                         gr.Markdown("""
+                        **How to use:**
+                        1. Select an image from the MongoDB gallery above
+                        2. Configure 3D generation settings on the left
+                        3. Click "Generate 3D Model" to start processing
+                        
                         **Download:** Once generated, you can download the 3D model file.  
                         **Viewing:** Use software like Blender, MeshLab, or online 3D viewers to open the model.
                         """)
@@ -1206,9 +1200,103 @@ def build_app():
         )
         
         # 3D Generation Tab Event Handlers
-        threeded_image_submit.click(
-            submit_3d_from_image_task,
-            inputs=[threeded_image_upload, threeded_with_texture, threeded_output_format, threeded_model_type],
+        
+        # MongoDB Images functionality
+        def fetch_and_update_gallery(db_name, collection_name):
+            """Fetch images and update both gallery and URL state"""
+            image_items, status = fetch_images_from_mongodb(db_name, collection_name)
+            
+            # Extract just the URLs for state storage
+            urls = [item[0] for item in image_items] if image_items else []
+            
+            return image_items, status, urls
+        
+        fetch_images_btn.click(
+            fetch_and_update_gallery,
+            inputs=[mongo_img_db_name, mongo_img_collection],
+            outputs=[mongodb_images_gallery, images_status, mongodb_image_urls]
+        )
+        
+        # Handle image selection from gallery using index
+        def on_image_select(evt: gr.SelectData, urls_list):
+            """Handle image selection from the MongoDB gallery using index"""
+            if evt.index is not None and urls_list and evt.index < len(urls_list):
+                selected_url = urls_list[evt.index]
+                logger.info(f"Selected image at index {evt.index}: {selected_url}")
+                return (
+                    gr.update(value=selected_url, visible=True), 
+                    gr.update(interactive=True)
+                )
+            else:
+                logger.warning(f"Invalid selection: index={evt.index}, urls_count={len(urls_list) if urls_list else 0}")
+                return (
+                    gr.update(value="", visible=True), 
+                    gr.update(interactive=False)
+                )
+        
+        mongodb_images_gallery.select(
+            on_image_select,
+            inputs=[mongodb_image_urls],
+            outputs=[selected_image_url, threeded_generate_btn]
+        )
+        
+        # Generate 3D model from selected MongoDB image
+        def generate_3d_from_mongodb_image(image_url, with_texture, output_format, model_type):
+            """Send MongoDB image URL directly to 3D generation with user-configured settings"""
+            if not image_url:
+                return None, "❌ No image selected. Please select an image from the MongoDB gallery above."
+            
+            # Validate URL format
+            if not isinstance(image_url, str) or not image_url.startswith(('http://', 'https://')):
+                logger.error(f"Invalid image URL format: {image_url}")
+                return None, f"❌ Invalid URL format: {image_url}"
+            
+            logger.info(f"Submitting MongoDB image URL to 3D generation: {image_url}")
+            logger.info(f"Settings: texture={with_texture}, format={output_format}, model={model_type}")
+            
+            try:
+                if USE_CELERY:
+                    # Test Redis connectivity before submitting task
+                    redis_test = REDIS_CONFIG.test_connection('write')
+                    if not redis_test.get('write', {}).get('success'):
+                        error_msg = redis_test.get('write', {}).get('error', 'Unknown Redis error')
+                        logger.error(f"Redis write connection failed: {error_msg}")
+                        
+                        if "read only replica" in error_msg.lower():
+                            return None, "❌ Redis Error: Connected to read-only replica. Please configure a writable Redis master or check Redis configuration."
+                        else:
+                            return None, f"❌ Redis Connection Error: {error_msg}"
+                    
+                    # Ensure GPU spot instance is running before submitting task
+                    gpu_status_task = celery_manage_gpu_instance.delay("ensure_running")
+                    
+                    # Submit the 3D generation task with the image URL and user settings
+                    task = celery_generate_3d_model_from_image.apply_async(
+                        args=[image_url, with_texture, output_format],
+                        queue='gpu_tasks',  # Route to GPU spot instance
+                        retry=True,
+                        retry_policy={
+                            'max_retries': 3,
+                            'interval_start': 30,  # Wait for spot instance startup
+                            'interval_step': 60,
+                            'interval_max': 300,
+                        }
+                    )
+                    return None, f"✅ 3D generation task submitted (ID: {task.id})\nImage: {image_url}\nSettings: Texture={with_texture}, Format={output_format}\nProcessing on: {REDIS_CONFIG.gpu_ip}"
+                else:
+                    # Direct processing in DEV mode (mock)
+                    logger.info(f"Mock 3D generation from MongoDB URL: {image_url}")
+                    result_msg = mock_generate_3d_from_image(image_url, with_texture, output_format)
+                    return None, f"✅ (DEV Mode Mock) {result_msg}\nSettings: Texture={with_texture}, Format={output_format}"
+                    
+            except Exception as e:
+                error_msg = str(e)
+                logger.error(f"Error submitting 3D generation task with MongoDB URL: {e}", exc_info=True)
+                return None, f"❌ Error submitting task: {error_msg}"
+        
+        threeded_generate_btn.click(
+            generate_3d_from_mongodb_image,
+            inputs=[selected_image_url, threeded_with_texture, threeded_output_format, threeded_model_type],
             outputs=[threeded_image_output, threeded_image_message]
         )
         
@@ -1272,6 +1360,43 @@ def build_app():
         )
 
     return demo
+
+# --- 3D Generation Functions ---
+
+def fetch_images_from_mongodb(db_name: str, collection_name: str) -> tuple[list, str]:
+    """
+    Fetch all documents that have 'image_path' field from MongoDB and return them for display.
+    Returns (list_of_image_tuples, status_message).
+    """
+    try:
+        mongo_helper = MongoDBHelper()
+        
+        # Query for documents that have the 'image_path' field
+        query = {"image_path": {"$exists": True, "$ne": None, "$ne": ""}}
+        documents = mongo_helper.find_many(db_name, collection_name, query, limit=50)
+        
+        image_items = []
+        for doc in documents:
+            image_path = doc.get("image_path")
+            if image_path and isinstance(image_path, str) and image_path.startswith("http"):
+                # Create a caption with document info
+                doc_id = str(doc.get("_id", "Unknown"))
+                name = doc.get("name", doc.get("theme", doc.get("prompt", "Unnamed")))
+                caption = f"ID: {doc_id[:8]}... | {name[:50]}..."
+                
+                # Store as simple tuple - Gradio gallery expects (image_url, caption)
+                image_items.append((image_path, caption))
+                logger.debug(f"Added image: URL={image_path}, Caption={caption}")
+        
+        status_msg = f"✅ Found {len(image_items)} images from {len(documents)} documents in {db_name}.{collection_name}"
+        logger.info(status_msg)
+        logger.debug(f"Image items structure: {image_items[:2] if image_items else 'No items'}")  # Log first 2 items for debugging
+        return image_items, status_msg
+        
+    except Exception as e:
+        error_msg = f"❌ Error fetching images from MongoDB: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        return [], error_msg
 
 # Main execution block
 if __name__ == "__main__":
@@ -1383,6 +1508,7 @@ if __name__ == "__main__":
                         fallback_text_height = gr.Slider(minimum=256, maximum=1024, value=512, step=64, label="Height")
                         fallback_text_num_images = gr.Slider(minimum=1, maximum=4, value=1, step=1, label="Number of Images")
                         fallback_text_model = gr.Dropdown(["openai", "stability", "local"], value="openai", label="Model")
+
                         fallback_text_output = gr.Image(label="Generated Image")
                         fallback_text_message = gr.Textbox(label="Status", interactive=False)
                         gr.Button("Generate Image").click(

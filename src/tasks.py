@@ -570,10 +570,36 @@ def generate_3d_model_from_image(self, image_s3_key_or_path, with_texture=False,
     temp_dir = None
     
     try:
-        # Step 1: Download image from S3 if needed
-        self.update_state(state='PROGRESS', meta={'progress': 5, 'status': 'Downloading image from S3...'})
+        # Step 1: Download image from S3, HTTP URL, or use local file
+        self.update_state(state='PROGRESS', meta={'progress': 5, 'status': 'Preparing image...'})
         
-        if image_s3_key_or_path.startswith('s3://') or image_s3_key_or_path.startswith('https://') or not os.path.exists(image_s3_key_or_path):
+        if image_s3_key_or_path.startswith(('http://', 'https://')):
+            # Handle HTTP/HTTPS URLs (MongoDB image URLs)
+            task_logger.info(f"🌐 Downloading image from URL: {image_s3_key_or_path}")
+            self.update_state(state='PROGRESS', meta={'progress': 8, 'status': 'Downloading image from URL...'})
+            
+            import tempfile
+            import requests
+            from urllib.parse import urlparse
+            
+            temp_dir = tempfile.mkdtemp()
+            
+            # Parse URL to get file extension
+            parsed_url = urlparse(image_s3_key_or_path)
+            file_ext = os.path.splitext(parsed_url.path)[1] or '.png'
+            local_image_path = os.path.join(temp_dir, f"downloaded_image{file_ext}")
+            
+            # Download the image
+            response = requests.get(image_s3_key_or_path, stream=True, timeout=30)
+            response.raise_for_status()
+            
+            with open(local_image_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            
+            task_logger.info(f"✅ Downloaded image from URL to: {local_image_path}")
+            
+        elif image_s3_key_or_path.startswith('s3://') or image_s3_key_or_path.startswith('https://') or not os.path.exists(image_s3_key_or_path):
             # Treat as S3 key or URL, download to temp location
             if s3_mgr is None:
                 return {"status": "error", "message": "S3 manager not available for image download"}
