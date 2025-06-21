@@ -32,9 +32,11 @@ from config import (
     OUTPUT_DIR, OUTPUT_IMAGES_DIR, OUTPUT_3D_ASSETS_DIR,
     MONGO_DB_NAME, MONGO_BIOME_COLLECTION,
     REDIS_BROKER_URL, REDIS_CONFIG, # Enhanced Redis configuration
-    USE_CELERY # <--- NEW: Flag to control Celery usage
+    USE_CELERY, # <--- NEW: Flag to control Celery usage
+    S3_BUCKET_NAME, S3_REGION, USE_S3_STORAGE, S3_3D_ASSETS_PREFIX # S3 configuration
 )
-from db_helper import MongoDBHelper 
+from db_helper import MongoDBHelper
+from s3_manager import get_s3_manager 
 
 # Global variables to store ID mappings for dropdowns
 _prompt_id_mapping = {}
@@ -437,21 +439,28 @@ def manage_gpu_instance_task(action):
 def process_image_generation_task(prompt_or_grid_content, width, height, num_images, model_type, is_grid_input=False):
     """
     Generic function to handle image generation, routing to Celery or direct processing.
+    Now includes 3D-optimized prompt enhancement for better 3D asset generation.
     Returns (image_output, grid_viz_output, message)
     """
+    # Enhance prompts for 3D generation (only for text prompts, not grids)
+    if not is_grid_input and isinstance(prompt_or_grid_content, str):
+        enhanced_prompt = enhance_prompt_for_3d_generation(prompt_or_grid_content)
+    else:
+        enhanced_prompt = prompt_or_grid_content
+    
     if USE_CELERY:
         if is_grid_input:
             task = celery_generate_grid_image.apply_async(
-                args=[prompt_or_grid_content, width, height, num_images, model_type],
+                args=[enhanced_prompt, width, height, num_images, model_type],
                 queue='cpu_tasks'  # Route to CPU instance
             )
             return None, None, f"✅ Grid processing task submitted to CPU instance (ID: {task.id}). Image will be saved to '{OUTPUT_IMAGES_DIR}' on the worker."
         else:
             task = celery_generate_text_image.apply_async(
-                args=[prompt_or_grid_content, width, height, num_images, model_type],
+                args=[enhanced_prompt, width, height, num_images, model_type],
                 queue='cpu_tasks'  # Route to CPU instance
             )
-            return None, f"✅ Text-to-image task submitted to CPU instance (ID: {task.id}). Image will be saved to '{OUTPUT_IMAGES_DIR}' on the worker."
+            return None, f"✅ Text-to-image task submitted to CPU instance (ID: {task.id}). Image will be saved to '{OUTPUT_IMAGES_DIR}' on the worker.\n🎯 3D-Optimized prompt used for better 3D asset generation."
     else:
         # Direct processing in DEV mode
         if _dev_pipeline is None:
@@ -459,8 +468,8 @@ def process_image_generation_task(prompt_or_grid_content, width, height, num_ima
 
         try:
             if is_grid_input:
-                logger.info(f"Directly processing grid: {prompt_or_grid_content[:50]}...")
-                images, grid_viz = _dev_pipeline.process_grid(prompt_or_grid_content)
+                logger.info(f"Directly processing grid: {enhanced_prompt[:50]}...")
+                images, grid_viz = _dev_pipeline.process_grid(enhanced_prompt)
                 if not images:
                     return None, None, "No images generated directly."
 
@@ -469,14 +478,14 @@ def process_image_generation_task(prompt_or_grid_content, width, height, num_ima
 
                 return images[0], grid_viz, f"Generated image directly. Saved to {img_path}"
             else:
-                logger.info(f"Directly processing text prompt: {prompt_or_grid_content[:50]}...")
-                images = _dev_pipeline.process_text(prompt_or_grid_content)
+                logger.info(f"Directly processing enhanced text prompt: {enhanced_prompt[:50]}...")
+                images = _dev_pipeline.process_text(enhanced_prompt)
                 if not images:
                     return None, "No images generated directly."
 
                 img_path = save_image(images[0], f"text_direct_{int(time.time())}", "images")
 
-                return images[0], f"Generated image directly. Saved to {img_path}"
+                return images[0], f"Generated image directly using 3D-optimized prompt. Saved to {img_path}\n🎯 Enhanced prompt: {enhanced_prompt}"
         except Exception as e:
             logger.error(f"Error during direct image generation: {e}", exc_info=True)
             if is_grid_input:
@@ -790,6 +799,68 @@ def submit_batch_process_mongodb_prompts_task_ui(db_name=MONGO_DB_NAME, collecti
             logger.error(f"Error in batch processing: {e}")
             return f"Error in batch processing: {e}"
 
+# --- S3 and Progress Tracking Helper Functions ---
+def get_task_progress(task_id):
+    """Get progress of a Celery task."""
+    if not USE_CELERY:
+        return {"status": "development", "progress": 100}
+    
+    try:
+        from celery.result import AsyncResult
+        task = AsyncResult(task_id)
+        
+        if task.state == 'PENDING':
+            return {"status": "pending", "progress": 0, "message": "Task is pending..."}
+        elif task.state == 'PROGRESS':
+            return {
+                "status": "progress", 
+                "progress": task.info.get('progress', 0),
+                "message": task.info.get('status', 'Processing...')
+            }
+        elif task.state == 'SUCCESS':
+            return {"status": "success", "progress": 100, "result": task.result}
+        elif task.state == 'FAILURE':
+            return {"status": "error", "progress": 0, "message": str(task.info)}
+        else:
+            return {"status": task.state.lower(), "progress": 50, "message": f"Task state: {task.state}"}
+    except Exception as e:
+        logger.error(f"Error getting task progress: {e}")
+        return {"status": "error", "progress": 0, "message": f"Error: {e}"}
+
+def get_s3_3d_asset_url(s3_key):
+    """Generate S3 URL for 3D asset."""
+    if USE_S3_STORAGE and S3_BUCKET_NAME:
+        return f"https://{S3_BUCKET_NAME}.s3.{S3_REGION}.amazonaws.com/{s3_key}"
+    return None
+
+def check_s3_3d_asset_exists(source_image_name, output_format="glb"):
+    """Check if 3D asset exists in S3 for given source image."""
+    if not USE_S3_STORAGE:
+        return False, None
+    
+    try:
+        s3_mgr = get_s3_manager()
+        if not s3_mgr:
+            return False, None
+        
+        # Generate expected S3 key based on source image name
+        base_name = os.path.splitext(source_image_name)[0]
+        s3_key = f"{S3_3D_ASSETS_PREFIX}generated/{base_name}.{output_format}"
+        
+        # Try to get object metadata to check existence
+        try:
+            s3_mgr.s3_client.head_object(Bucket=S3_BUCKET_NAME, Key=s3_key)
+            s3_url = get_s3_3d_asset_url(s3_key)
+            return True, s3_url
+        except:
+            return False, None
+    except Exception as e:
+        logger.error(f"Error checking S3 asset existence: {e}")
+        return False, None
+
+# Global variable to store active 3D generation tasks
+_active_3d_tasks = {}
+
 # --- FastAPI and Gradio app setup code ---
 # Create the Gradio Interface
 def build_app():
@@ -919,19 +990,49 @@ def build_app():
 
             # Text to Image Tab
             with gr.TabItem("Text to Image", id="tab_text_image"):
+                gr.Markdown("# Text-to-Image Generation")
+                gr.Markdown("Generate images from text descriptions. **All prompts are automatically optimized for 3D asset generation** with added keywords for better 3D model quality.")
+                
+                # 3D Optimization Info
+                with gr.Accordion("🎯 3D Generation Optimization", open=False):
+                    gr.Markdown("""
+                    ### Automatic Prompt Enhancement for 3D Assets
+                    
+                    To ensure the best quality 3D models, all text prompts are automatically enhanced with:
+                    
+                    **Core 3D Enhancements:**
+                    - `3d render, photorealistic, clean white background`
+                    - `studio lighting, product photography style, sharp details`
+                    
+                    **Quality Improvements:**
+                    - `high resolution, professional lighting, centered composition`
+                    - `no shadows on background, isolated object`
+                    
+                    **Automatic Cleanup:**
+                    - Removes conflicting background terms (landscape, indoor, outdoor, etc.)
+                    - Optimizes prompt length for better processing
+                    
+                    This ensures your generated images will work optimally with the 3D model generation feature!
+                    """)
+                
                 with gr.Row():
                     with gr.Column(scale=3):
-                        text_input = gr.Textbox(label="Text Prompt", placeholder="Enter a description of the image you want to generate...")
+                        text_input = gr.Textbox(
+                            label="Text Prompt", 
+                            placeholder="Enter a description of the image you want to generate (e.g., 'a red sports car', 'wooden chair', 'ceramic vase')...",
+                            lines=3
+                        )
+                        gr.Markdown("**💡 Tip:** Describe objects clearly for best 3D generation results. Background and environment terms will be automatically optimized.")
                         with gr.Row():
                             text_width = gr.Slider(minimum=256, maximum=1024, value=DEFAULT_IMAGE_WIDTH, step=64, label="Width")
                             text_height = gr.Slider(minimum=256, maximum=1024, value=DEFAULT_IMAGE_HEIGHT, step=64, label="Height")
                         text_num_images = gr.Slider(minimum=1, maximum=4, value=DEFAULT_NUM_IMAGES, step=1, label="Number of Images")
                         text_model = gr.Dropdown(["openai", "stability", "local"], value=DEFAULT_TEXT_MODEL, label="Model")
-                        text_submit = gr.Button("Generate Image from Text")
+                        text_submit = gr.Button("🚀 Generate Image from Text (3D-Optimized)", variant="primary")
 
                     with gr.Column(scale=2):
                         text_output = gr.Image(label=f"Generated Image (Check '{OUTPUT_IMAGES_DIR}')", interactive=False)
-                        text_message = gr.Textbox(label="Status", interactive=False)
+                        text_message = gr.Textbox(label="Status", interactive=False, lines=4)
 
             # Grid to Image Tab
             with gr.TabItem("Grid to Image", id="tab_grid_image"):
@@ -992,6 +1093,18 @@ def build_app():
                 gr.Markdown("# 3D Model Generation")
                 gr.Markdown(f"Generate 3D models from images. {'Tasks are processed on GPU workers via Celery.' if USE_CELERY else 'Tasks are processed directly (mock mode).'}")
                 
+                # S3 Integration Status
+                if USE_S3_STORAGE:
+                    gr.Markdown(f"""
+                    ### 🌐 S3 Cloud Storage Integration Enabled
+                    - **Bucket**: `{S3_BUCKET_NAME}` (Region: {S3_REGION})
+                    - **Auto-upload**: Generated 3D models are automatically uploaded to S3
+                    - **Duplicate check**: Existing models are detected to avoid re-processing
+                    - **Download links**: S3 URLs provided for easy access
+                    """)
+                else:
+                    gr.Markdown("### 📁 Local Storage Mode\nModels will be saved locally. Enable S3 integration for cloud storage.")
+                    
                 # MongoDB Images Section
                 with gr.Accordion("MongoDB Images", open=True):
                     gr.Markdown("### Browse and use images from MongoDB database")
@@ -1069,8 +1182,14 @@ def build_app():
                     
                     with gr.Column(scale=2):
                         threeded_image_output = gr.File(
-                            label=f"Generated 3D Model (Check '{OUTPUT_3D_ASSETS_DIR}')", 
+                            label="Generated 3D Model (Download Link)", 
                             interactive=False
+                        )
+                        threeded_progress = gr.Textbox(
+                            label="Generation Progress",
+                            interactive=False,
+                            lines=2,
+                            placeholder="Progress will appear here during generation..."
                         )
                         threeded_image_message = gr.Textbox(
                             label="Status", 
@@ -1083,7 +1202,8 @@ def build_app():
                         2. Configure 3D generation settings on the left
                         3. Click "Generate 3D Model" to start processing
                         
-                        **Download:** Once generated, you can download the 3D model file.  
+                        **S3 Integration:** Models are automatically uploaded to S3 cloud storage for easy access.  
+                        **Download:** Use the download link provided after generation to get your 3D model.  
                         **Viewing:** Use software like Blender, MeshLab, or online 3D viewers to open the model.
                         """)
                 
@@ -1117,17 +1237,21 @@ def build_app():
             with gr.TabItem("MongoDB", id="tab_mongodb"):
                 with gr.Tabs() as mongo_tabs:
                     with gr.TabItem("Text Prompts", id="tab_mongo_text"):
+                        gr.Markdown("### Generate Images from MongoDB Prompts")
+                        gr.Markdown("🎯 **All prompts are automatically enhanced for 3D asset generation** - perfect for creating images that will work well with the 3D Generation tab!")
+                        
                         with gr.Row():
                             with gr.Column(scale=2):
                                 mongo_db_name = gr.Textbox(label="Database Name", value=MONGO_DB_NAME, placeholder="Enter database name")
                                 mongo_collection = gr.Textbox(label="Collection Name", value=MONGO_BIOME_COLLECTION, placeholder="Enter collection name")
                                 mongo_fetch_btn = gr.Button("Fetch Prompts")
+                                gr.Markdown("**💡 Tip:** Generated images will be optimized with clean white backgrounds and 3D-friendly lighting for better 3D model generation.")
                                 with gr.Row():
                                     mongo_width = gr.Slider(minimum=256, maximum=1024, value=DEFAULT_IMAGE_WIDTH, step=64, label="Width")
                                     mongo_height = gr.Slider(minimum=256, maximum=1024, value=DEFAULT_IMAGE_HEIGHT, step=64, label="Height")
                                 mongo_num_images = gr.Slider(minimum=1, maximum=4, value=DEFAULT_NUM_IMAGES, step=1, label="Number of Images")
                                 mongo_model = gr.Dropdown(["openai", "stability", "local"], value=DEFAULT_TEXT_MODEL, label="Model")
-                            mongo_process_btn = gr.Button("Generate Image", interactive=False)
+                            mongo_process_btn = gr.Button("🚀 Generate 3D-Optimized Image", interactive=False, variant="primary")
 
                         with gr.Column(scale=2):
                             mongo_prompts = gr.Dropdown(label="Select a Prompt", choices=[], interactive=False, allow_custom_value=True)
@@ -1240,22 +1364,39 @@ def build_app():
             outputs=[selected_image_url, threeded_generate_btn]
         )
         
-        # Generate 3D model from selected MongoDB image
-        def generate_3d_from_mongodb_image(image_url, with_texture, output_format, model_type):
-            """Send MongoDB image URL directly to 3D generation with user-configured settings"""
+        # Generate 3D model from selected MongoDB image with progress tracking
+        def generate_3d_from_mongodb_image_with_progress(image_url, with_texture, output_format, model_type, progress=gr.Progress()):
+            """Send MongoDB image URL directly to 3D generation with user-configured settings and progress tracking"""
             if not image_url:
-                return None, "❌ No image selected. Please select an image from the MongoDB gallery above."
+                return None, "❌ No image selected. Please select an image from the MongoDB gallery above.", ""
             
             # Validate URL format
             if not isinstance(image_url, str) or not image_url.startswith(('http://', 'https://')):
                 logger.error(f"Invalid image URL format: {image_url}")
-                return None, f"❌ Invalid URL format: {image_url}"
+                return None, f"❌ Invalid URL format: {image_url}", ""
             
             logger.info(f"Submitting MongoDB image URL to 3D generation: {image_url}")
             logger.info(f"Settings: texture={with_texture}, format={output_format}, model={model_type}")
             
+            # Extract image name from URL for S3 asset checking
+            try:
+                from urllib.parse import urlparse
+                parsed_url = urlparse(image_url)
+                image_filename = os.path.basename(parsed_url.path)
+                
+                # Check if 3D asset already exists in S3
+                if USE_S3_STORAGE:
+                    progress(0.05, desc="Checking existing 3D assets...")
+                    asset_exists, existing_s3_url = check_s3_3d_asset_exists(image_filename, output_format)
+                    if asset_exists:
+                        return existing_s3_url, f"✅ 3D model already exists in S3!\nModel URL: {existing_s3_url}\nDownload the model from the link above.", "✅ Asset found in S3 storage"
+                
+            except Exception as e:
+                logger.warning(f"Could not check for existing S3 assets: {e}")
+            
             try:
                 if USE_CELERY:
+                    progress(0.1, desc="Testing Redis connectivity...")
                     # Test Redis connectivity before submitting task
                     redis_test = REDIS_CONFIG.test_connection('write')
                     if not redis_test.get('write', {}).get('success'):
@@ -1263,13 +1404,15 @@ def build_app():
                         logger.error(f"Redis write connection failed: {error_msg}")
                         
                         if "read only replica" in error_msg.lower():
-                            return None, "❌ Redis Error: Connected to read-only replica. Please configure a writable Redis master or check Redis configuration."
+                            return None, "❌ Redis Error: Connected to read-only replica. Please configure a writable Redis master or check Redis configuration.", "❌ Redis Error"
                         else:
-                            return None, f"❌ Redis Connection Error: {error_msg}"
+                            return None, f"❌ Redis Connection Error: {error_msg}", "❌ Connection Error"
                     
+                    progress(0.15, desc="Ensuring GPU instance is running...")
                     # Ensure GPU spot instance is running before submitting task
-                    gpu_status_task = celery_manage_gpu_instance.delay("ensure_running")
+                    celery_manage_gpu_instance.delay("ensure_running")
                     
+                    progress(0.2, desc="Submitting 3D generation task...")
                     # Submit the 3D generation task with the image URL and user settings
                     task = celery_generate_3d_model_from_image.apply_async(
                         args=[image_url, with_texture, output_format],
@@ -1282,22 +1425,79 @@ def build_app():
                             'interval_max': 300,
                         }
                     )
-                    return None, f"✅ 3D generation task submitted (ID: {task.id})\nImage: {image_url}\nSettings: Texture={with_texture}, Format={output_format}\nProcessing on: {REDIS_CONFIG.gpu_ip}"
+                    
+                    # Store task ID for progress tracking
+                    task_id = task.id
+                    _active_3d_tasks[task_id] = {
+                        'image_url': image_url,
+                        'settings': {'texture': with_texture, 'format': output_format},
+                        'start_time': time.time()
+                    }
+                    
+                    # Monitor task progress
+                    progress(0.25, desc="Monitoring task progress...")
+                    max_wait_time = 300  # 5 minutes max wait
+                    start_time = time.time()
+                    last_progress = 0.25
+                    
+                    while time.time() - start_time < max_wait_time:
+                        task_progress = get_task_progress(task_id)
+                        current_progress = last_progress + (task_progress.get('progress', 0) / 100) * 0.7  # Scale to 0.25-0.95 range
+                        
+                        if task_progress['status'] == 'success':
+                            progress(0.95, desc="3D generation completed! Processing result...")
+                            result = task_progress.get('result', {})
+                            
+                            # Check if result contains S3 URL
+                            if isinstance(result, dict):
+                                s3_model_url = result.get('s3_model_url') or result.get('model_s3_url')
+                                local_path = result.get('local_path') or result.get('model_local_path')
+                                
+                                if s3_model_url:
+                                    progress(1.0, desc="✅ 3D model ready for download!")
+                                    success_msg = f"✅ 3D generation completed successfully!\nS3 URL: {s3_model_url}\nSettings: Texture={with_texture}, Format={output_format}\nProcessed on: {REDIS_CONFIG.gpu_ip}"
+                                    return s3_model_url, success_msg, "✅ Generation completed successfully!"
+                                elif local_path:
+                                    success_msg = f"✅ 3D generation completed successfully!\nLocal Path: {local_path}\nSettings: Texture={with_texture}, Format={output_format}\nProcessed on: {REDIS_CONFIG.gpu_ip}"
+                                    return local_path, success_msg, "✅ Generation completed successfully!"
+                            
+                            # Fallback message if URLs not found in result
+                            success_msg = f"✅ 3D generation task completed (ID: {task_id})\nResult: {result}\nSettings: Texture={with_texture}, Format={output_format}\nProcessed on: {REDIS_CONFIG.gpu_ip}"
+                            return None, success_msg, "✅ Task completed"
+                            
+                        elif task_progress['status'] == 'error':
+                            error_msg = f"❌ 3D generation failed: {task_progress.get('message', 'Unknown error')}"
+                            return None, error_msg, "❌ Generation failed"
+                        
+                        elif task_progress['status'] == 'progress':
+                            progress(current_progress, desc=task_progress.get('message', 'Processing...'))
+                            last_progress = current_progress
+                        
+                        time.sleep(2)  # Check every 2 seconds
+                    
+                    # Timeout case
+                    timeout_msg = f"⏰ 3D generation task submitted but timed out waiting for result (ID: {task_id})\nTask may still be processing. Check the GPU worker logs.\nSettings: Texture={with_texture}, Format={output_format}"
+                    return None, timeout_msg, "⏰ Task timeout"
+                    
                 else:
                     # Direct processing in DEV mode (mock)
+                    progress(0.3, desc="Mock processing (DEV mode)...")
                     logger.info(f"Mock 3D generation from MongoDB URL: {image_url}")
+                    time.sleep(2)  # Simulate processing time
+                    progress(0.8, desc="Finalizing mock result...")
                     result_msg = mock_generate_3d_from_image(image_url, with_texture, output_format)
-                    return None, f"✅ (DEV Mode Mock) {result_msg}\nSettings: Texture={with_texture}, Format={output_format}"
+                    progress(1.0, desc="✅ Mock processing complete!")
+                    return None, f"✅ (DEV Mode Mock) {result_msg}\nSettings: Texture={with_texture}, Format={output_format}", "✅ Mock generation completed"
                     
             except Exception as e:
                 error_msg = str(e)
                 logger.error(f"Error submitting 3D generation task with MongoDB URL: {e}", exc_info=True)
-                return None, f"❌ Error submitting task: {error_msg}"
+                return None, f"❌ Error submitting task: {error_msg}", "❌ Submission error"
         
         threeded_generate_btn.click(
-            generate_3d_from_mongodb_image,
+            generate_3d_from_mongodb_image_with_progress,
             inputs=[selected_image_url, threeded_with_texture, threeded_output_format, threeded_model_type],
-            outputs=[threeded_image_output, threeded_image_message]
+            outputs=[threeded_image_output, threeded_image_message, threeded_progress]
         )
         
         gpu_submit.click(
@@ -1360,6 +1560,67 @@ def build_app():
         )
 
     return demo
+
+# --- Prompt Enhancement for 3D Asset Generation ---
+def enhance_prompt_for_3d_generation(original_prompt):
+    """
+    Enhanced prompt engineering specifically optimized for 3D asset generation.
+    Adds keywords that improve 3D model quality and ensure proper background.
+    """
+    if not original_prompt or not isinstance(original_prompt, str):
+        return original_prompt
+    
+    # Core 3D optimization keywords
+    base_3d_enhancements = [
+        "3d render",
+        "photorealistic", 
+        "clean white background",
+        "studio lighting",
+        "product photography style",
+        "sharp details",
+        "clear object boundaries"
+    ]
+    
+    # Additional quality improvements for 3D
+    quality_enhancements = [
+        "high resolution",
+        "professional lighting",
+        "no shadows on background",
+        "centered composition",
+        "isolated object"
+    ]
+    
+    # Remove any existing background-related terms that might conflict
+    conflicting_terms = [
+        "transparent background", "black background", "colorful background",
+        "complex background", "detailed background", "environment",
+        "landscape", "indoor", "outdoor", "room", "street", "scene"
+    ]
+    
+    # Clean the original prompt (case insensitive)
+    cleaned_prompt = original_prompt
+    for term in conflicting_terms:
+        # Replace both exact matches and partial matches
+        cleaned_prompt = cleaned_prompt.replace(term, "")
+        cleaned_prompt = cleaned_prompt.replace(term.title(), "")
+    
+    # Construct the optimized prompt
+    essential_3d_terms = ", ".join(base_3d_enhancements)
+    enhanced_prompt = f"{cleaned_prompt.strip()}, {essential_3d_terms}"
+    
+    # Add quality enhancements if prompt isn't too long
+    if len(enhanced_prompt) < 150:
+        quality_terms = ", ".join(quality_enhancements[:3])  # Only add first 3 quality terms
+        enhanced_prompt = f"{enhanced_prompt}, {quality_terms}"
+    
+    # Clean up any double commas or extra spaces
+    enhanced_prompt = enhanced_prompt.replace(", ,", ",").replace(",,", ",")
+    enhanced_prompt = " ".join(enhanced_prompt.split())  # Normalize whitespace
+    
+    logger.info(f"Original prompt: {original_prompt}")
+    logger.info(f"Enhanced 3D-optimized prompt: {enhanced_prompt}")
+    
+    return enhanced_prompt
 
 # --- 3D Generation Functions ---
 
