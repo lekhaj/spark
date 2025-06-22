@@ -86,7 +86,9 @@ if USE_CELERY:
                       generate_3d_model_from_image as celery_generate_3d_model_from_image, \
                       manage_gpu_instance as celery_manage_gpu_instance, \
                       generate_local_image as celery_generate_local_image, \
-                      process_local_generation as celery_process_local_generation
+                      process_local_generation as celery_process_local_generation, \
+                      generate_image_sdxl_turbo as celery_generate_image_sdxl_turbo, \
+                      batch_generate_images_sdxl_turbo as celery_batch_generate_images_sdxl_turbo
     # No direct model processor imports needed here, as they run on the worker.
     # from celery import Celery # Might need this if you want to track task results directly
     # from tasks import app as celery_app_instance # if you need to access backend results
@@ -442,6 +444,7 @@ def process_image_generation_task(prompt_or_grid_content, width, height, num_ima
     """
     Generic function to handle image generation, routing to Celery or direct processing.
     Now includes 3D-optimized prompt enhancement for better 3D asset generation.
+    Routes SDXL Turbo tasks to GPU worker for optimal performance.
     Returns (image_output, grid_viz_output, message)
     """
     # Enhance prompts for 3D generation (only for text prompts, not grids)
@@ -451,18 +454,40 @@ def process_image_generation_task(prompt_or_grid_content, width, height, num_ima
         enhanced_prompt = prompt_or_grid_content
     
     if USE_CELERY:
-        if is_grid_input:
-            task = celery_generate_grid_image.apply_async(
-                args=[enhanced_prompt, width, height, num_images, model_type],
-                queue='cpu_tasks'  # Route to CPU instance
-            )
-            return None, None, f"✅ Grid processing task submitted to CPU instance (ID: {task.id}). Image will be saved to '{OUTPUT_IMAGES_DIR}' on the worker."
+        # Route SDXL Turbo tasks to GPU worker
+        if model_type == "sdxl-turbo":
+            if is_grid_input:
+                # For grid input with SDXL, we'll use batch processing
+                task = celery_batch_generate_images_sdxl_turbo.apply_async(
+                    args=[enhanced_prompt, width, height, num_images],
+                    queue='sdxl_tasks'  # Route to GPU instance
+                )
+                return None, None, f"✅ SDXL Turbo grid processing task submitted to GPU worker (ID: {task.id}). Images will be saved to GPU worker storage.\n🎯 3D-Optimized prompt enhancement applied for better 3D asset generation."
+            else:
+                task = celery_generate_image_sdxl_turbo.apply_async(
+                    args=[enhanced_prompt],
+                    kwargs={
+                        'width': width,
+                        'height': height,
+                        'enhance_prompt': True
+                    },
+                    queue='sdxl_tasks'  # Route to GPU instance
+                )
+                return None, f"✅ SDXL Turbo task submitted to GPU worker (ID: {task.id}). High-quality image will be generated on GPU.\n🎯 3D-Optimized prompt used for better 3D asset generation."
         else:
-            task = celery_generate_text_image.apply_async(
-                args=[enhanced_prompt, width, height, num_images, model_type],
-                queue='cpu_tasks'  # Route to CPU instance
-            )
-            return None, f"✅ Text-to-image task submitted to CPU instance (ID: {task.id}). Image will be saved to '{OUTPUT_IMAGES_DIR}' on the worker.\n🎯 3D-Optimized prompt used for better 3D asset generation."
+            # Route other models to CPU worker
+            if is_grid_input:
+                task = celery_generate_grid_image.apply_async(
+                    args=[enhanced_prompt, width, height, num_images, model_type],
+                    queue='cpu_tasks'  # Route to CPU instance
+                )
+                return None, None, f"✅ Grid processing task submitted to CPU instance (ID: {task.id}). Image will be saved to '{OUTPUT_IMAGES_DIR}' on the worker."
+            else:
+                task = celery_generate_text_image.apply_async(
+                    args=[enhanced_prompt, width, height, num_images, model_type],
+                    queue='cpu_tasks'  # Route to CPU instance
+                )
+                return None, f"✅ Text-to-image task submitted to CPU instance (ID: {task.id}). Image will be saved to '{OUTPUT_IMAGES_DIR}' on the worker.\n🎯 3D-Optimized prompt used for better 3D asset generation."
     else:
         # Direct processing in DEV mode
         if _dev_pipeline is None:
@@ -547,29 +572,34 @@ def create_sample_grid():
 
 # MongoDB Integration Functions (These remain local as they query DB directly, not heavy GPU work)
 def get_prompts_from_mongodb(db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_COLLECTION, limit=100):
-    """Retrieve prompts from MongoDB collection"""
+    """Retrieve prompts from MongoDB collection - focusing on 'description' key only"""
     try:
         mongo_helper = MongoDBHelper()
-        query = {"$or": [
-            {"theme_prompt": {"$exists": True}},
-            {"description": {"$exists": True}}
-        ]}
+        # Search for documents with description key at any level
+        query = {"description": {"$exists": True}}
         documents = mongo_helper.find_many(db_name, collection_name, query=query, limit=limit) 
+        
         if not documents:
-            return [], "No prompts found in the specified collection."
+            return [], "No documents with 'description' key found in the specified collection."
+        
         prompt_items = []
         for doc in documents:
             doc_id = str(doc.get("_id"))
-            prompt = doc.get("theme_prompt") or doc.get("description")
-            if not prompt and "possible_structures" in doc:
+            description = doc.get("description")
+            
+            # If description exists at root level, use it
+            if description and isinstance(description, str):
+                prompt_items.append((doc_id, description))
+            # Otherwise, search for description in nested structures
+            elif "possible_structures" in doc:
                 for category_key in doc["possible_structures"]:
                     for item_key in doc["possible_structures"][category_key]:
                         if "description" in doc["possible_structures"][category_key][item_key]:
-                            prompt = doc["possible_structures"][category_key][item_key]["description"]
-                            break
-                    if prompt: break
-            if prompt: prompt_items.append((doc_id, prompt))
-        return prompt_items, f"Found {len(prompt_items)} prompts"
+                            nested_description = doc["possible_structures"][category_key][item_key]["description"]
+                            if isinstance(nested_description, str):
+                                prompt_items.append((f"{doc_id}_{item_key}", nested_description))
+                                
+        return prompt_items, f"Found {len(prompt_items)} description-based prompts"
     except Exception as e:
         logger.error(f"MongoDB connection error fetching prompts: {str(e)}")
         return [], f"Error connecting to MongoDB: {str(e)}"
@@ -648,24 +678,38 @@ def get_grids_for_dropdown(db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_CO
 # This function will now submit a task or process directly
 def submit_mongodb_prompt_task(prompt_id, db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_COLLECTION, width=DEFAULT_IMAGE_WIDTH, height=DEFAULT_IMAGE_HEIGHT, 
                              num_images=DEFAULT_NUM_IMAGES, model_type=DEFAULT_TEXT_MODEL):
-    """Submits a MongoDB prompt processing task to Celery OR processes directly."""
-    logger.info(f"Processing MongoDB prompt task for ID: {prompt_id}")
+    """Submits a MongoDB prompt processing task to Celery OR processes directly.
+    Focuses on extracting 'description' key for the streamlined workflow:
+    MongoDB -> description (prompt) -> image -> S3 bucket -> 3D asset"""
+    logger.info(f"Processing MongoDB description-based prompt task for ID: {prompt_id}")
     
-    prompt_content = ""
+    description_content = ""
     try:
         mongo_helper = MongoDBHelper()
-        document = mongo_helper.find_one(db_name, collection_name, {"_id": pymongo.results.ObjectId(prompt_id)})
+        from bson import ObjectId  # Use bson.ObjectId instead of pymongo.results.ObjectId
+        document = mongo_helper.find_one(db_name, collection_name, {"_id": ObjectId(prompt_id)})
         if document:
-            prompt_content = document.get("theme_prompt") or document.get("description") or \
-                             (next((item["description"] for category in document.get("possible_structures", {}).values() for item in category.values() if "description" in item), None))
-        if not prompt_content:
-            return None, f"Error: No prompt content found for ID {prompt_id}."
+            # First check if description exists at root level
+            description_content = document.get("description")
+            
+            # If not found at root, search in nested structures
+            if not description_content and "possible_structures" in document:
+                for category in document["possible_structures"].values():
+                    for item in category.values():
+                        if "description" in item and isinstance(item["description"], str):
+                            description_content = item["description"]
+                            break
+                    if description_content:
+                        break
+        
+        if not description_content:
+            return None, f"Error: No 'description' content found for ID {prompt_id}."
     except Exception as e:
-        logger.error(f"Error fetching prompt content for ID {prompt_id}: {e}")
-        return None, f"Error fetching prompt content for ID {prompt_id}: {e}"
+        logger.error(f"Error fetching description content for ID {prompt_id}: {e}")
+        return None, f"Error fetching description content for ID {prompt_id}: {e}"
 
-    # Use the generic image generation wrapper
-    return process_image_generation_task(prompt_content, width, height, num_images, model_type, is_grid_input=False)
+    # Use the generic image generation wrapper with 3D-optimized prompt
+    return process_image_generation_task(description_content, width, height, num_images, model_type, is_grid_input=False)
 
 def submit_mongodb_prompt_task_from_dropdown(selected_prompt, db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_COLLECTION, width=DEFAULT_IMAGE_WIDTH, height=DEFAULT_IMAGE_HEIGHT, 
                              num_images=DEFAULT_NUM_IMAGES, model_type=DEFAULT_TEXT_MODEL):
@@ -728,27 +772,42 @@ def submit_mongodb_grid_task_from_dropdown(selected_grid, db_name=MONGO_DB_NAME,
 # This function will now submit a batch task or process directly
 def submit_batch_process_mongodb_prompts_task_ui(db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_COLLECTION, limit=10, width=DEFAULT_IMAGE_WIDTH, height=DEFAULT_IMAGE_HEIGHT, 
                                      model_type=DEFAULT_TEXT_MODEL, update_db=False):
-    """Submits a batch processing task to Celery OR processes directly."""
-    logger.info(f"Processing batch processing task for {limit} prompts from {collection_name}.")
+    """Submits a batch processing task to Celery OR processes directly.
+    Streamlined workflow: MongoDB -> description (prompt) -> image -> S3 bucket -> 3D asset"""
+    logger.info(f"Processing batch description-based prompts from {collection_name} with limit {limit}.")
 
     if USE_CELERY:
-        task = celery_batch_process_mongodb_prompts_task.apply_async(
-            args=[db_name, collection_name, limit, width, height, model_type, update_db],
-            queue='cpu_tasks'  # Route to CPU instance
-        )
-        return f"✅ Batch processing task submitted to CPU instance (ID: {task.id}). Results will be saved to '{OUTPUT_IMAGES_DIR}' on the worker."
+        # Route SDXL Turbo batch tasks to GPU worker for optimal performance
+        if model_type == "sdxl-turbo":
+            # Get description prompts from MongoDB first
+            prompt_items, status = get_prompts_from_mongodb(db_name, collection_name, limit)
+            if not prompt_items:
+                return f"❌ No description-based prompts found: {status}"
+            
+            # Extract just the description texts for batch processing
+            descriptions = [item[1] for item in prompt_items]  # item[1] is the description content
+            
+            task = celery_batch_generate_images_sdxl_turbo.apply_async(
+                args=[descriptions, width, height, 1],  # Process one image per description
+                queue='sdxl_tasks'  # Route to GPU instance
+            )
+            return f"✅ SDXL Turbo batch processing task submitted to GPU worker (ID: {task.id}). Processing {len(descriptions)} description-based prompts.\n🎯 All prompts will be automatically optimized for 3D asset generation."
+        else:
+            task = celery_batch_process_mongodb_prompts_task.apply_async(
+                args=[db_name, collection_name, limit, width, height, model_type, update_db],
+                queue='cpu_tasks'  # Route to CPU instance
+            )
+            return f"✅ Batch processing task submitted to CPU instance (ID: {task.id}). Processing description-based prompts from MongoDB."
     else:
         # Direct batch processing in DEV mode
         try:
             mongo_helper = MongoDBHelper()
-            query = {"$or": [
-                {"theme_prompt": {"$exists": True}},
-                {"description": {"$exists": True}}
-            ]}
+            # Focus only on documents with description key
+            query = {"description": {"$exists": True}}
             prompt_documents = mongo_helper.find_many(db_name, collection_name, query=query, limit=limit)
             
             if not prompt_documents:
-                return "No prompts found to process in batch."
+                return "No documents with 'description' key found to process in batch."
 
             results = []
             if _dev_pipeline is None:
@@ -756,29 +815,33 @@ def submit_batch_process_mongodb_prompts_task_ui(db_name=MONGO_DB_NAME, collecti
 
             for doc in prompt_documents:
                 doc_id = str(doc.get("_id"))
-                prompt = doc.get("theme_prompt") or doc.get("description")
+                description = doc.get("description")
 
-                if not prompt and "possible_structures" in doc:
-                    for category_key in doc["possible_structures"]:
-                        for item_key in doc["possible_structures"][category_key]:
-                            if "description" in doc["possible_structures"][category_key][item_key]:
-                                prompt = doc["possible_structures"][category_key][item_key]["description"]
+                # If no description at root, search in nested structures
+                if not description and "possible_structures" in doc:
+                    for category in doc["possible_structures"].values():
+                        for item in category.values():
+                            if "description" in item and isinstance(item["description"], str):
+                                description = item["description"]
                                 break
-                        if prompt: break
+                        if description:
+                            break
 
-                if not prompt:
-                    results.append(f"Skipping {doc_id}: No valid prompt found.")
+                if not description:
+                    results.append(f"Skipping {doc_id}: No valid description found.")
                     continue
 
-                logger.info(f"Directly batch processing prompt: '{prompt[:50]}'")
+                logger.info(f"Directly batch processing description: '{description[:50]}'")
                 try:
-                    images = _dev_pipeline.process_text(prompt)
+                    # Enhance description for 3D generation
+                    enhanced_description = enhance_prompt_for_3d_generation(description)
+                    images = _dev_pipeline.process_text(enhanced_description)
                     
                     if images:
                         # Save the first image
-                        output_path = os.path.join(OUTPUT_IMAGES_DIR, f"batch_{doc_id}.png")
+                        output_path = os.path.join(OUTPUT_IMAGES_DIR, f"batch_desc_{doc_id}.png")
                         images[0].save(output_path)
-                        results.append(f"✓ {doc_id}: Generated and saved to {output_path}")
+                        results.append(f"✓ {doc_id}: Generated from description and saved to {output_path}")
                         
                         # Update database if requested
                         if update_db:
@@ -790,16 +853,16 @@ def submit_batch_process_mongodb_prompts_task_ui(db_name=MONGO_DB_NAME, collecti
                             except Exception as e:
                                 results.append(f"  └─ Failed to update database for {doc_id}: {e}")
                     else:
-                        results.append(f"✗ {doc_id}: No images generated")
+                        results.append(f"✗ {doc_id}: No images generated from description")
                         
                 except Exception as e:
-                    results.append(f"✗ {doc_id}: Error generating image - {e}")
+                    results.append(f"✗ {doc_id}: Error generating image from description - {e}")
             
-            return f"Batch processing completed!\n\n" + "\n".join(results)
+            return "Batch description processing completed!\n\n" + "\n".join(results)
             
         except Exception as e:
-            logger.error(f"Error in batch processing: {e}")
-            return f"Error in batch processing: {e}"
+            logger.error(f"Error in batch description processing: {e}")
+            return f"Error in batch description processing: {e}"
 
 # --- S3 and Progress Tracking Helper Functions ---
 def get_task_progress(task_id):
@@ -1602,6 +1665,9 @@ def enhance_prompt_for_3d_generation(original_prompt):
     """
     Enhanced prompt engineering specifically optimized for 3D asset generation.
     Adds keywords that improve 3D model quality and ensure proper background.
+    
+    This is part of the streamlined workflow:
+    MongoDB -> description (prompt) -> enhanced prompt -> image -> S3 bucket -> 3D asset
     """
     if not original_prompt or not isinstance(original_prompt, str):
         return original_prompt
@@ -1694,141 +1760,3 @@ def fetch_images_from_mongodb(db_name: str, collection_name: str) -> tuple[list,
         error_msg = f"❌ Error fetching images from MongoDB: {str(e)}"
         logger.error(error_msg, exc_info=True)
         return [], error_msg
-
-# Main execution block
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--port', type=int, default=8080)
-    parser.add_argument('--host', type=str, default='0.0.0.0')
-    parser.add_argument('--share', action='store_true', help='Share the Gradio app')
-    args = parser.parse_args()
-
-    # Ensure local output directories still exist for other image generation tasks if needed
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    os.makedirs(OUTPUT_IMAGES_DIR, exist_ok=True)
-    os.makedirs(OUTPUT_3D_ASSETS_DIR, exist_ok=True)
-
-    try:
-        if not USE_CELERY:
-            initialize_dev_processors()
-        else:
-            logger.info("merged_gradio_app.py: Application starting (CPU-only, submitting tasks to Celery).")
-
-        logger.info("merged_gradio_app.py: Building Gradio app interface...")
-        demo = build_app()
-        logger.info("merged_gradio_app.py: Gradio app interface built.")
-
-        logger.info("merged_gradio_app.py: Attempting to launch Gradio application...")
-        logger.info(f"merged_gradio_app.py: Gradio application will be accessible on port: {args.port}")
-
-        demo.launch(server_name=args.host, server_port=args.port, share=args.share)
-
-    except Exception as e:
-        logger.critical(f"merged_gradio_app.py: A critical error occurred during application startup: {str(e)}", exc_info=True)
-        print(f"\nFATAL ERROR: Application could not start. Details: {e}")
-
-        # Fallback UI (simplified to only 2D image/grid processing with messages)
-        try:
-            import gradio as gr
-            from PIL import Image, ImageDraw, ImageFont
-            import numpy as np
-
-            def fallback_dummy_task_submit(input_data, *args):
-                dummy_image = Image.new('RGB', (256, 256), color=(100, 100, 100))
-                draw = ImageDraw.Draw(dummy_image)
-                try:
-                    font = ImageFont.truetype("arial.ttf", 20)
-                except IOError:
-                    font = ImageFont.load_default()
-                text = "Task cannot be submitted.\nFull app failed to load."
-                text_bbox = draw.textbbox((0,0), text, font=font)
-                text_width = text_bbox[2] - text_bbox[0]
-                text_height = text_bbox[3] - text_bbox[1]
-                draw.text(((256 - text_width) / 2, (256 - text_height) / 2), text, (255, 255, 255), font=font)
-                return dummy_image, "Fallback: App initialization failed. Tasks cannot be processed."
-
-            def fallback_dummy_grid_submit(input_data, *args):
-                dummy_image = Image.new('RGB', (256, 256), color=(150, 100, 100))
-                draw = ImageDraw.Draw(dummy_image)
-                try:
-                    font = ImageFont.truetype("arial.ttf", 20)
-                except IOError:
-                    font = ImageFont.load_default()
-                text = "Grid Task cannot be submitted.\nFull app failed to load."
-                text_bbox = draw.textbbox((0,0), text, font=font)
-                text_width = text_bbox[2] - text_bbox[0]
-                text_height = text_bbox[3] - text_bbox[1]
-                draw.text(((256 - text_width) / 2, (256, - text_height) / 2), text, (255, 255, 255), font=font)
-                return dummy_image, dummy_image, "Fallback: App initialization failed. Tasks cannot be processed."
-
-            def fallback_dummy_biome_generate(theme, structures):
-                 return "Fallback: Biome generation not available. App initialization failed.", gr.update(choices=[], value=None)
-
-            fallback_demo_app = gr.Blocks(theme=gr.themes.Base())
-            with fallback_demo_app:
-                gr.HTML(f"""
-                <div style="font-size: 2em; font-weight: bold; text-align: center; margin-bottom: 5px">
-                2D Generation Only Mode (Emergency Fallback)
-                </div>
-                <div align="center" style="color: red; margin-bottom: 20px">
-                Full application startup failed due to: {str(e)}
-                </div>
-                <div align="center">
-                <p>This is a simplified interface. For full features, ensure Redis is running and Celery workers are configured and active.</p>
-                </div>
-                """)
-                with gr.Tabs(selected="tab_biome_inspector_fallback") as fallback_tabs:
-                    with gr.TabItem("Biome Inspector (Fallback)", id="tab_biome_inspector_fallback"):
-                        gr.Markdown("# Biome Generation Pipeline Inspector (Fallback)")
-                        gr.HTML("<p>Biome generation and viewing features are limited as the main app failed to load.</p>")
-                        fallback_biome_inspector_theme_input = gr.Textbox(
-                            label="Enter Biome Theme (Fallback)",
-                            placeholder="e.g., A lush forest with ancient ruins"
-                        )
-                        fallback_biome_inspector_structure_types_input = gr.Textbox(
-                        )
-                        fallback_biome_inspector_generate_button = gr.Button("Generate Biome (Fallback)")
-                        fallback_biome_inspector_output_message = gr.Textbox(label="Generation Status (Fallback)", interactive=False)
-
-                        fallback_biome_inspector_generate_button.click(
-                            fallback_dummy_biome_generate,
-                            inputs=[fallback_biome_inspector_theme_input, fallback_biome_inspector_structure_types_input],
-                            outputs=[fallback_biome_inspector_output_message, gr.Dropdown(choices=[], value=None)]
-                        )
-                        gr.HTML("<p>Please resolve the main application errors to access full biome features.</p>")
-
-                    with gr.TabItem("Text to Image (Fallback)"):
-                        fallback_text_input = gr.Textbox(label="Text Prompt", placeholder="Enter a description...")
-                        fallback_text_width = gr.Slider(minimum=256, maximum=1024, value=512, step=64, label="Width")
-                        fallback_text_height = gr.Slider(minimum=256, maximum=1024, value=512, step=64, label="Height")
-                        fallback_text_num_images = gr.Slider(minimum=1, maximum=4, value=1, step=1, label="Number of Images")
-                        fallback_text_model = gr.Dropdown(["openai", "stability", "local"], value="openai", label="Model")
-
-                        fallback_text_output = gr.Image(label="Generated Image")
-                        fallback_text_message = gr.Textbox(label="Status", interactive=False)
-                        gr.Button("Generate Image").click(
-                            fallback_dummy_task_submit,
-                            inputs=[fallback_text_input, fallback_text_width, fallback_text_height, fallback_text_num_images, fallback_text_model],
-                            outputs=[fallback_text_output, fallback_text_message]
-                        )
-                    with gr.TabItem("Grid to Image (Fallback)"):
-                        fallback_grid_input = gr.Textbox(label="Grid Data", lines=10, placeholder="Enter grid data...")
-                        fallback_grid_width = gr.Slider(minimum=256, maximum=1024, value=512, step=64, label="Width")
-                        fallback_grid_height = gr.Slider(minimum=256, maximum=1024, value=512, step=64, label="Height")
-                        fallback_grid_num_images = gr.Slider(minimum=1, maximum=4, value=1, step=1, label="Number of Images")
-                        fallback_grid_model = gr.Dropdown(["openai", "stability", "local"], value="stability", label="Model")
-                        fallback_grid_output = gr.Image(label="Generated Terrain")
-                        fallback_grid_viz = gr.Image(label="Grid Visualization")
-                        fallback_grid_message = gr.Textbox(label="Status", interactive=False)
-                        gr.Button("Generate Grid Image").click(
-                            fallback_dummy_grid_submit,
-                            inputs=[fallback_grid_input, fallback_grid_width, fallback_grid_height, fallback_grid_num_images, fallback_grid_model],
-                            outputs=[fallback_grid_output, fallback_grid_viz, fallback_grid_message]
-                        )
-            logger.info("merged_gradio_app.py: Attempting to launch minimal 2D-only fallback app...")
-            logger.info(f"merged_gradio_app.py: Fallback app will be accessible on port: {args.port}")
-            fallback_demo_app.launch(server_name=args.host, server_port=args.port, share=args.share)
-            logger.info("merged_gradio_app.py: Minimal 2D-only fallback app launched.")
-        except Exception as fallback_launch_e:
-            logger.critical(f"merged_gradio_app.py: CRITICAL: Failed to launch even the minimal 2D-only fallback app: {fallback_launch_e}", exc_info=True)
-            print(f"FATAL: Could not start any part of the application. Please check your Python installation and core dependencies.")
