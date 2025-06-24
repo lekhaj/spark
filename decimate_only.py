@@ -126,13 +126,15 @@ def main():
     for doc in coll.find({}):
         buildings = doc.get('possible_structures', {}).get('buildings', {})
         for bldg_key, building in buildings.items():
-            asset_id = building.get('id')
+            # Use structureId and lowercase status
+            asset_id = building.get('structureId')
             if not asset_id:
-                print(f"[Warning] Missing 'id' for building {bldg_key}")
+                print(f"[Warning] Missing 'structureId' for building {bldg_key}")
                 continue
 
-            status = building.get('Status', 'Yet to start')
-            if status != '3D Model Generated':
+            status = building.get('status', '').lower()
+            # Process only when 3D model is generated
+            if status != '3d model generated':
                 print(f"[Skip] {asset_id} status = {status}")
                 continue
 
@@ -145,7 +147,7 @@ def main():
                 print(f"[Download Error] {asset_id}: {e}")
                 coll.update_one(
                     {'_id': doc['_id']},
-                    {'$set': {f"possible_structures.buildings.{bldg_key}.Status": 'Error'}}
+                    {'$set': {f"possible_structures.buildings.{bldg_key}.status": 'error'}}
                 )
                 continue
 
@@ -154,13 +156,14 @@ def main():
                 print(f"[Import Error] {asset_id}")
                 coll.update_one(
                     {'_id': doc['_id']},
-                    {'$set': {f"possible_structures.buildings.{bldg_key}.Status": 'Error'}}
+                    {'$set': {f"possible_structures.buildings.{bldg_key}.status": 'error'}}
                 )
                 continue
 
+            # Mark as Decimating
             coll.update_one(
                 {'_id': doc['_id']},
-                {'$set': {f"possible_structures.buildings.{bldg_key}.Status": 'Decimating'}}
+                {'$set': {f"possible_structures.buildings.{bldg_key}.status": 'decimating'}}
             )
 
             poly_before = len(obj.data.polygons)
@@ -178,7 +181,7 @@ def main():
             s3_url = f"https://{bucket_name}.s3.amazonaws.com/{s3_dest}"
 
             updates = {
-                f"possible_structures.buildings.{bldg_key}.Status": 'Decimated',
+                f"possible_structures.buildings.{bldg_key}.status": 'decimated',
                 f"possible_structures.buildings.{bldg_key}.model3dUrl": s3_url,
                 f"possible_structures.buildings.{bldg_key}.poly_before": poly_before,
                 f"possible_structures.buildings.{bldg_key}.poly_after": poly_after,
