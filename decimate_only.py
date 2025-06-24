@@ -4,53 +4,71 @@ import sys
 import glob
 import bmesh
 import boto3
+import pymongo
 from mathutils import Vector
 
-# allow import of helpers
-sys.path.append(os.path.dirname(__file__))
-from io_helper_connect import (
-    download_from_s3,
-    upload_to_s3,
-    get_mongo_collection,
-    update_asset_status
-)
-
+# ---------------- USER CONFIGURATION ----------------
 bucket_name = "sparkassets"
 s3_prefix = "3d_assets"
-models_folder = "/home/ubuntu/input"
-output_folder = "/home/ubuntu/output"
+# Updated local folders inside 'sarthak'
+models_folder = "/home/ubuntu/sarthak/input"
+output_folder = "/home/ubuntu/sarthak/output"
 mongo_uri = "mongodb://ec2-13-203-200-155.ap-south-1.compute.amazonaws.com:27017"
 
+# ---------------- MONGODB CONNECTION ----------------
+def get_mongo_collection(uri, db_name="World_builder", collection_name="biomes"):
+    client = pymongo.MongoClient(uri)
+    return client[db_name][collection_name]
 
+# ---------------- S3 HELPERS ----------------
+def download_from_s3(bucket, key, download_path):
+    s3 = boto3.client('s3')
+    os.makedirs(os.path.dirname(download_path), exist_ok=True)
+    s3.download_file(bucket, key, download_path)
+    print(f"[S3] Downloaded: {key} → {download_path}")
+
+
+def upload_to_s3(bucket, key, file_path):
+    s3 = boto3.client('s3')
+    s3.upload_file(file_path, bucket, key)
+    print(f"[S3] Uploaded: {file_path} → {bucket}/{key}")
+
+# ---------------- BLENDER OPERATIONS ----------------
 def clear_scene():
     bpy.ops.object.select_all(action='SELECT')
     bpy.ops.object.delete(use_global=False)
     if hasattr(bpy.ops.outliner, "orphans_purge"):
         bpy.ops.outliner.orphans_purge(do_local_ids=True, do_linked_ids=True, do_recursive=True)
 
-def import_glb(fp):
-    bpy.ops.import_scene.gltf(filepath=fp)
-    for o in bpy.context.selected_objects:
-        if o.type == "MESH":
-            bpy.context.view_layer.objects.active = o
-            return o
+
+def import_glb(filepath):
+    bpy.ops.import_scene.gltf(filepath=filepath)
+    for obj in bpy.context.selected_objects:
+        if obj.type == 'MESH':
+            bpy.context.view_layer.objects.active = obj
+            return obj
     return None
 
-def decimate_mesh(obj, tf, mode, p):
-    fcount = len(obj.data.polygons)
-    if fcount <= tf:
+
+def decimate_mesh(obj, threshold, mode, param):
+    face_count = len(obj.data.polygons)
+    if face_count <= threshold:
         return
     bpy.ops.object.select_all(action='DESELECT')
     obj.select_set(True)
     bpy.context.view_layer.objects.active = obj
-    m = obj.modifiers.new("Decimate", "DECIMATE")
-    if mode == "COLLAPSE":
-        m.decimate_type, m.ratio = "COLLAPSE", min(1.0, tf / fcount)
-    elif mode == "UNSUBDIV":
-        m.decimate_type, m.iterations = "UNSUBDIV", int(p)
+    mod = obj.modifiers.new("Decimate", "DECIMATE")
+    if mode == 'COLLAPSE':
+        mod.decimate_type = 'COLLAPSE'
+        mod.ratio = min(1.0, threshold/face_count)
+    elif mode == 'UNSUBDIV':
+        mod.decimate_type = 'UNSUBDIV'
+        mod.iterations = int(param)
     else:
-        m.decimate_type, m.angle_limit = "PLANAR", p
-    bpy.ops.object.modifier_apply(modifier=m.name)
+        mod.decimate_type = 'PLANAR'
+        mod.angle_limit = param
+    bpy.ops.object.modifier_apply(modifier=mod.name)
+
 
 def set_origin_to_bottom_face_cursor(obj):
     bpy.ops.object.select_all(action='DESELECT')
@@ -59,20 +77,26 @@ def set_origin_to_bottom_face_cursor(obj):
     bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
     bpy.ops.object.mode_set(mode='EDIT')
     bm = bmesh.from_edit_mesh(obj.data)
-    bottom = min(bm.faces, key=lambda f: sum((obj.matrix_world @ v.co).z for v in f.verts)/len(f.verts))
-    center = sum(((obj.matrix_world @ v.co) for v in bottom.verts), Vector())/len(bottom.verts)
+    bottom_face = min(
+        bm.faces,
+        key=lambda f: sum((obj.matrix_world @ v.co).z for v in f.verts) / len(f.verts)
+    )
+    center = sum(
+        ((obj.matrix_world @ v.co) for v in bottom_face.verts), Vector()
+    ) / len(bottom_face.verts)
     bpy.ops.object.mode_set(mode='OBJECT')
     bpy.context.scene.cursor.location = center
     bpy.ops.object.origin_set(type='ORIGIN_CURSOR')
     obj.location = (0, 0, 0)
 
-def export_fbx(path, obj):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+def export_fbx(filepath, obj):
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
     bpy.ops.object.select_all(action='DESELECT')
     obj.select_set(True)
     bpy.context.view_layer.objects.active = obj
     bpy.ops.export_scene.fbx(
-        filepath=path,
+        filepath=filepath,
         use_selection=True,
         apply_unit_scale=True,
         apply_scale_options='FBX_SCALE_ALL',
@@ -84,6 +108,7 @@ def export_fbx(path, obj):
         axis_up='Y'
     )
 
+# ---------------- MAIN PROCESSING ----------------
 def main():
     argv = sys.argv
     if "--" not in argv:
@@ -91,45 +116,77 @@ def main():
     args = argv[argv.index("--") + 1:]
     if len(args) < 3:
         return
-    tf, mode, param = int(args[0]), args[1].upper(), float(args[2])
+    threshold = int(args[0])
+    mode = args[1].upper()
+    param = float(args[2])
 
-    coll = get_mongo_collection(mongo_uri)
+    coll = get_mongo_collection(mongo_uri, db_name="World_builder", collection_name="biomes")
     clear_scene()
 
-    pending_assets = list(coll.find({"status": "pending"}))
-    if not pending_assets:
-        print("[Info] No pending assets in MongoDB")
-        return
+    for doc in coll.find({}):
+        buildings = doc.get('possible_structures', {}).get('buildings', {})
+        for bldg_key, building in buildings.items():
+            asset_id = building.get('id')
+            if not asset_id:
+                print(f"[Warning] Missing 'id' for building {bldg_key}")
+                continue
 
-    for doc in pending_assets:
-        asset_id = doc["_id"]
-        s3_key = doc.get("s3_key", f"{s3_prefix}/{asset_id}.glb")
-        local_glb = os.path.join(models_folder, os.path.basename(s3_key))
+            status = building.get('Status', 'Yet to start')
+            if status != '3D Model Generated':
+                print(f"[Skip] {asset_id} status = {status}")
+                continue
 
-        try:
-            print(f"[MongoDB] Processing asset {asset_id}")
-            download_from_s3(bucket_name, s3_key, local_glb)
+            s3_key = f"{s3_prefix}/{asset_id}.glb"
+            local_glb = os.path.join(models_folder, f"{asset_id}.glb")
+
+            try:
+                download_from_s3(bucket_name, s3_key, local_glb)
+            except Exception as e:
+                print(f"[Download Error] {asset_id}: {e}")
+                coll.update_one(
+                    {'_id': doc['_id']},
+                    {'$set': {f"possible_structures.buildings.{bldg_key}.Status": 'Error'}}
+                )
+                continue
+
             obj = import_glb(local_glb)
             if not obj:
-                raise Exception("GLB Import failed")
+                print(f"[Import Error] {asset_id}")
+                coll.update_one(
+                    {'_id': doc['_id']},
+                    {'$set': {f"possible_structures.buildings.{bldg_key}.Status": 'Error'}}
+                )
+                continue
 
-            update_asset_status(coll, asset_id, "processing")
+            coll.update_one(
+                {'_id': doc['_id']},
+                {'$set': {f"possible_structures.buildings.{bldg_key}.Status": 'Decimating'}}
+            )
 
-            decimate_mesh(obj, tf, mode, param)
+            poly_before = len(obj.data.polygons)
+            decimate_mesh(obj, threshold, mode, param)
+            poly_after = len(obj.data.polygons)
             set_origin_to_bottom_face_cursor(obj)
 
             out_name = f"{asset_id}_decimated.fbx"
             local_fbx = os.path.join(output_folder, out_name)
             export_fbx(local_fbx, obj)
 
-            s3_dest = f"{s3_prefix}/{out_name}"
+            # Upload under '3d_assets/generated/' folder
+            s3_dest = f"{s3_prefix}/generated/{out_name}"
             upload_to_s3(bucket_name, s3_dest, local_fbx)
+            s3_url = f"https://{bucket_name}.s3.amazonaws.com/{s3_dest}"
 
-            final_url = f"s3://{bucket_name}/{s3_dest}"
-            update_asset_status(coll, asset_id, "completed", output_url=final_url)
-        except Exception as e:
-            print(f"[Error] Failed to process {asset_id}: {str(e)}")
-            update_asset_status(coll, asset_id, "error", message=str(e))
+            updates = {
+                f"possible_structures.buildings.{bldg_key}.Status": 'Decimated',
+                f"possible_structures.buildings.{bldg_key}.model3dUrl": s3_url,
+                f"possible_structures.buildings.{bldg_key}.poly_before": poly_before,
+                f"possible_structures.buildings.{bldg_key}.poly_after": poly_after,
+            }
+            coll.update_one({'_id': doc['_id']}, {'$set': updates})
 
-if __name__ == "__main__":
+            print(f"[Done] {asset_id}: {poly_before}→{poly_after}")
+            clear_scene()
+
+if __name__ == '__main__':
     main()
