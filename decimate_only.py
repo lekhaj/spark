@@ -134,7 +134,7 @@ def main():
 
             status = building.get('status', '').lower()
             # Process only when 3D model is generated
-            if status != '3d model generated':
+            if status != '3D Model Generated':
                 print(f"[Skip] {asset_id} status = {status}")
                 continue
 
@@ -181,7 +181,7 @@ def main():
             s3_url = f"https://{bucket_name}.s3.amazonaws.com/{s3_dest}"
 
             updates = {
-                f"possible_structures.buildings.{bldg_key}.status": 'decimated',
+                f"possible_structures.buildings.{bldg_key}.status": 'Decimated',
                 f"possible_structures.buildings.{bldg_key}.model3dUrl": s3_url,
                 f"possible_structures.buildings.{bldg_key}.poly_before": poly_before,
                 f"possible_structures.buildings.{bldg_key}.poly_after": poly_after,
