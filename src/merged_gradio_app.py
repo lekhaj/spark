@@ -1760,3 +1760,245 @@ def fetch_images_from_mongodb(db_name: str, collection_name: str) -> tuple[list,
         error_msg = f"❌ Error fetching images from MongoDB: {str(e)}"
         logger.error(error_msg, exc_info=True)
         return [], error_msg
+
+# --- Main Application Startup ---
+
+def main():
+    """Main function to start the Gradio application with proper configuration."""
+    import argparse
+    import sys
+    
+    parser = argparse.ArgumentParser(description="Text-to-3D Pipeline - Integrated 2D and 3D Generation")
+    parser.add_argument("--port", type=int, default=7860, help="Port to run the Gradio server on")
+    parser.add_argument("--host", type=str, default="0.0.0.0", help="Host to bind the server to")
+    parser.add_argument("--share", action="store_true", help="Create a public shareable link")
+    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
+    parser.add_argument("--disable-3d", action="store_true", help="Disable 3D generation features")
+    parser.add_argument("--dev-mode", action="store_true", help="Force development mode (disable Celery)")
+    
+    args = parser.parse_args()
+    
+    # Set logging level
+    if args.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+        logger.info("Debug mode enabled")
+    
+    # Override USE_CELERY if dev mode is requested
+    if args.dev_mode:
+        global USE_CELERY
+        USE_CELERY = False
+        logger.info("Development mode forced - Celery disabled")
+    
+    # Test connections and services
+    logger.info("=" * 60)
+    logger.info("🚀 Starting Text-to-3D Pipeline Application")
+    logger.info("=" * 60)
+    
+    # Test Redis connectivity if Celery is enabled
+    if USE_CELERY:
+        logger.info("Testing Redis connectivity...")
+        try:
+            redis_test = test_redis_connectivity()
+            if redis_test and redis_test.get('write', {}).get('success'):
+                logger.info("✅ Redis connection successful")
+            else:
+                logger.warning("⚠️ Redis connection issues - some features may not work")
+        except Exception as e:
+            logger.error(f"❌ Redis connection failed: {e}")
+            logger.warning("⚠️ Continuing without Celery - using direct processing mode")
+    
+    # Test MongoDB connectivity
+    logger.info("Testing MongoDB connectivity...")
+    try:
+        from db_helper import MongoDBHelper
+        mongo_helper = MongoDBHelper()
+        # Simple connection test
+        test_db = mongo_helper.client[MONGO_DB_NAME]
+        result = test_db.command("ping")
+        if result.get("ok") == 1:
+            logger.info("✅ MongoDB connection successful")
+        else:
+            logger.warning("⚠️ MongoDB connection issues")
+    except Exception as e:
+        logger.warning(f"⚠️ MongoDB connection failed: {e}")
+        logger.info("📝 MongoDB features will use mock data")
+    
+    # Check GPU availability
+    logger.info("Checking GPU availability...")
+    try:
+        import torch
+        if torch.cuda.is_available():
+            gpu_count = torch.cuda.device_count()
+            gpu_name = torch.cuda.get_device_name(0) if gpu_count > 0 else "Unknown"
+            logger.info(f"✅ GPU available: {gpu_name} ({gpu_count} device{'s' if gpu_count != 1 else ''})")
+        else:
+            logger.info("📱 No CUDA GPU available - using CPU mode")
+    except ImportError:
+        logger.info("📱 PyTorch not available - 3D features may be limited")
+    
+    # Initialize dev processors if not using Celery
+    if not USE_CELERY:
+        logger.info("Initializing development processors...")
+        try:
+            initialize_dev_processors()
+            logger.info("✅ Development processors initialized")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to initialize dev processors: {e}")
+    
+    # Build and launch the application
+    logger.info("Building Gradio interface...")
+    try:
+        demo = build_app()
+        logger.info("✅ Gradio interface built successfully")
+        
+        # Create app info message
+        mode = "Production (Celery Enabled)" if USE_CELERY else "Development (Direct Processing)"
+        info_msg = f"""
+🌟 Text-to-3D Pipeline Ready!
+📍 Mode: {mode}
+🌐 URL: http://{args.host}:{args.port}
+🎯 Features: Text→Image→3D, MongoDB Integration, S3 Storage
+⚡ SDXL Turbo: Ultra-fast local image generation
+🏗️ HunyuanDi-3D: High-quality 3D model generation
+        """
+        logger.info(info_msg)
+        
+        # Launch the application
+        demo.launch(
+            server_name=args.host,
+            server_port=args.port,
+            share=args.share,
+            debug=args.debug,
+            show_error=True,
+            quiet=False
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to start application: {e}", exc_info=True)
+        return 1
+    
+    return 0
+
+# --- Fallback Application for Error Cases ---
+
+def create_fallback_app():
+    """Create a minimal fallback app when main app fails to load."""
+    try:
+        import gradio as gr
+        import sys
+        
+        # Create a simple placeholder image
+        def create_placeholder_image():
+            try:
+                from PIL import Image, ImageDraw, ImageFont
+                
+                img = Image.new('RGB', (512, 256), color='lightblue')
+                draw = ImageDraw.Draw(img)
+                
+                # Try to load a font, fall back to default if not available
+                try:
+                    font = ImageFont.truetype("arial.ttf", 24)
+                except Exception:
+                    font = ImageFont.load_default()
+                
+                text = "Text-to-3D Pipeline"
+                # Use textbbox instead of deprecated textsize
+                try:
+                    bbox = draw.textbbox((0, 0), text, font=font)
+                    text_width = bbox[2] - bbox[0]
+                    text_height = bbox[3] - bbox[1]
+                except AttributeError:
+                    # Fallback for older PIL versions
+                    text_width, text_height = 200, 30
+                
+                x = (512 - text_width) // 2
+                y = (256 - text_height) // 2
+                draw.text((x, y), text, (255, 255, 255), font=font)
+                
+                return img
+            except Exception:
+                # Ultimate fallback - return None
+                return None
+        
+        with gr.Blocks() as fallback_demo:
+            gr.Markdown("# Text-to-3D Pipeline - Error Recovery Mode")
+            gr.Markdown("The main application encountered errors. Please check your configuration and dependencies.")
+            
+            with gr.Row():
+                with gr.Column():
+                    gr.Markdown("""
+                    ## Troubleshooting Steps:
+                    
+                    1. **Check Dependencies**: Ensure all required packages are installed
+                    2. **MongoDB**: Verify MongoDB is running and accessible
+                    3. **Redis**: Check Redis server status (if using Celery)
+                    4. **GPU**: Verify CUDA/GPU availability for 3D generation
+                    5. **Configuration**: Check environment variables in .env file
+                    
+                    ## Quick Fixes:
+                    
+                    ```bash
+                    # Restart services
+                    sudo systemctl restart redis-server mongod
+                    
+                    # Check ports
+                    sudo lsof -ti:7860 | xargs kill -9
+                    
+                    # Run in development mode
+                    python merged_gradio_app.py --dev-mode --debug
+                    ```
+                    """)
+                
+                with gr.Column():
+                    placeholder_img = create_placeholder_image()
+                    if placeholder_img:
+                        gr.Image(value=placeholder_img, label="Pipeline Status", interactive=False)
+                    
+                    gr.Markdown("### System Status")
+                    status_text = f"""
+                    - **Python**: {sys.version.split()[0]}
+                    - **Current Directory**: {os.getcwd()}
+                    - **USE_CELERY**: {USE_CELERY}
+                    - **Time**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+                    """
+                    gr.Code(status_text, language="yaml")
+        
+        return fallback_demo
+    
+    except Exception as e:
+        print("FATAL: Could not start any part of the application. Please check your Python installation and core dependencies.")
+        print(f"Error: {e}")
+        return None
+
+if __name__ == "__main__":
+    import sys
+    
+    try:
+        # Try to start the main application
+        exit_code = main()
+        sys.exit(exit_code)
+    except KeyboardInterrupt:
+        logger.info("🛑 Application stopped by user")
+        sys.exit(0)
+    except Exception as e:
+        logger.error(f"❌ Critical error in main application: {e}", exc_info=True)
+        
+        # Try to start fallback application
+        logger.info("🔄 Attempting to start fallback application...")
+        try:
+            fallback_app = create_fallback_app()
+            if fallback_app:
+                logger.info("🆘 Starting fallback application on port 7861...")
+                fallback_app.launch(
+                    server_name="0.0.0.0",
+                    server_port=7861,
+                    share=False,
+                    debug=False
+                )
+            else:
+                logger.error("❌ Could not create fallback application")
+                sys.exit(1)
+        except Exception as fallback_error:
+            logger.error(f"❌ Fallback application also failed: {fallback_error}")
+            print("FATAL: Complete application failure. Please check your installation.")
+            sys.exit(1)
