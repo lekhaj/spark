@@ -572,34 +572,56 @@ def create_sample_grid():
 
 # MongoDB Integration Functions (These remain local as they query DB directly, not heavy GPU work)
 def get_prompts_from_mongodb(db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_COLLECTION, limit=100):
-    """Retrieve prompts from MongoDB collection - focusing on 'description' key only"""
+    """Retrieve prompts from MongoDB collection - supporting both 'description', 'theme_prompt' and structure descriptions"""
     try:
         mongo_helper = MongoDBHelper()
-        # Search for documents with description key at any level
-        query = {"description": {"$exists": True}}
+        # Search for documents with either description, theme_prompt, or possible_structures
+        query = {"$or": [
+            {"description": {"$exists": True, "$ne": None, "$ne": ""}},
+            {"theme_prompt": {"$exists": True, "$ne": None, "$ne": ""}},
+            {"possible_structures": {"$exists": True}}
+        ]}
         documents = mongo_helper.find_many(db_name, collection_name, query=query, limit=limit) 
         
         if not documents:
-            return [], "No documents with 'description' key found in the specified collection."
+            return [], "No documents with prompts found in the specified collection."
         
         prompt_items = []
         for doc in documents:
             doc_id = str(doc.get("_id"))
-            description = doc.get("description")
             
-            # If description exists at root level, use it
-            if description and isinstance(description, str):
-                prompt_items.append((doc_id, description))
-            # Otherwise, search for description in nested structures
-            elif "possible_structures" in doc:
-                for category_key in doc["possible_structures"]:
-                    for item_key in doc["possible_structures"][category_key]:
-                        if "description" in doc["possible_structures"][category_key][item_key]:
-                            nested_description = doc["possible_structures"][category_key][item_key]["description"]
-                            if isinstance(nested_description, str):
-                                prompt_items.append((f"{doc_id}_{item_key}", nested_description))
+            # 1. Add main theme prompt if exists
+            theme_prompt = doc.get("description") or doc.get("theme_prompt")
+            if theme_prompt and isinstance(theme_prompt, str):
+                prompt_items.append((f"{doc_id}_theme", f"[THEME] {theme_prompt}"))
+            
+            # 2. Add individual structure descriptions
+            if "possible_structures" in doc:
+                for category_key, category_data in doc["possible_structures"].items():
+                    if isinstance(category_data, dict):
+                        for structure_id, structure_data in category_data.items():
+                            if isinstance(structure_data, dict):
+                                # Check for description in structure data
+                                structure_desc = structure_data.get("description")
+                                if structure_desc and isinstance(structure_desc, str):
+                                    structure_type = structure_data.get("type", structure_id)
+                                    prompt_items.append((f"{doc_id}_{structure_id}", f"[{structure_type}] {structure_desc}"))
                                 
-        return prompt_items, f"Found {len(prompt_items)} description-based prompts"
+                                # Check for description in attributes
+                                elif "attributes" in structure_data and isinstance(structure_data["attributes"], dict):
+                                    attr_desc = structure_data["attributes"].get("description")
+                                    if attr_desc and isinstance(attr_desc, str):
+                                        structure_type = structure_data.get("type", structure_id)
+                                        prompt_items.append((f"{doc_id}_{structure_id}_attr", f"[{structure_type}] {attr_desc}"))
+                                
+                                # Fallback: use structure type and name if available
+                                elif structure_data.get("type"):
+                                    structure_type = structure_data.get("type")
+                                    structure_name = structure_data.get("name", structure_id)
+                                    fallback_desc = f"A {structure_type.lower()} called {structure_name}"
+                                    prompt_items.append((f"{doc_id}_{structure_id}_fallback", f"[{structure_type}] {fallback_desc}"))
+                                
+        return prompt_items, f"Found {len(prompt_items)} prompts (themes + structure descriptions)"
     except Exception as e:
         logger.error(f"MongoDB connection error fetching prompts: {str(e)}")
         return [], f"Error connecting to MongoDB: {str(e)}"
@@ -679,35 +701,70 @@ def get_grids_for_dropdown(db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_CO
 def submit_mongodb_prompt_task(prompt_id, db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_COLLECTION, width=DEFAULT_IMAGE_WIDTH, height=DEFAULT_IMAGE_HEIGHT, 
                              num_images=DEFAULT_NUM_IMAGES, model_type=DEFAULT_TEXT_MODEL):
     """Submits a MongoDB prompt processing task to Celery OR processes directly.
-    Focuses on extracting 'description' key for the streamlined workflow:
+    Handles both theme prompts and individual structure descriptions:
     MongoDB -> description (prompt) -> image -> S3 bucket -> 3D asset"""
-    logger.info(f"Processing MongoDB description-based prompt task for ID: {prompt_id}")
+    logger.info(f"Processing MongoDB prompt task for ID: {prompt_id}")
     
     description_content = ""
     try:
         mongo_helper = MongoDBHelper()
-        from bson import ObjectId  # Use bson.ObjectId instead of pymongo.results.ObjectId
-        document = mongo_helper.find_one(db_name, collection_name, {"_id": ObjectId(prompt_id)})
-        if document:
-            # First check if description exists at root level
-            description_content = document.get("description")
+        from bson import ObjectId
+        
+        # Parse the prompt_id to extract document ID and structure ID
+        if "_theme" in prompt_id:
+            # Theme prompt
+            doc_id = prompt_id.replace("_theme", "")
+            document = mongo_helper.find_one(db_name, collection_name, {"_id": ObjectId(doc_id)})
+            if document:
+                description_content = document.get("description") or document.get("theme_prompt")
+                
+        elif "_" in prompt_id:
+            # Structure-specific prompt
+            parts = prompt_id.split("_", 1)
+            doc_id = parts[0]
+            structure_path = parts[1]
             
-            # If not found at root, search in nested structures
-            if not description_content and "possible_structures" in document:
-                for category in document["possible_structures"].values():
-                    for item in category.values():
-                        if "description" in item and isinstance(item["description"], str):
-                            description_content = item["description"]
+            document = mongo_helper.find_one(db_name, collection_name, {"_id": ObjectId(doc_id)})
+            if document and "possible_structures" in document:
+                # Navigate through the structure path to find the description
+                for category_key, category_data in document["possible_structures"].items():
+                    if isinstance(category_data, dict):
+                        for structure_id, structure_data in category_data.items():
+                            if structure_path.startswith(structure_id):
+                                if isinstance(structure_data, dict):
+                                    # Check for description in structure data
+                                    if structure_path == structure_id:
+                                        description_content = structure_data.get("description")
+                                    # Check attribute description
+                                    elif structure_path == f"{structure_id}_attr":
+                                        if "attributes" in structure_data:
+                                            description_content = structure_data["attributes"].get("description")
+                                    # Check fallback description
+                                    elif structure_path == f"{structure_id}_fallback":
+                                        structure_type = structure_data.get("type", "structure")
+                                        structure_name = structure_data.get("name", structure_id)
+                                        description_content = f"A {structure_type.lower()} called {structure_name}"
+                                    
+                                    if description_content:
+                                        break
+                            if description_content:
+                                break
+                        if description_content:
                             break
-                    if description_content:
-                        break
+        else:
+            # Legacy format - try to find document directly
+            document = mongo_helper.find_one(db_name, collection_name, {"_id": ObjectId(prompt_id)})
+            if document:
+                description_content = document.get("description") or document.get("theme_prompt")
         
         if not description_content:
-            return None, f"Error: No 'description' content found for ID {prompt_id}."
+            return None, f"Error: No description content found for ID {prompt_id}."
+            
     except Exception as e:
         logger.error(f"Error fetching description content for ID {prompt_id}: {e}")
         return None, f"Error fetching description content for ID {prompt_id}: {e}"
 
+    logger.info(f"Found description: {description_content[:100]}...")
     # Use the generic image generation wrapper with 3D-optimized prompt
     return process_image_generation_task(description_content, width, height, num_images, model_type, is_grid_input=False)
 
@@ -802,12 +859,15 @@ def submit_batch_process_mongodb_prompts_task_ui(db_name=MONGO_DB_NAME, collecti
         # Direct batch processing in DEV mode
         try:
             mongo_helper = MongoDBHelper()
-            # Focus only on documents with description key
-            query = {"description": {"$exists": True}}
+            # Focus on documents with either description or theme_prompt key
+            query = {"$or": [
+                {"description": {"$exists": True, "$ne": None, "$ne": ""}},
+                {"theme_prompt": {"$exists": True, "$ne": None, "$ne": ""}}
+            ]}
             prompt_documents = mongo_helper.find_many(db_name, collection_name, query=query, limit=limit)
             
             if not prompt_documents:
-                return "No documents with 'description' key found to process in batch."
+                return "No documents with 'description' or 'theme_prompt' key found to process in batch."
 
             results = []
             if _dev_pipeline is None:
@@ -815,50 +875,81 @@ def submit_batch_process_mongodb_prompts_task_ui(db_name=MONGO_DB_NAME, collecti
 
             for doc in prompt_documents:
                 doc_id = str(doc.get("_id"))
-                description = doc.get("description")
-
-                # If no description at root, search in nested structures
-                if not description and "possible_structures" in doc:
-                    for category in doc["possible_structures"].values():
-                        for item in category.values():
-                            if "description" in item and isinstance(item["description"], str):
-                                description = item["description"]
-                                break
-                        if description:
-                            break
-
-                if not description:
-                    results.append(f"Skipping {doc_id}: No valid description found.")
-                    continue
-
-                logger.info(f"Directly batch processing description: '{description[:50]}'")
-                try:
-                    # Enhance description for 3D generation
-                    enhanced_description = enhance_prompt_for_3d_generation(description)
-                    images = _dev_pipeline.process_text(enhanced_description)
-                    
-                    if images:
-                        # Save the first image
-                        output_path = os.path.join(OUTPUT_IMAGES_DIR, f"batch_desc_{doc_id}.png")
-                        images[0].save(output_path)
-                        results.append(f"✓ {doc_id}: Generated from description and saved to {output_path}")
+                
+                # Process theme prompt first
+                theme_prompt = doc.get("description") or doc.get("theme_prompt")
+                if theme_prompt and isinstance(theme_prompt, str):
+                    logger.info(f"Directly batch processing theme prompt: '{theme_prompt[:50]}'")
+                    try:
+                        enhanced_prompt = enhance_prompt_for_3d_generation(theme_prompt)
+                        images = _dev_pipeline.process_text(enhanced_prompt)
                         
-                        # Update database if requested
-                        if update_db:
-                            try:
-                                mongo_helper.update_one(db_name, collection_name, 
-                                                      {"_id": doc["_id"]}, 
-                                                      {"$set": {"generated_image_path": output_path}})
-                                results.append(f"  └─ Updated database record for {doc_id}")
-                            except Exception as e:
-                                results.append(f"  └─ Failed to update database for {doc_id}: {e}")
-                    else:
-                        results.append(f"✗ {doc_id}: No images generated from description")
-                        
-                except Exception as e:
-                    results.append(f"✗ {doc_id}: Error generating image from description - {e}")
+                        if images:
+                            output_path = os.path.join(OUTPUT_IMAGES_DIR, f"batch_theme_{doc_id}.png")
+                            images[0].save(output_path)
+                            results.append(f"✓ {doc_id}_theme: Generated from theme prompt and saved to {output_path}")
+                            
+                            if update_db:
+                                try:
+                                    mongo_helper.update_one(db_name, collection_name, 
+                                                          {"_id": doc["_id"]}, 
+                                                          {"$set": {"theme_generated_image_path": output_path}})
+                                    results.append(f"  └─ Updated database record for theme {doc_id}")
+                                except Exception as e:
+                                    results.append(f"  └─ Failed to update database for theme {doc_id}: {e}")
+                        else:
+                            results.append(f"✗ {doc_id}_theme: No images generated from theme prompt")
+                    except Exception as e:
+                        results.append(f"✗ {doc_id}_theme: Error generating image from theme prompt - {e}")
+
+                # Process structure descriptions
+                if "possible_structures" in doc:
+                    for category_key, category_data in doc["possible_structures"].items():
+                        if isinstance(category_data, dict):
+                            for structure_id, structure_data in category_data.items():
+                                if isinstance(structure_data, dict):
+                                    structure_desc = structure_data.get("description")
+                                    if not structure_desc and "attributes" in structure_data:
+                                        structure_desc = structure_data["attributes"].get("description")
+                                    
+                                    if structure_desc and isinstance(structure_desc, str):
+                                        logger.info(f"Directly batch processing structure description: '{structure_desc[:50]}'")
+                                        try:
+                                            enhanced_prompt = enhance_prompt_for_3d_generation(structure_desc)
+                                            images = _dev_pipeline.process_text(enhanced_prompt)
+                                            
+                                            if images:
+                                                output_path = os.path.join(OUTPUT_IMAGES_DIR, f"batch_structure_{doc_id}_{structure_id}.png")
+                                                images[0].save(output_path)
+                                                results.append(f"✓ {doc_id}_{structure_id}: Generated from structure description and saved to {output_path}")
+                                                
+                                                if update_db:
+                                                    try:
+                                                        # Update the specific structure with generated image path
+                                                        update_path = f"possible_structures.{category_key}.{structure_id}.generated_image_path"
+                                                        mongo_helper.update_one(db_name, collection_name, 
+                                                                              {"_id": doc["_id"]}, 
+                                                                              {"$set": {update_path: output_path}})
+                                                        results.append(f"  └─ Updated database record for structure {doc_id}_{structure_id}")
+                                                    except Exception as e:
+                                                        results.append(f"  └─ Failed to update database for structure {doc_id}_{structure_id}: {e}")
+                                            else:
+                                                results.append(f"✗ {doc_id}_{structure_id}: No images generated from structure description")
+                                        except Exception as e:
+                                            results.append(f"✗ {doc_id}_{structure_id}: Error generating image from structure description - {e}")
+
+                # If no prompts found at all for this document
+                if not theme_prompt and not any(
+                    isinstance(category_data, dict) and 
+                    any(isinstance(structure_data, dict) and 
+                        (structure_data.get("description") or 
+                         (structure_data.get("attributes", {}).get("description") if isinstance(structure_data.get("attributes"), dict) else False))
+                        for structure_data in category_data.values())
+                    for category_data in doc.get("possible_structures", {}).values()
+                ):
+                    results.append(f"Skipping {doc_id}: No valid prompt text found in theme or structures.")
             
-            return "Batch description processing completed!\n\n" + "\n".join(results)
+            return "Batch prompt processing completed!\n\n" + "\n".join(results)
             
         except Exception as e:
             logger.error(f"Error in batch description processing: {e}")
@@ -1331,7 +1422,7 @@ def build_app():
                     - **Stop:** Shut down the GPU instance to save costs  
                     - **Status:** Check current instance state and cost estimates  
                     """)
-            
+
             # MongoDB Prompts Tab
             with gr.TabItem("MongoDB", id="tab_mongodb"):
                 with gr.Tabs() as mongo_tabs:
@@ -1660,67 +1751,49 @@ def build_app():
 
     return demo
 
-# --- Prompt Enhancement for 3D Asset Generation ---
-def enhance_prompt_for_3d_generation(original_prompt):
-    """
-    Enhanced prompt engineering specifically optimized for 3D asset generation.
-    Adds keywords that improve 3D model quality and ensure proper background.
+# --- 3D Prompt Enhancement Function ---
+def enhance_prompt_for_3d_generation(prompt):
+    """Enhance text prompts for better 3D asset generation"""
+    if not prompt or not isinstance(prompt, str):
+        return prompt
     
-    This is part of the streamlined workflow:
-    MongoDB -> description (prompt) -> enhanced prompt -> image -> S3 bucket -> 3D asset
-    """
-    if not original_prompt or not isinstance(original_prompt, str):
-        return original_prompt
+    # Remove problematic background terms that conflict with 3D generation
+    background_terms_to_remove = [
+        "landscape", "indoor", "outdoor", "scenery", "environment", 
+        "background", "setting", "room", "field", "forest", "desert",
+        "in a", "on a", "against", "surrounded by"
+    ]
     
-    # Core 3D optimization keywords
-    base_3d_enhancements = [
+    enhanced = prompt.strip()
+    
+    # Remove background terms (case insensitive)
+    for term in background_terms_to_remove:
+        enhanced = re.sub(rf'\b{term}\b', '', enhanced, flags=re.IGNORECASE)
+    
+    # Clean up extra spaces
+    enhanced = re.sub(r'\s+', ' ', enhanced).strip()
+    
+    # Add 3D-specific enhancements
+    enhancements = [
         "3d render",
         "photorealistic", 
         "clean white background",
         "studio lighting",
         "product photography style",
         "sharp details",
-        "clear object boundaries"
-    ]
-    
-    # Additional quality improvements for 3D
-    quality_enhancements = [
         "high resolution",
         "professional lighting",
-        "no shadows on background",
         "centered composition",
+        "no shadows on background",
         "isolated object"
     ]
     
-    # Remove any existing background-related terms that might conflict
-    conflicting_terms = [
-        "transparent background", "black background", "colorful background",
-        "complex background", "detailed background", "environment",
-        "landscape", "indoor", "outdoor", "room", "street", "scene"
-    ]
+    # Combine original prompt with enhancements
+    enhanced_prompt = f"{enhanced}, {', '.join(enhancements)}"
     
-    # Clean the original prompt (case insensitive)
-    cleaned_prompt = original_prompt
-    for term in conflicting_terms:
-        # Replace both exact matches and partial matches
-        cleaned_prompt = cleaned_prompt.replace(term, "")
-        cleaned_prompt = cleaned_prompt.replace(term.title(), "")
-    
-    # Construct the optimized prompt
-    essential_3d_terms = ", ".join(base_3d_enhancements)
-    enhanced_prompt = f"{cleaned_prompt.strip()}, {essential_3d_terms}"
-    
-    # Add quality enhancements if prompt isn't too long
-    if len(enhanced_prompt) < 150:
-        quality_terms = ", ".join(quality_enhancements[:3])  # Only add first 3 quality terms
-        enhanced_prompt = f"{enhanced_prompt}, {quality_terms}"
-    
-    # Clean up any double commas or extra spaces
-    enhanced_prompt = enhanced_prompt.replace(", ,", ",").replace(",,", ",")
-    enhanced_prompt = " ".join(enhanced_prompt.split())  # Normalize whitespace
-    
-    logger.info(f"Original prompt: {original_prompt}")
-    logger.info(f"Enhanced 3D-optimized prompt: {enhanced_prompt}")
+    # Limit length to avoid too long prompts
+    if len(enhanced_prompt) > 300:
+        enhanced_prompt = enhanced_prompt[:297] + "..."
     
     return enhanced_prompt
 
