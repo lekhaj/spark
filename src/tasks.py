@@ -766,6 +766,7 @@ def batch_process_mongodb_prompts_task(db_name: str, collection_name: str, limit
         return {"status": "error", "message": "Worker not fully initialized or modules missing."}
     
     mongo_helper = MongoDBHelper()
+    s3_mgr = get_s3_manager()
     
     try:
         query = {"$or": [{"theme_prompt": {"$exists": True}}, {"description": {"$exists": True}}]}
@@ -778,53 +779,87 @@ def batch_process_mongodb_prompts_task(db_name: str, collection_name: str, limit
         return {"status": "error", "message": f"Failed to fetch prompts for batch: {e}"}
 
     results = []
-    
     for doc in prompt_documents:
         doc_id = str(doc.get("_id"))
-        prompt = doc.get("theme_prompt") or doc.get("description")
-        
-        if not prompt and "possible_structures" in doc: 
-            for category_key in doc["possible_structures"]:
-                for item_key in doc["possible_structures"][category_key]:
-                    if "description" in doc["possible_structures"][category_key][item_key]:
-                        prompt = doc["possible_structures"][category_key][item_key]["description"]
-                        break
-                if prompt: 
-                    break
-        
-        if not prompt:
-            results.append(f"Skipping {doc_id}: No valid prompt found.")
-            continue
-        
-        task_logger.info(f"Batch processing prompt: '{prompt[:50]}'")
-        try:
-            if hasattr(_text_processor, 'model_type') and _text_processor.model_type != model_type:
-                _text_processor = TextProcessor(model_type=model_type)
-                _pipeline = Pipeline(_text_processor, _grid_processor)
-
-            images = _pipeline.process_text(prompt)
-            
-            if images and len(images) > 0: 
-                unique_id = str(uuid.uuid4())[:8]
-                image_filename = f"mongo_batch_{unique_id}_{doc_id[:8]}.png" 
-                image_path = os.path.join(OUTPUT_IMAGES_DIR, image_filename)
-                images[0].save(image_path)
-                results.append(f"Generated image for: '{prompt[:30]}...' -> {image_filename}")
-                
-                if update_db:
-                    update_data = {
-                        "processed": True,
-                        "processed_at": datetime.now(),
-                        "model_used": model_type,
-                        "image_path": image_filename 
-                    }
-                    mongo_helper.update_by_id(MONGO_DB_NAME, collection_name, doc_id, update_data)
-            else:
-                results.append(f"Failed to generate image for: '{prompt[:30]}' - No image output.")
-        except Exception as e:
-            task_logger.error(f"Error in batch processing for {doc_id}: {e}", exc_info=True)
-            results.append(f"Failed to process '{prompt[:30]}...' - Error: {e}")
-            
+        # If possible_structures exists, process each structure
+        if "possible_structures" in doc:
+            for category_key, category in doc["possible_structures"].items():
+                for item_key, struct in category.items():
+                    prompt = struct.get("description")
+                    structure_id = struct.get("structureId")
+                    if not prompt or not structure_id:
+                        results.append(f"Skipping structure in {doc_id}: No prompt or structureId.")
+                        continue
+                    try:
+                        if hasattr(_text_processor, 'model_type') and _text_processor.model_type != model_type:
+                            _text_processor = TextProcessor(model_type=model_type)
+                            _pipeline = Pipeline(_text_processor, _grid_processor)
+                        images = _pipeline.process_text(prompt)
+                        if images and len(images) > 0:
+                            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                            image_filename = f"mongo_{structure_id}_{timestamp}.png"
+                            image_path = os.path.join(OUTPUT_IMAGES_DIR, image_filename)
+                            images[0].save(image_path)
+                            # S3 upload
+                            s3_url = None
+                            if s3_mgr:
+                                s3_key = f"images/{image_filename}"
+                                upload_result = s3_mgr.upload_image(image_path, s3_key)
+                                if upload_result.get("status") == "success":
+                                    s3_url = upload_result.get("s3_url")
+                            # Update MongoDB
+                            if update_db:
+                                update_data = {
+                                    f"possible_structures.{category_key}.{item_key}.imageUrl": s3_url or image_filename,
+                                    f"possible_structures.{category_key}.{item_key}.processed": True,
+                                    f"possible_structures.{category_key}.{item_key}.processed_at": datetime.now(),
+                                    f"possible_structures.{category_key}.{item_key}.model_used": model_type,
+                                }
+                                mongo_helper.update_by_id(MONGO_DB_NAME, collection_name, doc_id, {"$set": update_data})
+                            results.append(f"Generated image for structure {structure_id} -> {s3_url or image_filename}")
+                        else:
+                            results.append(f"Failed to generate image for structure {structure_id} - No image output.")
+                    except Exception as e:
+                        task_logger.error(f"Error in batch processing for structure {structure_id}: {e}", exc_info=True)
+                        results.append(f"Failed to process structure {structure_id} - Error: {e}")
+        else:
+            # Fallback: process the document as a whole (legacy)
+            prompt = doc.get("theme_prompt") or doc.get("description")
+            if not prompt:
+                results.append(f"Skipping {doc_id}: No valid prompt found.")
+                continue
+            try:
+                if hasattr(_text_processor, 'model_type') and _text_processor.model_type != model_type:
+                    _text_processor = TextProcessor(model_type=model_type)
+                    _pipeline = Pipeline(_text_processor, _grid_processor)
+                images = _pipeline.process_text(prompt)
+                if images and len(images) > 0:
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    image_filename = f"mongo_{doc_id}_{timestamp}.png"
+                    image_path = os.path.join(OUTPUT_IMAGES_DIR, image_filename)
+                    images[0].save(image_path)
+                    # S3 upload
+                    s3_url = None
+                    if s3_mgr:
+                        s3_key = f"images/{image_filename}"
+                        upload_result = s3_mgr.upload_image(image_path, s3_key)
+                        if upload_result.get("status") == "success":
+                            s3_url = upload_result.get("s3_url")
+                    # Update MongoDB
+                    if update_db:
+                        update_data = {
+                            "processed": True,
+                            "processed_at": datetime.now(),
+                            "model_used": model_type,
+                            "image_path": s3_url or image_filename
+                        }
+                        mongo_helper.update_by_id(MONGO_DB_NAME, collection_name, doc_id, update_data)
+                    results.append(f"Generated image for: '{prompt[:30]}...' -> {s3_url or image_filename}")
+                else:
+                    results.append(f"Failed to generate image for: '{prompt[:30]}' - No image output.")
+            except Exception as e:
+                task_logger.error(f"Error in batch processing for {doc_id}: {e}", exc_info=True)
+                results.append(f"Failed to process '{prompt[:30]}...' - Error: {e}")
     return {"status": "success", "message": "\n".join(results)}
 
 @app.task(name='generate_3d_model_from_image', bind=True)
