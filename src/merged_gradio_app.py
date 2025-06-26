@@ -14,7 +14,7 @@ import httpx
 import base64
 import requests
 import pymongo # For ObjectId in MongoDB operations (local DB access)
-
+import re
 from datetime import datetime # Ensure datetime is imported
 
 # --- Function to handle datetime serialization for JSON ---
@@ -1427,7 +1427,8 @@ def build_app():
             with gr.TabItem("MongoDB", id="tab_mongodb"):
                 with gr.Tabs() as mongo_tabs:
                     with gr.TabItem("Text Prompts", id="tab_mongo_text"):
-                        gr.Markdown("### Generate Images from MongoDB Prompts")
+                        gr.Markdown("### Generate Images from MongoDB Prompts with SDXL Turbo")
+                        gr.Markdown("🚀 **SDXL Turbo Integration**: Ultra-fast, high-quality local image generation optimized for 3D assets!")
                         gr.Markdown("🎯 **All prompts are automatically enhanced for 3D asset generation** - perfect for creating images that will work well with the 3D Generation tab!")
                         
                         with gr.Row():
@@ -1435,25 +1436,30 @@ def build_app():
                                 mongo_db_name = gr.Textbox(label="Database Name", value=MONGO_DB_NAME, placeholder="Enter database name")
                                 mongo_collection = gr.Textbox(label="Collection Name", value=MONGO_BIOME_COLLECTION, placeholder="Enter collection name")
                                 mongo_fetch_btn = gr.Button("Fetch Prompts")
-                                gr.Markdown("**💡 Tip:** Generated images will be optimized with clean white backgrounds and 3D-friendly lighting for better 3D model generation.")
+                                gr.Markdown("**🎯 SDXL Turbo Features:**")
+                                gr.Markdown("• ⚡ **Ultra-fast**: 2-4 inference steps vs 20-50 for other models")
+                                gr.Markdown("• 🏠 **Local processing**: No API costs, completely private")
+                                gr.Markdown("• 🎨 **3D-optimized**: Clean backgrounds, perfect lighting for 3D generation")
                                 with gr.Row():
                                     mongo_width = gr.Slider(minimum=256, maximum=1024, value=DEFAULT_IMAGE_WIDTH, step=64, label="Width")
                                     mongo_height = gr.Slider(minimum=256, maximum=1024, value=DEFAULT_IMAGE_HEIGHT, step=64, label="Height")
                                 mongo_num_images = gr.Slider(minimum=1, maximum=4, value=DEFAULT_NUM_IMAGES, step=1, label="Number of Images")
-                                mongo_model = gr.Dropdown(["openai", "stability", "local"], value=DEFAULT_TEXT_MODEL, label="Model")
-                            mongo_process_btn = gr.Button("🚀 Generate 3D-Optimized Image", interactive=False, variant="primary")
+                                # Remove model dropdown - SDXL Turbo is now the default
+                                gr.Markdown("**Model**: SDXL Turbo (Local GPU-accelerated generation)")
+                            mongo_process_btn = gr.Button("🚀 Generate with SDXL Turbo", interactive=False, variant="primary")
 
                         with gr.Column(scale=2):
                             mongo_prompts = gr.Dropdown(label="Select a Prompt", choices=[], interactive=False, allow_custom_value=True)
                             mongo_status = gr.Textbox(label="Status", interactive=False)
-                            mongo_output = gr.Image(label=f"Generated Image (Check '{OUTPUT_IMAGES_DIR}')", interactive=False)
+                            mongo_output = gr.Image(label=f"Generated Image (SDXL Turbo Output)", interactive=False)
                             mongo_message = gr.Textbox(label="Generation Status", interactive=False)
 
-                    with gr.Accordion("Batch Processing", open=False):
+                    with gr.Accordion("Batch Processing with SDXL Turbo", open=False):
+                        gr.Markdown("**Batch process multiple prompts using SDXL Turbo for ultra-fast generation**")
                         with gr.Row():
                             batch_limit = gr.Slider(minimum=1, maximum=50, value=10, step=1, label="Number of Prompts to Process")
                             update_db = gr.Checkbox(label="Update MongoDB after processing", value=True)
-                        batch_process_btn = gr.Button("Batch Process Prompts")
+                        batch_process_btn = gr.Button("🚀 Batch Process with SDXL Turbo")
                         batch_results = gr.Textbox(label="Batch Processing Results", interactive=False, lines=10)
 
                 with gr.TabItem("Grid Data", id="tab_mongo_grid"):
@@ -1466,14 +1472,15 @@ def build_app():
                                 grid_width = gr.Slider(minimum=256, maximum=1024, value=DEFAULT_IMAGE_WIDTH, step=64, label="Width")
                                 grid_height = gr.Slider(minimum=256, maximum=1024, value=DEFAULT_IMAGE_HEIGHT, step=64, label="Height")
                             grid_num_images = gr.Slider(minimum=1, maximum=4, value=1, step=1, label="Number of Images")
-                            grid_model = gr.Dropdown(["openai", "stability", "local"], value=DEFAULT_GRID_MODEL, label="Model")
-                            grid_process_btn = gr.Button("Generate Image", interactive=False)
+                            # Remove model dropdown for grids too - using SDXL Turbo
+                            gr.Markdown("**Model**: SDXL Turbo (Optimized for grid-based generation)")
+                            grid_process_btn = gr.Button("🚀 Generate with SDXL Turbo", interactive=False)
 
                         with gr.Column(scale=2):
                             grid_items = gr.Dropdown(label="Select a Grid", choices=[], interactive=False, allow_custom_value=True)
                             grid_status = gr.Textbox(label="Status", interactive=False)
-                            grid_output = gr.Image(label=f"Generated Image (Check '{OUTPUT_IMAGES_DIR}')", interactive=False)
-                            grid_visualization = gr.Image(label=f"Grid Visualization (Check '{OUTPUT_IMAGES_DIR}')", interactive=False)
+                            grid_output = gr.Image(label=f"Generated Image (SDXL Turbo Output)", interactive=False)
+                            grid_visualization = gr.Image(label=f"Grid Visualization", interactive=False)
                             grid_message = gr.Textbox(label="Generation Status", interactive=False)
 
         # --- Event Handlers ---
@@ -1713,19 +1720,21 @@ def build_app():
         )
 
         mongo_process_btn.click(
-            submit_mongodb_prompt_task_from_dropdown, 
+            lambda prompts, db_name, collection, width, height, num_images: 
+                submit_mongodb_prompt_task_from_dropdown(prompts, db_name, collection, width, height, num_images, "sdxl-turbo"), 
             inputs=[
                 mongo_prompts, mongo_db_name, mongo_collection,
-                mongo_width, mongo_height, mongo_num_images, mongo_model
+                mongo_width, mongo_height, mongo_num_images
             ],
             outputs=[mongo_output, mongo_message]
         )
 
         batch_process_btn.click(
-            submit_batch_process_mongodb_prompts_task_ui,
+            lambda db_name, collection, limit, width, height, update_db:
+                submit_batch_process_mongodb_prompts_task_ui(db_name, collection, limit, width, height, "sdxl-turbo", update_db),
             inputs=[
                 mongo_db_name, mongo_collection, batch_limit,
-                mongo_width, mongo_height, mongo_model, update_db
+                mongo_width, mongo_height, update_db
             ],
             outputs=[batch_results]
         )
@@ -1741,10 +1750,11 @@ def build_app():
         )
 
         grid_process_btn.click(
-            submit_mongodb_grid_task_from_dropdown, 
+            lambda grid_items, db_name, collection, width, height, num_images:
+                submit_mongodb_grid_task_from_dropdown(grid_items, db_name, collection, width, height, num_images, "sdxl-turbo"), 
             inputs=[
                 grid_items, grid_db_name, grid_collection,
-                grid_width, grid_height, grid_num_images, grid_model
+                grid_width, grid_height, grid_num_images
             ],
             outputs=[grid_output, grid_visualization, grid_message]
         )
