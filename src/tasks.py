@@ -1514,106 +1514,99 @@ def generate_image_sdxl_turbo(
         # Step 3: Generate image
         self.update_state(state='PROGRESS', meta={'progress': 20, 'status': 'Generating image...'})
         task_logger.info("🎨 Starting image generation...")
+
+        # Use outputs/images directory instead of temp
+        os.makedirs(OUTPUT_IMAGES_DIR, exist_ok=True)
+        output_path = os.path.join(OUTPUT_IMAGES_DIR, f"sdxl_turbo_{uuid.uuid4().hex[:8]}.png")
+
+        # Generate and save image
+        output_path, metadata = sdxl_worker.generate_and_save(
+            prompt=prompt,
+            output_dir=OUTPUT_IMAGES_DIR,
+            filename_prefix="sdxl_turbo",
+            negative_prompt=negative_prompt,
+            width=width,
+            height=height,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+            seed=seed,
+            enhance_prompt=enhance_prompt
+        )
         
-        # Create temporary output directory
-        temp_output_dir = tempfile.mkdtemp()
+        if output_path is None:
+            error_msg = f"Image generation failed: {metadata.get('error', 'Unknown error')}"
+            task_logger.error(f"❌ {error_msg}")
+            return {"status": "error", "message": error_msg}
         
-        try:
-            # Generate and save image
-            output_path, metadata = sdxl_worker.generate_and_save(
-                prompt=prompt,
-                output_dir=temp_output_dir,
-                filename_prefix="sdxl_turbo",
-                negative_prompt=negative_prompt,
-                width=width,
-                height=height,
-                num_inference_steps=num_inference_steps,
-                guidance_scale=guidance_scale,
-                seed=seed,
-                enhance_prompt=enhance_prompt
+        task_logger.info(f"✅ Image generated successfully: {output_path}")
+        
+        # Step 4: Upload to S3
+        self.update_state(state='PROGRESS', meta={'progress': 80, 'status': 'Uploading to S3...'})
+        
+        s3_url = None
+        if s3_mgr:
+            upload_result = s3_mgr.upload_image(
+                output_path, 
+                output_s3_prefix
             )
             
-            if output_path is None:
-                error_msg = f"Image generation failed: {metadata.get('error', 'Unknown error')}"
-                task_logger.error(f"❌ {error_msg}")
-                return {"status": "error", "message": error_msg}
+            if upload_result.get("status") == "success":
+                s3_url = upload_result.get("s3_url")
+                task_logger.info(f"✅ Image uploaded to S3: {s3_url}")
+            else:
+                task_logger.warning(f"Failed to upload image to S3: {upload_result.get('message')}")
+        
+        # Step 5: Update MongoDB
+        mongodb_updated = False
+        if mongo_mgr and doc_id and update_collection:
+            self.update_state(state='PROGRESS', meta={'progress': 90, 'status': 'Updating database...'})
             
-            task_logger.info(f"✅ Image generated successfully: {output_path}")
-            
-            # Step 4: Upload to S3
-            self.update_state(state='PROGRESS', meta={'progress': 80, 'status': 'Uploading to S3...'})
-            
-            s3_url = None
-            if s3_mgr:
-                upload_result = s3_mgr.upload_image(
-                    output_path, 
-                    output_s3_prefix
-                )
-                
-                if upload_result.get("status") == "success":
-                    s3_url = upload_result.get("s3_url")
-                    task_logger.info(f"✅ Image uploaded to S3: {s3_url}")
-                else:
-                    task_logger.warning(f"Failed to upload image to S3: {upload_result.get('message')}")
-            
-            # Step 5: Update MongoDB
-            mongodb_updated = False
-            if mongo_mgr and doc_id and update_collection:
-                self.update_state(state='PROGRESS', meta={'progress': 90, 'status': 'Updating database...'})
-                
-                update_data = {
-                    "sdxl_turbo_image_path": output_path,
-                    "sdxl_turbo_generated_at": datetime.now(),
-                    "sdxl_turbo_metadata": metadata,
-                    "sdxl_turbo_status": "completed"
-                }
-                
-                if s3_url:
-                    update_data["sdxl_turbo_s3_url"] = s3_url
-                
-                try:
-                    result_count = mongo_mgr.update_by_id(
-                        db_name="spark_assets",
-                        collection_name=update_collection,
-                        document_id=doc_id,
-                        update={"$set": update_data}
-                    )
-                    
-                    if result_count > 0:
-                        mongodb_updated = True
-                        task_logger.info(f"✅ Updated MongoDB document {doc_id}")
-                    else:
-                        task_logger.warning(f"MongoDB document {doc_id} not found or not updated")
-                        
-                except Exception as e:
-                    task_logger.error(f"Failed to update MongoDB: {e}")
-            
-            # Step 6: Final result
-            self.update_state(state='SUCCESS', meta={'progress': 100, 'status': 'Completed successfully'})
-            
-            result = {
-                "status": "success",
-                "message": "Image generated successfully with SDXL Turbo",
-                "image_path": output_path,
-                "metadata": metadata,
-                "mongodb_updated": mongodb_updated
+            update_data = {
+                "sdxl_turbo_image_path": output_path,
+                "sdxl_turbo_generated_at": datetime.now(),
+                "sdxl_turbo_metadata": metadata,
+                "sdxl_turbo_status": "completed"
             }
             
             if s3_url:
-                result["s3_image_url"] = s3_url
+                update_data["sdxl_turbo_s3_url"] = s3_url
             
-            task_logger.info("✅ SDXL Turbo image generation completed successfully")
-            return result
-            
-        finally:
-            # Cleanup temporary directory
             try:
-                import shutil
-                if os.path.exists(temp_output_dir):
-                    shutil.rmtree(temp_output_dir)
+                result_count = mongo_mgr.update_by_id(
+                    db_name="spark_assets",
+                    collection_name=update_collection,
+                    document_id=doc_id,
+                    update={"$set": update_data}
+                )
+                
+                if result_count > 0:
+                    mongodb_updated = True
+                    task_logger.info(f"✅ Updated MongoDB document {doc_id}")
+                else:
+                    task_logger.warning(f"MongoDB document {doc_id} not found or not updated")
+                    
             except Exception as e:
-                task_logger.warning(f"Failed to cleanup temp directory: {e}")
-    
+                task_logger.error(f"Failed to update MongoDB: {e}")
+            
+            result['mongodb_updated'] = mongodb_updated
+        
+        # Step 6: Final result
+        self.update_state(state='SUCCESS', meta={'progress': 100, 'status': 'Completed successfully'})
+        
+        result = {
+            "status": "success",
+            "message": "Image generated successfully with SDXL Turbo",
+            "image_path": output_path,
+            "metadata": metadata,
+            "mongodb_updated": mongodb_updated
+        }
+        
+        if s3_url:
+            result["s3_image_url"] = s3_url
+        
+        task_logger.info("✅ SDXL Turbo image generation completed successfully")
+        return result
+
     except Exception as e:
         error_msg = f"SDXL Turbo image generation failed: {str(e)}"
         task_logger.error(f"❌ {error_msg}", exc_info=True)
