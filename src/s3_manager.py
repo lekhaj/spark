@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 class S3Manager:
     """Manages S3 operations for images and 3D assets."""
     
-    def __init__(self, bucket_name: Optional[str] = None, region: str = 'us-east-1'):
+    def __init__(self, bucket_name: Optional[str] = None, region: str = 'ap-south-1'):
         """
         Initialize S3 Manager.
         
