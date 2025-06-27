@@ -118,9 +118,9 @@ task_logger = logging.getLogger('celery_tasks')
 # Initialize default values
 DEFAULT_TEXT_MODEL = "stability"
 DEFAULT_GRID_MODEL = "stability"
-OUTPUT_DIR = "/tmp/output"
-OUTPUT_IMAGES_DIR = "/tmp/output/images"
-OUTPUT_3D_ASSETS_DIR = "/tmp/output/3d_assets"
+OUTPUT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "outputs"))
+OUTPUT_IMAGES_DIR = os.path.join(OUTPUT_DIR, "images")
+OUTPUT_3D_ASSETS_DIR = os.path.join(OUTPUT_DIR, "3d_assets")
 MONGO_DB_NAME = "biome_db"
 MONGO_BIOME_COLLECTION = "biomes"
 
@@ -779,6 +779,7 @@ def batch_process_mongodb_prompts_task(db_name: str, collection_name: str, limit
         return {"status": "error", "message": f"Failed to fetch prompts for batch: {e}"}
 
     results = []
+    os.makedirs(OUTPUT_IMAGES_DIR, exist_ok=True)  # Ensure output dir exists
     for doc in prompt_documents:
         doc_id = str(doc.get("_id"))
         # If possible_structures exists, process each structure
@@ -786,7 +787,7 @@ def batch_process_mongodb_prompts_task(db_name: str, collection_name: str, limit
             for category_key, category in doc["possible_structures"].items():
                 for item_key, struct in category.items():
                     prompt = struct.get("description")
-                    structure_id = struct.get("structureId")
+                    structure_id = struct.get("structureId") or item_key  # fallback to item_key if structureId missing
                     if not prompt or not structure_id:
                         results.append(f"Skipping structure in {doc_id}: No prompt or structureId.")
                         continue
@@ -796,8 +797,8 @@ def batch_process_mongodb_prompts_task(db_name: str, collection_name: str, limit
                             _pipeline = Pipeline(_text_processor, _grid_processor)
                         images = _pipeline.process_text(prompt)
                         if images and len(images) > 0:
-                            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                            image_filename = f"mongo_{structure_id}_{timestamp}.png"
+                            # Use structureID or item_key for filename
+                            image_filename = f"{structure_id}.png"
                             image_path = os.path.join(OUTPUT_IMAGES_DIR, image_filename)
                             images[0].save(image_path)
                             # S3 upload
@@ -834,8 +835,8 @@ def batch_process_mongodb_prompts_task(db_name: str, collection_name: str, limit
                     _pipeline = Pipeline(_text_processor, _grid_processor)
                 images = _pipeline.process_text(prompt)
                 if images and len(images) > 0:
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    image_filename = f"mongo_{doc_id}_{timestamp}.png"
+                    # Use doc_id for filename
+                    image_filename = f"{doc_id}.png"
                     image_path = os.path.join(OUTPUT_IMAGES_DIR, image_filename)
                     images[0].save(image_path)
                     # S3 upload
