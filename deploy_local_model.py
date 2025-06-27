@@ -152,8 +152,8 @@ class LocalModelDeployer:
             
             if images and len(images) > 0:
                 # Save test image
-                test_output_dir = self.project_root / "test_output"
-                test_output_dir.mkdir(exist_ok=True)
+                test_output_dir = self.project_root / "outputs" / "images"
+                test_output_dir.mkdir(parents=True, exist_ok=True)
                 test_image_path = test_output_dir / "test_local_model.png"
                 images[0].save(test_image_path)
                 logger.info(f"✅ Test image saved to: {test_image_path}")
