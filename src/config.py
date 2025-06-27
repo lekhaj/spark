@@ -29,18 +29,22 @@ DEFAULT_NUM_IMAGES = 1
 # Get the directory of the current file (config.py) -> C:\Users\Sagar H V\OneDrive\Desktop\spark\src
 CURRENT_FILE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Define the root of your 'spark' project
-# This goes up one level from 'src' to 'spark'
-PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_FILE_DIR, os.pardir))
+# Get the project root (one level above the directory containing config.py)
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
-# Define where generated images will be stored on the file system
+
+# Define the generated_assets directory inside /outputs at the project root
+GENERATED_ASSETS_DIR = os.path.join(PROJECT_ROOT, "outputs", "generated_assets")
 # This will be C:\Users\Sagar H V\OneDrive\Desktop\spark\src\generated_assets\images
-OUTPUT_IMAGES_DIR = os.path.join(CURRENT_FILE_DIR, 'generated_assets', 'images')
+# Define where images and 3D assets will be stored
+OUTPUT_IMAGES_DIR = os.path.join(GENERATED_ASSETS_DIR, "images")
+OUTPUT_3D_ASSETS_DIR = os.path.join(GENERATED_ASSETS_DIR, "3d_assets")
+
 
 # Define general output directory for other assets (e.g., 3D models)
 # This will be C:\Users\Sagar H V\OneDrive\Desktop\spark\outputs
 OUTPUT_DIR = os.path.join(PROJECT_ROOT, 'outputs')
-OUTPUT_3D_ASSETS_DIR = os.path.join(OUTPUT_DIR, '3d_assets')
+
 
 # Ensure all necessary directories exist
 os.makedirs(OUTPUT_DIR, exist_ok=True)
