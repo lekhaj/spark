@@ -24,7 +24,8 @@ class S3Manager:
             bucket_name: S3 bucket name (uses environment variable if not provided)
             region: AWS region
         """
-        self.bucket_name = bucket_name or os.environ.get('S3_BUCKET_NAME')
+        # Default to 'sparkassets' if not provided
+        self.bucket_name = bucket_name or os.environ.get('S3_BUCKET_NAME') or 'sparkassets'
         self.region = region
         self.s3_client = None
         
@@ -48,10 +49,11 @@ class S3Manager:
             logger.error("AWS credentials not found. Please configure AWS credentials.")
             raise
         except ClientError as e:
-            if e.response['Error']['Code'] == '404':
+            error_code = e.response['Error'].get('Code', 'Unknown')
+            error_msg = e.response['Error'].get('Message', str(e))
+            logger.error(f"AWS S3 client error [{error_code}]: {error_msg}")
+            if error_code == '404':
                 logger.error(f"S3 bucket '{self.bucket_name}' does not exist")
-            else:
-                logger.error(f"AWS S3 client error: {e}")
             raise
         except Exception as e:
             logger.error(f"Unexpected error initializing S3 client: {e}")
