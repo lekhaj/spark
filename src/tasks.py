@@ -540,7 +540,7 @@ def generate_grid_image(grid_string: str, width: int, height: int, num_images: i
         return {"status": "error", "message": "Worker not fully initialized or modules missing."}
 
     try:
-        task_logger.info(f"Task: Processing grid data with model {model_type}")
+        task_logger.info(f"Task: Processing grid data with model {model_type}"
 
         if hasattr(_grid_processor, 'model_type') and _grid_processor.model_type != model_type:
             task_logger.info(f"Re-initializing GridProcessor to {model_type} for task.")
@@ -1639,65 +1639,58 @@ def batch_generate_images_sdxl_turbo(
         if not sdxl_worker.load_model():
             return {"status": "error", "message": "Failed to load SDXL Turbo model"}
         
-        for i, prompt in enumerate(prompts_list):
+        # Change prompts_list to a list of dicts: [{prompt, doc_id, update_collection, category_key, item_key}]
+        for i, item in enumerate(prompts_list):
+            prompt = item["prompt"]
+            doc_id = item.get("doc_id")
+            update_collection = item.get("update_collection")
+            category_key = item.get("category_key")
+            item_key = item.get("item_key")
+            progress = int((i / total_prompts) * 100)
+            self.update_state(
+                state='PROGRESS', 
+                meta={'progress': progress, 'status': f'Generating image {i+1}/{total_prompts}'}
+            )
+            task_logger.info(f"Generating image {i+1}/{total_prompts}: {prompt}")
+            temp_output_dir = tempfile.mkdtemp()
             try:
-                progress = int((i / total_prompts) * 100)
-                self.update_state(
-                    state='PROGRESS', 
-                    meta={'progress': progress, 'status': f'Generating image {i+1}/{total_prompts}'}
+                # Call the main SDXL Turbo task so DB update logic is reused
+                sdxl_result = generate_image_sdxl_turbo.apply_async(
+                    args=[prompt],
+                    kwargs={
+                        "doc_id": doc_id,
+                        "update_collection": update_collection,
+                        "output_s3_prefix": output_s3_prefix,
+                        "width": default_settings["width"],
+                        "height": default_settings["height"],
+                        "num_inference_steps": default_settings["num_inference_steps"],
+                        "guidance_scale": default_settings["guidance_scale"],
+                        "enhance_prompt": default_settings["enhance_prompt"],
+                        "category_key": category_key,
+                        "item_key": item_key
+                    }
                 )
-                
-                task_logger.info(f"Generating image {i+1}/{total_prompts}: {prompt}")
-                
-                # Create temp output dir for this image
-                temp_output_dir = tempfile.mkdtemp()
-                
-                try:
-                    output_path, metadata = sdxl_worker.generate_and_save(
-                        prompt=prompt,
-                        output_dir=temp_output_dir,
-                        filename_prefix=f"batch_{i+1}",
-                        **default_settings
-                    )
-                    
-                    if output_path:
-                        # Fetch the updated MongoDB document and extract image URL
-                        updated_doc = mongo_helper.find_many(MONGO_DB_NAME, "your_collection_name", query={"_id": doc_id}, limit=1)
-                        image_url = updated_doc[0].get("imageUrl") if updated_doc else "No imageUrl found"
-                        
-                        results.append({
-                            "prompt": prompt,
-                            "status": "success",
-                            "image_path": output_path,
-                            "metadata": metadata,
-                            "image_url": image_url
-                        })
-                        task_logger.info(f"✅ Generated image {i+1}/{total_prompts}")
-                    else:
-                        results.append({
-                            "prompt": prompt,
-                            "status": "error",
-                            "message": metadata.get('error', 'Unknown error')
-                        })
-                        task_logger.error(f"❌ Failed to generate image {i+1}/{total_prompts}")
-                
-                finally:
-                    # Cleanup temp directory
-                    try:
-                        import shutil
-                        if os.path.exists(temp_output_dir):
-                            shutil.rmtree(temp_output_dir)
-                    except Exception as e:
-                        task_logger.warning(f"Failed to cleanup temp directory: {e}")
-                        
-            except Exception as e:
-                task_logger.error(f"Error generating image {i+1}: {e}")
+                result = sdxl_result.get(timeout=180)
                 results.append({
                     "prompt": prompt,
-                    "status": "error", 
-                    "message": str(e)
+                    "status": result.get("status"),
+                    "image_path": result.get("image_path"),
+                    "metadata": result.get("metadata"),
+                    "s3_image_url": result.get("s3_image_url"),
+                    "mongodb_updated": result.get("mongodb_updated")
                 })
-        
+                if result.get("status") == "success":
+                    task_logger.info(f"✅ Generated image {i+1}/{total_prompts}")
+                else:
+                    task_logger.error(f"❌ Failed to generate image {i+1}/{total_prompts}")
+            finally:
+                try:
+                    import shutil
+                    if os.path.exists(temp_output_dir):
+                        shutil.rmtree(temp_output_dir)
+                except Exception as e:
+                    task_logger.warning(f"Failed to cleanup temp directory: {e}")
+    
         self.update_state(state='SUCCESS', meta={'progress': 100, 'status': 'Batch generation completed'})
         
         successful_count = len([r for r in results if r['status'] == 'success'])
