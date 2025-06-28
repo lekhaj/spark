@@ -540,7 +540,7 @@ def generate_grid_image(grid_string: str, width: int, height: int, num_images: i
         return {"status": "error", "message": "Worker not fully initialized or modules missing."}
 
     try:
-        task_logger.info(f"Task: Processing grid data with model {model_type}")
+        task_logger.info(f"Task: Processing grid data with model {model_type}"
 
         if hasattr(_grid_processor, 'model_type') and _grid_processor.model_type != model_type:
             task_logger.info(f"Re-initializing GridProcessor to {model_type} for task.")
@@ -1022,56 +1022,30 @@ def generate_3d_model_from_image(self, image_s3_key_or_path, with_texture=False,
                 task_logger.warning(f"Failed to upload 3D model to S3: {upload_result.get('message')}")
         
         # Step 5: Update MongoDB with results and status
+        mongodb_updated = False
         if mongo_mgr and doc_id and update_collection:
-            self.update_state(state='PROGRESS', meta={'progress': 95, 'status': 'Updating database...'})
-            
+            self.update_state(state='PROGRESS', meta={'progress': 90, 'status': 'Updating database...'})
+            update_data = {
+                "sdxl_turbo_image_path": output_path,
+                "sdxl_turbo_generated_at": datetime.now(),
+                "sdxl_turbo_metadata": metadata,
+                "sdxl_turbo_status": "completed"
+            }
+            if s3_url:
+                update_data["sdxl_turbo_s3_url"] = s3_url
             try:
-                from config import MONGO_DB_NAME
-                
-                # Initial update with pending status
-                initial_update_data = {
-                    "model_generation_started": True,
-                    "model_generation_started_at": datetime.now(),
-                    "model_format": output_format,
-                    "model_with_texture": with_texture,
-                    "status": "pending"
-                }
-                
-                # Add final status and URLs - always set to pending
-                if result.get('status') == 'success':
-                    final_update_data = {
-                        "model_generated": True,
-                        "model_generated_at": datetime.now(),
-                        "model_status": "pending",  # Always set to pending
-                        "status": "pending"  # Always set to pending
-                    }
-                    
-                    if s3_urls.get('model'):
-                        final_update_data["model_s3_url"] = s3_urls['model']
-                    
-                    if result.get('model_path'):
-                        final_update_data["model_local_path"] = result['model_path']
-                    
-                    # Combine updates
-                    update_data = {**initial_update_data, **final_update_data}
-                else:
-                    # Failed generation
-                    update_data = {
-                        **initial_update_data,
-                        "model_status": "failed",
-                        "status": "failed",
-                        "error_message": result.get('message', 'Unknown error')
-                    }
-                
-                update_result = mongo_mgr.update_by_id(MONGO_DB_NAME, update_collection, doc_id, update_data)
-                task_logger.info(f"✅ Updated MongoDB document {doc_id}: {update_result} records modified")
-                result['mongodb_updated'] = True
-                result['doc_id'] = doc_id
-                
+                result_count = mongo_mgr.update_by_id(
+                    db_name=MONGO_DB_NAME,
+                    collection_name=update_collection,
+                    document_id=doc_id,
+                    update={"$set": update_data}
+                )
+                mongodb_updated = result_count > 0
+                task_logger.info(f"✅ Updated MongoDB document {doc_id} with S3 URL: {s3_url}")
             except Exception as e:
-                task_logger.error(f"Failed to update MongoDB: {e}")
-                result['mongodb_error'] = str(e)
-                
+                task_logger.error(f"Failed to update MongoDB with S3 URL: {e}")
+                mongodb_updated = False
+        
         # Step 6: Update MongoDB document by image_path for 3D asset link
         if mongo_mgr and result.get('status') == 'success' and s3_urls.get('model'):
             task_logger.info(f"🔍 Checking MongoDB update conditions:")
@@ -1560,35 +1534,26 @@ def generate_image_sdxl_turbo(
         mongodb_updated = False
         if mongo_mgr and doc_id and update_collection:
             self.update_state(state='PROGRESS', meta={'progress': 90, 'status': 'Updating database...'})
-            
             update_data = {
                 "sdxl_turbo_image_path": output_path,
                 "sdxl_turbo_generated_at": datetime.now(),
                 "sdxl_turbo_metadata": metadata,
                 "sdxl_turbo_status": "completed"
             }
-            
             if s3_url:
                 update_data["sdxl_turbo_s3_url"] = s3_url
-            
             try:
                 result_count = mongo_mgr.update_by_id(
-                    db_name="spark_assets",
+                    db_name=MONGO_DB_NAME,
                     collection_name=update_collection,
                     document_id=doc_id,
                     update={"$set": update_data}
                 )
-                
-                if result_count > 0:
-                    mongodb_updated = True
-                    task_logger.info(f"✅ Updated MongoDB document {doc_id}")
-                else:
-                    task_logger.warning(f"MongoDB document {doc_id} not found or not updated")
-                    
+                mongodb_updated = result_count > 0
+                task_logger.info(f"✅ Updated MongoDB document {doc_id} with S3 URL: {s3_url}")
             except Exception as e:
-                task_logger.error(f"Failed to update MongoDB: {e}")
-            
-            result['mongodb_updated'] = mongodb_updated
+                task_logger.error(f"Failed to update MongoDB with S3 URL: {e}")
+                mongodb_updated = False
         
         # Step 6: Final result
         self.update_state(state='SUCCESS', meta={'progress': 100, 'status': 'Completed successfully'})
