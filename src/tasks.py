@@ -804,7 +804,9 @@ def batch_process_mongodb_prompts_task(db_name: str, collection_name: str, limit
                                 "output_s3_prefix": f"images/{structure_id}",
                                 "width": width,
                                 "height": height,
-                                "enhance_prompt": True
+                                "enhance_prompt": True,
+                                "category_key": category_key,
+                                "item_key": item_key
                             }
                         )
                         result = sdxl_result.get(timeout=180)
@@ -1019,23 +1021,32 @@ def generate_3d_model_from_image(self, image_s3_key_or_path, with_texture=False,
         mongodb_updated = False
         if mongo_mgr and doc_id and update_collection:
             self.update_state(state='PROGRESS', meta={'progress': 90, 'status': 'Updating database...'})
-            update_data = {
-                "sdxl_turbo_image_path": output_path,
-                "sdxl_turbo_generated_at": datetime.now(),
-                "sdxl_turbo_metadata": metadata,
-                "sdxl_turbo_status": "completed"
-            }
-            if s3_url:
-                update_data["sdxl_turbo_s3_url"] = s3_url
             try:
-                result_count = mongo_mgr.update_by_id(
-                    db_name=MONGO_DB_NAME,
-                    collection_name=update_collection,
-                    document_id=doc_id,
-                    update={"$set": update_data}
-                )
-                mongodb_updated = result_count > 0
-                task_logger.info(f"✅ Updated MongoDB document {doc_id} with S3 URL: {s3_url}")
+                if category_key and item_key:
+                    # Update nested field for structure images
+                    update_path = f"possible_structures.{category_key}.{item_key}.imageUrl"
+                    update_data = {update_path: s3_url}
+                    update_op = {"$set": update_data}
+                    result_count = mongo_mgr.update_by_id(
+                        db_name=MONGO_DB_NAME,
+                        collection_name=update_collection,
+                        document_id=doc_id,
+                        update=update_op
+                    )
+                    mongodb_updated = result_count > 0
+                    task_logger.info(f"✅ Updated MongoDB document {doc_id} at {update_path} with S3 URL: {s3_url}")
+                else:
+                    # Legacy: update root-level image_path
+                    update_data = {"image_path": s3_url}
+                    update_op = {"$set": update_data}
+                    result_count = mongo_mgr.update_by_id(
+                        db_name=MONGO_DB_NAME,
+                        collection_name=update_collection,
+                        document_id=doc_id,
+                        update=update_op
+                    )
+                    mongodb_updated = result_count > 0
+                    task_logger.info(f"✅ Updated MongoDB document {doc_id} at image_path with S3 URL: {s3_url}")
             except Exception as e:
                 task_logger.error(f"Failed to update MongoDB with S3 URL: {e}")
                 mongodb_updated = False
@@ -1420,7 +1431,9 @@ def generate_image_sdxl_turbo(
     enhance_prompt=True,
     output_s3_prefix="sdxl_turbo",
     doc_id=None,
-    update_collection=None
+    update_collection=None,
+    category_key=None,
+    item_key=None
 ):
     """
     Celery task to generate high-quality images using SDXL Turbo model.
@@ -1528,23 +1541,32 @@ def generate_image_sdxl_turbo(
         mongodb_updated = False
         if mongo_mgr and doc_id and update_collection:
             self.update_state(state='PROGRESS', meta={'progress': 90, 'status': 'Updating database...'})
-            update_data = {
-                "sdxl_turbo_image_path": output_path,
-                "sdxl_turbo_generated_at": datetime.now(),
-                "sdxl_turbo_metadata": metadata,
-                "sdxl_turbo_status": "completed"
-            }
-            if s3_url:
-                update_data["sdxl_turbo_s3_url"] = s3_url
             try:
-                result_count = mongo_mgr.update_by_id(
-                    db_name=MONGO_DB_NAME,
-                    collection_name=update_collection,
-                    document_id=doc_id,
-                    update={"$set": update_data}
-                )
-                mongodb_updated = result_count > 0
-                task_logger.info(f"✅ Updated MongoDB document {doc_id} with S3 URL: {s3_url}")
+                if category_key and item_key:
+                    # Update nested field for structure images
+                    update_path = f"possible_structures.{category_key}.{item_key}.imageUrl"
+                    update_data = {update_path: s3_url}
+                    update_op = {"$set": update_data}
+                    result_count = mongo_mgr.update_by_id(
+                        db_name=MONGO_DB_NAME,
+                        collection_name=update_collection,
+                        document_id=doc_id,
+                        update=update_op
+                    )
+                    mongodb_updated = result_count > 0
+                    task_logger.info(f"✅ Updated MongoDB document {doc_id} at {update_path} with S3 URL: {s3_url}")
+                else:
+                    # Legacy: update root-level image_path
+                    update_data = {"image_path": s3_url}
+                    update_op = {"$set": update_data}
+                    result_count = mongo_mgr.update_by_id(
+                        db_name=MONGO_DB_NAME,
+                        collection_name=update_collection,
+                        document_id=doc_id,
+                        update=update_op
+                    )
+                    mongodb_updated = result_count > 0
+                    task_logger.info(f"✅ Updated MongoDB document {doc_id} at image_path with S3 URL: {s3_url}")
             except Exception as e:
                 task_logger.error(f"Failed to update MongoDB with S3 URL: {e}")
                 mongodb_updated = False
