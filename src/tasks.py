@@ -540,7 +540,7 @@ def generate_grid_image(grid_string: str, width: int, height: int, num_images: i
         return {"status": "error", "message": "Worker not fully initialized or modules missing."}
 
     try:
-        task_logger.info(f"Task: Processing grid data with model {model_type}"
+        task_logger.info(f"Task: Processing grid data with model {model_type}")
 
         if hasattr(_grid_processor, 'model_type') and _grid_processor.model_type != model_type:
             task_logger.info(f"Re-initializing GridProcessor to {model_type} for task.")
