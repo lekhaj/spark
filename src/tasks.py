@@ -807,11 +807,15 @@ def batch_process_mongodb_prompts_task(db_name: str, collection_name: str, limit
                                 "enhance_prompt": True
                             }
                         )
-                        # Optionally, wait for result and handle response
                         result = sdxl_result.get(timeout=180)
+                        # Fetch the updated document from MongoDB to get the image URL
+                        updated_doc = mongo_helper.find_many(MONGO_DB_NAME, collection_name, query={"_id": doc.get("_id")}, limit=1)
+                        image_url = None
+                        if updated_doc and category_key in updated_doc[0].get("possible_structures", {}):
+                            struct_data = updated_doc[0]["possible_structures"][category_key].get(item_key, {})
+                            image_url = struct_data.get("imageUrl")
                         if result.get("status") == "success":
-                            s3_url = result.get("s3_image_url")
-                            results.append(f"Generated image for structure {structure_id} -> {s3_url}")
+                            results.append(f"Generated image for structure {structure_id} -> {image_url if image_url else 'No imageUrl found in DB'}")
                         else:
                             results.append(f"Failed to generate image for structure {structure_id} - {result.get('message')}")
                     except Exception as e:
@@ -827,7 +831,6 @@ def batch_process_mongodb_prompts_task(db_name: str, collection_name: str, limit
                 if hasattr(_text_processor, 'model_type') and _text_processor.model_type != model_type:
                     _text_processor = TextProcessor(model_type=model_type)
                     _pipeline = Pipeline(_text_processor, _grid_processor)
-                # --- Use SDXL Turbo for image generation and MongoDB update ---
                 sdxl_result = generate_image_sdxl_turbo.apply_async(
                     args=[prompt],
                     kwargs={
@@ -840,9 +843,13 @@ def batch_process_mongodb_prompts_task(db_name: str, collection_name: str, limit
                     }
                 )
                 result = sdxl_result.get(timeout=180)
+                # Fetch the updated document from MongoDB to get the image URL
+                updated_doc = mongo_helper.find_many(MONGO_DB_NAME, collection_name, query={"_id": doc.get("_id")}, limit=1)
+                image_url = None
+                if updated_doc:
+                    image_url = updated_doc[0].get("image_path")
                 if result.get("status") == "success":
-                    s3_url = result.get("s3_image_url")
-                    results.append(f"Generated image for: '{prompt[:30]}...' -> {s3_url}")
+                    results.append(f"Generated image for: '{prompt[:30]}...' -> {image_url if image_url else 'No image_path found in DB'}")
                 else:
                     results.append(f"Failed to generate image for: '{prompt[:30]}' - {result.get('message')}")
             except Exception as e:
@@ -1632,11 +1639,16 @@ def batch_generate_images_sdxl_turbo(
                     )
                     
                     if output_path:
+                        # Fetch the updated MongoDB document and extract image URL
+                        updated_doc = mongo_helper.find_many(MONGO_DB_NAME, "your_collection_name", query={"_id": doc_id}, limit=1)
+                        image_url = updated_doc[0].get("imageUrl") if updated_doc else "No imageUrl found"
+                        
                         results.append({
                             "prompt": prompt,
                             "status": "success",
                             "image_path": output_path,
-                            "metadata": metadata
+                            "metadata": metadata,
+                            "image_url": image_url
                         })
                         task_logger.info(f"✅ Generated image {i+1}/{total_prompts}")
                     else:
