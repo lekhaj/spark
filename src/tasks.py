@@ -121,7 +121,7 @@ DEFAULT_GRID_MODEL = "stability"
 OUTPUT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "outputs"))
 OUTPUT_IMAGES_DIR = os.path.join(OUTPUT_DIR, "images")
 OUTPUT_3D_ASSETS_DIR = os.path.join(OUTPUT_DIR, "3d_assets")
-MONGO_DB_NAME = "biome_db"
+MONGO_DB_NAME = "World_builder"
 MONGO_BIOME_COLLECTION = "biomes"
 
 
@@ -540,7 +540,7 @@ def generate_grid_image(grid_string: str, width: int, height: int, num_images: i
         return {"status": "error", "message": "Worker not fully initialized or modules missing."}
 
     try:
-        task_logger.info(f"Task: Processing grid data with model {model_type}"
+        task_logger.info(f"Task: Processing grid data with model {model_type}")
 
         if hasattr(_grid_processor, 'model_type') and _grid_processor.model_type != model_type:
             task_logger.info(f"Re-initializing GridProcessor to {model_type} for task.")
