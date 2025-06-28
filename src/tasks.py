@@ -764,7 +764,7 @@ def batch_process_mongodb_prompts_task(db_name: str, collection_name: str, limit
     
     if not ensure_processors_initialized():
         return {"status": "error", "message": "Worker not fully initialized or modules missing."}
-    
+
     mongo_helper = MongoDBHelper()
     s3_mgr = get_s3_manager()
     
@@ -795,31 +795,25 @@ def batch_process_mongodb_prompts_task(db_name: str, collection_name: str, limit
                         if hasattr(_text_processor, 'model_type') and _text_processor.model_type != model_type:
                             _text_processor = TextProcessor(model_type=model_type)
                             _pipeline = Pipeline(_text_processor, _grid_processor)
-                        images = _pipeline.process_text(prompt)
-                        if images and len(images) > 0:
-                            # Use structureID or item_key for filename
-                            image_filename = f"{structure_id}.png"
-                            image_path = os.path.join(OUTPUT_IMAGES_DIR, image_filename)
-                            images[0].save(image_path)
-                            # S3 upload
-                            s3_url = None
-                            if s3_mgr:
-                                s3_key = f"images/{image_filename}"
-                                upload_result = s3_mgr.upload_image(image_path, s3_key)
-                                if upload_result.get("status") == "success":
-                                    s3_url = upload_result.get("s3_url")
-                            # Update MongoDB
-                            if update_db:
-                                update_data = {
-                                    f"possible_structures.{category_key}.{item_key}.imageUrl": s3_url or image_filename,
-                                    f"possible_structures.{category_key}.{item_key}.processed": True,
-                                    f"possible_structures.{category_key}.{item_key}.processed_at": datetime.now(),
-                                    f"possible_structures.{category_key}.{item_key}.model_used": model_type,
-                                }
-                                mongo_helper.update_by_id(MONGO_DB_NAME, collection_name, doc_id, {"$set": update_data})
-                            results.append(f"Generated image for structure {structure_id} -> {s3_url or image_filename}")
+                        # --- Use SDXL Turbo for image generation and MongoDB update ---
+                        sdxl_result = generate_image_sdxl_turbo.apply_async(
+                            args=[prompt],
+                            kwargs={
+                                "doc_id": doc_id,
+                                "update_collection": collection_name,
+                                "output_s3_prefix": f"images/{structure_id}",
+                                "width": width,
+                                "height": height,
+                                "enhance_prompt": True
+                            }
+                        )
+                        # Optionally, wait for result and handle response
+                        result = sdxl_result.get(timeout=180)
+                        if result.get("status") == "success":
+                            s3_url = result.get("s3_image_url")
+                            results.append(f"Generated image for structure {structure_id} -> {s3_url}")
                         else:
-                            results.append(f"Failed to generate image for structure {structure_id} - No image output.")
+                            results.append(f"Failed to generate image for structure {structure_id} - {result.get('message')}")
                     except Exception as e:
                         task_logger.error(f"Error in batch processing for structure {structure_id}: {e}", exc_info=True)
                         results.append(f"Failed to process structure {structure_id} - Error: {e}")
@@ -833,31 +827,24 @@ def batch_process_mongodb_prompts_task(db_name: str, collection_name: str, limit
                 if hasattr(_text_processor, 'model_type') and _text_processor.model_type != model_type:
                     _text_processor = TextProcessor(model_type=model_type)
                     _pipeline = Pipeline(_text_processor, _grid_processor)
-                images = _pipeline.process_text(prompt)
-                if images and len(images) > 0:
-                    # Use doc_id for filename
-                    image_filename = f"{doc_id}.png"
-                    image_path = os.path.join(OUTPUT_IMAGES_DIR, image_filename)
-                    images[0].save(image_path)
-                    # S3 upload
-                    s3_url = None
-                    if s3_mgr:
-                        s3_key = f"images/{image_filename}"
-                        upload_result = s3_mgr.upload_image(image_path, s3_key)
-                        if upload_result.get("status") == "success":
-                            s3_url = upload_result.get("s3_url")
-                    # Update MongoDB
-                    if update_db:
-                        update_data = {
-                            "processed": True,
-                            "processed_at": datetime.now(),
-                            "model_used": model_type,
-                            "image_path": s3_url or image_filename
-                        }
-                        mongo_helper.update_by_id(MONGO_DB_NAME, collection_name, doc_id, update_data)
-                    results.append(f"Generated image for: '{prompt[:30]}...' -> {s3_url or image_filename}")
+                # --- Use SDXL Turbo for image generation and MongoDB update ---
+                sdxl_result = generate_image_sdxl_turbo.apply_async(
+                    args=[prompt],
+                    kwargs={
+                        "doc_id": doc_id,
+                        "update_collection": collection_name,
+                        "output_s3_prefix": f"images/{doc_id}",
+                        "width": width,
+                        "height": height,
+                        "enhance_prompt": True
+                    }
+                )
+                result = sdxl_result.get(timeout=180)
+                if result.get("status") == "success":
+                    s3_url = result.get("s3_image_url")
+                    results.append(f"Generated image for: '{prompt[:30]}...' -> {s3_url}")
                 else:
-                    results.append(f"Failed to generate image for: '{prompt[:30]}' - No image output.")
+                    results.append(f"Failed to generate image for: '{prompt[:30]}' - {result.get('message')}")
             except Exception as e:
                 task_logger.error(f"Error in batch processing for {doc_id}: {e}", exc_info=True)
                 results.append(f"Failed to process '{prompt[:30]}...' - Error: {e}")
