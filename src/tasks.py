@@ -540,7 +540,7 @@ def generate_grid_image(grid_string: str, width: int, height: int, num_images: i
         return {"status": "error", "message": "Worker not fully initialized or modules missing."}
 
     try:
-        task_logger.info(f"Task: Processing grid data with model {model_type}")
+        task_logger.info(f"Task: Processing grid data with model {model_type}"
 
         if hasattr(_grid_processor, 'model_type') and _grid_processor.model_type != model_type:
             task_logger.info(f"Re-initializing GridProcessor to {model_type} for task.")
@@ -1551,6 +1551,19 @@ def generate_image_sdxl_turbo(
                 item_key=item_key,
                 metadata=metadata
             )
+        else:
+            missing = []
+            if not mongo_mgr:
+                missing.append('mongo_mgr')
+            if not doc_id:
+                missing.append('doc_id')
+            if not update_collection:
+                missing.append('update_collection')
+            if not s3_url:
+                missing.append('s3_url')
+            msg = f"[MongoDB Update] Skipped: missing {', '.join(missing)}"
+            task_logger.warning(msg)
+            mongodb_update_error = msg
         # Step 6: Final result
         self.update_state(state='SUCCESS', meta={'progress': 100, 'status': 'Completed successfully'})
         result = {
@@ -1690,11 +1703,22 @@ def batch_generate_images_sdxl_turbo(
 
 def update_image_url_in_mongodb(mongo_mgr, doc_id, update_collection, s3_url, local_image_path=None, category_key=None, item_key=None, metadata=None):
     """
-    Helper to update MongoDB with the S3 image URL and metadata, similar to 3D asset update logic.
+    Helper to update MongoDB with the S3 image URL and metadata, with robust error checking and detailed logging.
     """
     try:
-        if not (mongo_mgr and doc_id and update_collection and s3_url):
-            return False, "Missing required parameters for MongoDB update"
+        task_logger.info(f"[MongoDB Update] Called with: doc_id={doc_id}, update_collection={update_collection}, s3_url={s3_url}, local_image_path={local_image_path}, category_key={category_key}, item_key={item_key}")
+        if not mongo_mgr:
+            task_logger.error("[MongoDB Update] mongo_mgr is None!")
+            return False, "mongo_mgr is None"
+        if not doc_id:
+            task_logger.error("[MongoDB Update] doc_id is missing!")
+            return False, "doc_id is missing"
+        if not update_collection:
+            task_logger.error("[MongoDB Update] update_collection is missing!")
+            return False, "update_collection is missing"
+        if not s3_url:
+            task_logger.error("[MongoDB Update] s3_url is missing!")
+            return False, "s3_url is missing"
         update_data = {}
         if category_key and item_key:
             update_path = f"possible_structures.{category_key}.{item_key}.imageUrl"
@@ -1703,25 +1727,33 @@ def update_image_url_in_mongodb(mongo_mgr, doc_id, update_collection, s3_url, lo
                 update_data[f"possible_structures.{category_key}.{item_key}.local_image_path"] = local_image_path
             if metadata:
                 update_data[f"possible_structures.{category_key}.{item_key}.image_metadata"] = metadata
+            task_logger.info(f"[MongoDB Update] Nested update path: {update_path}")
         else:
             update_data["image_path"] = s3_url
             if local_image_path:
                 update_data["local_image_path"] = local_image_path
             if metadata:
                 update_data["image_metadata"] = metadata
+            task_logger.info("[MongoDB Update] Root-level update (image_path)")
         update_op = {"$set": update_data}
-        result_count = mongo_mgr.update_by_id(
-            db_name=MONGO_DB_NAME,
-            collection_name=update_collection,
-            document_id=doc_id,
-            update=update_op
-        )
+        task_logger.info(f"[MongoDB Update] Update operation: {update_op}")
+        try:
+            result_count = mongo_mgr.update_by_id(
+                db_name=MONGO_DB_NAME,
+                collection_name=update_collection,
+                document_id=doc_id,
+                update=update_op
+            )
+            task_logger.info(f"[MongoDB Update] update_by_id result_count: {result_count}")
+        except Exception as db_exc:
+            task_logger.error(f"[MongoDB Update] Exception during update_by_id: {db_exc}", exc_info=True)
+            return False, f"Exception during update_by_id: {db_exc}"
         if result_count > 0:
-            task_logger.info(f"✅ Updated MongoDB document {doc_id} in {update_collection} with S3 URL: {s3_url}")
+            task_logger.info(f"✅ [MongoDB Update] Updated document {doc_id} in {update_collection} with S3 URL: {s3_url}")
             return True, None
         else:
-            task_logger.warning(f"⚠️ No MongoDB document updated for {doc_id} in {update_collection}")
+            task_logger.warning(f"⚠️ [MongoDB Update] No document updated for {doc_id} in {update_collection}")
             return False, "No document updated"
     except Exception as e:
-        task_logger.error(f"Failed to update MongoDB with S3 URL: {e}")
-        return False, str(e)
+        task_logger.error(f"[MongoDB Update] Unexpected error: {e}", exc_info=True)
+        return False, f"Unexpected error: {e}"
