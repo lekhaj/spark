@@ -1537,43 +1537,22 @@ def generate_image_sdxl_turbo(
             else:
                 task_logger.warning(f"Failed to upload image to S3: {upload_result.get('message')}")
         
-        # Step 5: Update MongoDB
+        # Step 5: Update MongoDB using the new helper
         mongodb_updated = False
-        if mongo_mgr and doc_id and update_collection:
-            self.update_state(state='PROGRESS', meta={'progress': 90, 'status': 'Updating database...'})
-            try:
-                if category_key and item_key:
-                    # Update nested field for structure images
-                    update_path = f"possible_structures.{category_key}.{item_key}.imageUrl"
-                    update_data = {update_path: s3_url}
-                    update_op = {"$set": update_data}
-                    result_count = mongo_mgr.update_by_id(
-                        db_name=MONGO_DB_NAME,
-                        collection_name=update_collection,
-                        document_id=doc_id,
-                        update=update_op
-                    )
-                    mongodb_updated = result_count > 0
-                    task_logger.info(f"✅ Updated MongoDB document {doc_id} at {update_path} with S3 URL: {s3_url}")
-                else:
-                    # Legacy: update root-level image_path
-                    update_data = {"image_path": s3_url}
-                    update_op = {"$set": update_data}
-                    result_count = mongo_mgr.update_by_id(
-                        db_name=MONGO_DB_NAME,
-                        collection_name=update_collection,
-                        document_id=doc_id,
-                        update=update_op
-                    )
-                    mongodb_updated = result_count > 0
-                    task_logger.info(f"✅ Updated MongoDB document {doc_id} at image_path with S3 URL: {s3_url}")
-            except Exception as e:
-                task_logger.error(f"Failed to update MongoDB with S3 URL: {e}")
-                mongodb_updated = False
-        
+        mongodb_update_error = None
+        if mongo_mgr and doc_id and update_collection and s3_url:
+            mongodb_updated, mongodb_update_error = update_image_url_in_mongodb(
+                mongo_mgr,
+                doc_id,
+                update_collection,
+                s3_url,
+                local_image_path=output_path,
+                category_key=category_key,
+                item_key=item_key,
+                metadata=metadata
+            )
         # Step 6: Final result
         self.update_state(state='SUCCESS', meta={'progress': 100, 'status': 'Completed successfully'})
-        
         result = {
             "status": "success",
             "message": "Image generated successfully with SDXL Turbo",
@@ -1581,10 +1560,10 @@ def generate_image_sdxl_turbo(
             "metadata": metadata,
             "mongodb_updated": mongodb_updated
         }
-        
         if s3_url:
             result["s3_image_url"] = s3_url
-        
+        if mongodb_update_error:
+            result["mongodb_update_error"] = mongodb_update_error
         task_logger.info("✅ SDXL Turbo image generation completed successfully")
         return result
 
@@ -1654,7 +1633,6 @@ def batch_generate_images_sdxl_turbo(
             task_logger.info(f"Generating image {i+1}/{total_prompts}: {prompt}")
             temp_output_dir = tempfile.mkdtemp()
             try:
-                # Call the main SDXL Turbo task so DB update logic is reused
                 sdxl_result = generate_image_sdxl_turbo.apply_async(
                     args=[prompt],
                     kwargs={
@@ -1677,7 +1655,8 @@ def batch_generate_images_sdxl_turbo(
                     "image_path": result.get("image_path"),
                     "metadata": result.get("metadata"),
                     "s3_image_url": result.get("s3_image_url"),
-                    "mongodb_updated": result.get("mongodb_updated")
+                    "mongodb_updated": result.get("mongodb_updated"),
+                    "mongodb_update_error": result.get("mongodb_update_error")
                 })
                 if result.get("status") == "success":
                     task_logger.info(f"✅ Generated image {i+1}/{total_prompts}")
@@ -1708,3 +1687,41 @@ def batch_generate_images_sdxl_turbo(
         error_msg = f"Batch generation failed: {str(e)}"
         task_logger.error(f"❌ {error_msg}", exc_info=True)
         return {"status": "error", "message": error_msg}
+
+def update_image_url_in_mongodb(mongo_mgr, doc_id, update_collection, s3_url, local_image_path=None, category_key=None, item_key=None, metadata=None):
+    """
+    Helper to update MongoDB with the S3 image URL and metadata, similar to 3D asset update logic.
+    """
+    try:
+        if not (mongo_mgr and doc_id and update_collection and s3_url):
+            return False, "Missing required parameters for MongoDB update"
+        update_data = {}
+        if category_key and item_key:
+            update_path = f"possible_structures.{category_key}.{item_key}.imageUrl"
+            update_data[update_path] = s3_url
+            if local_image_path:
+                update_data[f"possible_structures.{category_key}.{item_key}.local_image_path"] = local_image_path
+            if metadata:
+                update_data[f"possible_structures.{category_key}.{item_key}.image_metadata"] = metadata
+        else:
+            update_data["image_path"] = s3_url
+            if local_image_path:
+                update_data["local_image_path"] = local_image_path
+            if metadata:
+                update_data["image_metadata"] = metadata
+        update_op = {"$set": update_data}
+        result_count = mongo_mgr.update_by_id(
+            db_name=MONGO_DB_NAME,
+            collection_name=update_collection,
+            document_id=doc_id,
+            update=update_op
+        )
+        if result_count > 0:
+            task_logger.info(f"✅ Updated MongoDB document {doc_id} in {update_collection} with S3 URL: {s3_url}")
+            return True, None
+        else:
+            task_logger.warning(f"⚠️ No MongoDB document updated for {doc_id} in {update_collection}")
+            return False, "No document updated"
+    except Exception as e:
+        task_logger.error(f"Failed to update MongoDB with S3 URL: {e}")
+        return False, str(e)

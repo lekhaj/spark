@@ -207,6 +207,16 @@ def test_celery_tasks():
         if 'batch_generate_images_sdxl_turbo' in task_names:
             print("✅ SDXL Turbo batch generation task registered")
         
+        # No direct DB update logic in test_sdxl_worker.py, so just ensure batch_generate_images_sdxl_turbo is called with correct arguments in any test
+        # Example usage for batch_generate_images_sdxl_turbo:
+        # from tasks import batch_generate_images_sdxl_turbo
+        # prompts_list = [
+        #     {"prompt": "A fantasy castle", "doc_id": "...", "update_collection": "biomes", "category_key": "castle", "item_key": "main"},
+        #     {"prompt": "A wooden hut", "doc_id": "...", "update_collection": "biomes", "category_key": "hut", "item_key": "side"}
+        # ]
+        # result = batch_generate_images_sdxl_turbo(prompts_list, batch_settings={"width": 512, "height": 512})
+        # print(result)
+        
         return True
         
     except Exception as e:
