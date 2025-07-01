@@ -440,12 +440,19 @@ def manage_gpu_instance_task(action):
         return f"❌ Error: {e}"
 
 # --- Wrapper functions for image generation (Conditional logic) ---
-def process_image_generation_task(prompt_or_grid_content, width, height, num_images, model_type, is_grid_input=False):
+def process_image_generation_task(prompt_or_grid_content, width, height, num_images, model_type, is_grid_input=False, 
+                                doc_id=None, update_collection=None, category_key=None, item_key=None):
     """
     Generic function to handle image generation, routing to Celery or direct processing.
     Now includes 3D-optimized prompt enhancement for better 3D asset generation.
     Routes SDXL Turbo tasks to GPU worker for optimal performance.
     Returns (image_output, grid_viz_output, message)
+    
+    Args:
+        doc_id: MongoDB document ID to update
+        update_collection: MongoDB collection name to update  
+        category_key: Category key for nested document updates
+        item_key: Item key for nested document updates
     """
     # Enhance prompts for 3D generation (only for text prompts, not grids)
     if not is_grid_input and isinstance(prompt_or_grid_content, str):
@@ -457,19 +464,32 @@ def process_image_generation_task(prompt_or_grid_content, width, height, num_ima
         # Route SDXL Turbo tasks to GPU worker
         if model_type == "sdxl-turbo":
             if is_grid_input:
-                # For grid input with SDXL, we'll use batch processing
-                task = celery_batch_generate_images_sdxl_turbo.apply_async(
-                    args=[enhanced_prompt, width, height, num_images],
+                # For grid input with SDXL, we'll use single prompt for now (could be enhanced to batch later)
+                task = celery_generate_image_sdxl_turbo.apply_async(
+                    args=[enhanced_prompt],
+                    kwargs={
+                        'width': width,
+                        'height': height,
+                        'enhance_prompt': True,
+                        'doc_id': doc_id,
+                        'update_collection': update_collection,
+                        'category_key': category_key,
+                        'item_key': item_key
+                    },
                     queue='sdxl_tasks'  # Route to GPU instance
                 )
-                return None, None, f"✅ SDXL Turbo grid processing task submitted to GPU worker (ID: {task.id}). Images will be saved to GPU worker storage.\n🎯 3D-Optimized prompt enhancement applied for better 3D asset generation."
+                return None, None, f"✅ SDXL Turbo grid processing task submitted to GPU worker (ID: {task.id}). Image will be saved to GPU worker storage.\n🎯 3D-Optimized prompt enhancement applied for better 3D asset generation."
             else:
                 task = celery_generate_image_sdxl_turbo.apply_async(
                     args=[enhanced_prompt],
                     kwargs={
                         'width': width,
                         'height': height,
-                        'enhance_prompt': True
+                        'enhance_prompt': True,
+                        'doc_id': doc_id,
+                        'update_collection': update_collection,
+                        'category_key': category_key,
+                        'item_key': item_key
                     },
                     queue='sdxl_tasks'  # Route to GPU instance
                 )
@@ -479,12 +499,24 @@ def process_image_generation_task(prompt_or_grid_content, width, height, num_ima
             if is_grid_input:
                 task = celery_generate_grid_image.apply_async(
                     args=[enhanced_prompt, width, height, num_images, model_type],
+                    kwargs={
+                        'doc_id': doc_id,
+                        'update_collection': update_collection,
+                        'category_key': category_key,
+                        'item_key': item_key
+                    },
                     queue='cpu_tasks'  # Route to CPU instance
                 )
                 return None, None, f"✅ Grid processing task submitted to CPU instance (ID: {task.id}). Image will be saved to '{OUTPUT_IMAGES_DIR}' on the worker."
             else:
                 task = celery_generate_text_image.apply_async(
                     args=[enhanced_prompt, width, height, num_images, model_type],
+                    kwargs={
+                        'doc_id': doc_id,
+                        'update_collection': update_collection,
+                        'category_key': category_key,
+                        'item_key': item_key
+                    },
                     queue='cpu_tasks'  # Route to CPU instance
                 )
                 return None, f"✅ Text-to-image task submitted to CPU instance (ID: {task.id}). Image will be saved to '{OUTPUT_IMAGES_DIR}' on the worker.\n🎯 3D-Optimized prompt used for better 3D asset generation."
@@ -765,8 +797,42 @@ def submit_mongodb_prompt_task(prompt_id, db_name=MONGO_DB_NAME, collection_name
         return None, f"Error fetching description content for ID {prompt_id}: {e}"
 
     logger.info(f"Found description: {description_content[:100]}...")
-    # Use the generic image generation wrapper with 3D-optimized prompt
-    return process_image_generation_task(description_content, width, height, num_images, model_type, is_grid_input=False)
+    
+    # Extract MongoDB parameters for database update
+    doc_id = None
+    category_key = None
+    item_key = None
+    
+    if "_theme" in prompt_id:
+        # Theme prompt
+        doc_id = prompt_id.replace("_theme", "")
+    elif "_" in prompt_id:
+        # Structure-specific prompt
+        parts = prompt_id.split("_", 1)
+        doc_id = parts[0]
+        structure_path = parts[1]
+        
+        # For nested structures, extract category_key and item_key
+        if document and "possible_structures" in document:
+            for cat_key, category_data in document["possible_structures"].items():
+                if isinstance(category_data, dict):
+                    for struct_id, struct_data in category_data.items():
+                        if structure_path.startswith(struct_id):
+                            category_key = cat_key
+                            item_key = struct_id
+                            break
+                if category_key and item_key:
+                    break
+    else:
+        # Legacy format
+        doc_id = prompt_id
+    
+    # Use the generic image generation wrapper with 3D-optimized prompt and MongoDB parameters
+    return process_image_generation_task(
+        description_content, width, height, num_images, model_type, 
+        is_grid_input=False, doc_id=doc_id, update_collection=collection_name,
+        category_key=category_key, item_key=item_key
+    )
 
 def submit_mongodb_prompt_task_from_dropdown(selected_prompt, db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_COLLECTION, width=DEFAULT_IMAGE_WIDTH, height=DEFAULT_IMAGE_HEIGHT, 
                              num_images=DEFAULT_NUM_IMAGES, model_type=DEFAULT_TEXT_MODEL):
@@ -813,7 +879,14 @@ def submit_mongodb_grid_task(grid_item_id, db_name=MONGO_DB_NAME, collection_nam
         logger.error(f"Error fetching grid content for {grid_item_id}: {e}")
         return None, None, f"Error fetching grid content for {grid_item_id}: {e}"
 
-    return process_image_generation_task(grid_content_str, width, height, num_images, model_type, is_grid_input=True)
+    # Extract MongoDB parameters for database update
+    parts = grid_item_id.split("_", 1)
+    doc_id = parts[0]
+    
+    return process_image_generation_task(
+        grid_content_str, width, height, num_images, model_type, 
+        is_grid_input=True, doc_id=doc_id, update_collection=collection_name
+    )
 
 def submit_mongodb_grid_task_from_dropdown(selected_grid, db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_COLLECTION, width=DEFAULT_IMAGE_WIDTH, height=DEFAULT_IMAGE_HEIGHT, 
                              num_images=DEFAULT_NUM_IMAGES, model_type="stability"):
