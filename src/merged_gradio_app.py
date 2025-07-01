@@ -1371,6 +1371,12 @@ def build_app():
                 # MongoDB Images Section
                 with gr.Accordion("MongoDB Images", open=True):
                     gr.Markdown("### Browse and use images from MongoDB database")
+                    gr.Markdown("""
+                    **Image Sources:**
+                    - 🎨 **[THEME]** - Main biome/theme images from document root
+                    - 🏗️ **[STRUCTURE]** - Individual structure images from `possible_structures`
+                    - 🔄 **Auto-refresh** - Recently generated images will appear here after database updates
+                    """)
                     
                     with gr.Row():
                         with gr.Column(scale=1):
@@ -1384,20 +1390,21 @@ def build_app():
                                 value=MONGO_BIOME_COLLECTION, 
                                 placeholder="Enter collection name"
                             )
-                            fetch_images_btn = gr.Button("Fetch Images from MongoDB", variant="secondary")
+                            fetch_images_btn = gr.Button("🔄 Fetch All Images from MongoDB", variant="secondary")
                             images_status = gr.Textbox(
                                 label="Status", 
                                 interactive=False,
-                                lines=2
+                                lines=2,
+                                placeholder="Click 'Fetch All Images' to load images from database..."
                             )
                         
                         with gr.Column(scale=2):
                             mongodb_images_gallery = gr.Gallery(
-                                label="Available Images from MongoDB",
+                                label="Available Images (Themes + Structures)",
                                 show_label=True,
                                 elem_id="mongodb_images",
                                 columns=3,
-                                rows=2,
+                                rows=3,
                                 height="300px",
                                 interactive=True
                             )
@@ -1459,15 +1466,21 @@ def build_app():
                             interactive=False,
                             lines=4
                         )
-                        gr.Markdown("""
+                        gr.Markdown(                        """
                         **How to use:**
-                        1. Select an image from the MongoDB gallery above
-                        2. Configure 3D generation settings on the left
-                        3. Click "Generate 3D Model" to start processing
+                        1. Click "🔄 Fetch All Images" to load images from MongoDB
+                        2. Browse theme images (🎨 [THEME]) and structure images (🏗️ [STRUCTURE])
+                        3. Click on any image to select it for 3D generation
+                        4. Configure 3D generation settings and click "Generate 3D Model"
+                        
+                        **Image Types:**
+                        - **Theme Images**: Main biome/environment images from image generation tasks
+                        - **Structure Images**: Individual building/object images from nested structures
                         
                         **S3 Integration:** Models are automatically uploaded to S3 cloud storage for easy access.  
                         **Download:** Use the download link provided after generation to get your 3D model.  
                         **Viewing:** Use software like Blender, MeshLab, or online 3D viewers to open the model.
+                        **Database Updates**: Generated 3D asset URLs are automatically saved back to MongoDB.
                         """)
                 
                 # GPU Instance Management Section
@@ -1884,30 +1897,62 @@ def enhance_prompt_for_3d_generation(prompt):
 
 def fetch_images_from_mongodb(db_name: str, collection_name: str) -> tuple[list, str]:
     """
-    Fetch all documents that have 'image_path' field from MongoDB and return them for display.
+    Fetch all documents that have image URLs from MongoDB and return them for display.
+    Includes both top-level 'image_path' and nested structure images from 'possible_structures'.
     Returns (list_of_image_tuples, status_message).
     """
     try:
         mongo_helper = MongoDBHelper()
         
-        # Query for documents that have the 'image_path' field
-        query = {"image_path": {"$exists": True, "$ne": None, "$ne": ""}}
+        # Query for documents that have either 'image_path' or 'possible_structures' with images
+        query = {"$or": [
+            {"image_path": {"$exists": True, "$ne": None, "$ne": ""}},
+            {"possible_structures": {"$exists": True}}
+        ]}
         documents = mongo_helper.find_many(db_name, collection_name, query, limit=50)
         
         image_items = []
+        theme_count = 0
+        structure_count = 0
+        
         for doc in documents:
+            doc_id = str(doc.get("_id", "Unknown"))
+            doc_name = doc.get("name", doc.get("theme", doc.get("description", "Unnamed")))
+            
+            # 1. Add top-level theme/biome image
             image_path = doc.get("image_path")
             if image_path and isinstance(image_path, str) and image_path.startswith("http"):
-                # Create a caption with document info
-                doc_id = str(doc.get("_id", "Unknown"))
-                name = doc.get("name", doc.get("theme", doc.get("prompt", "Unnamed")))
-                caption = f"ID: {doc_id[:8]}... | {name[:50]}..."
-                
-                # Store as simple tuple - Gradio gallery expects (image_url, caption)
+                caption = f"[THEME] {doc_name[:40]}... | ID: {doc_id[:8]}..."
                 image_items.append((image_path, caption))
-                logger.debug(f"Added image: URL={image_path}, Caption={caption}")
+                theme_count += 1
+                logger.debug(f"Added theme image: URL={image_path}, Caption={caption}")
+            
+            # 2. Add structure images from possible_structures
+            possible_structures = doc.get("possible_structures", {})
+            if isinstance(possible_structures, dict):
+                for category_key, category_data in possible_structures.items():
+                    if isinstance(category_data, dict):
+                        for structure_id, structure_data in category_data.items():
+                            if isinstance(structure_data, dict):
+                                # Check for direct image_path in structure
+                                struct_image_path = structure_data.get("image_path") or structure_data.get("imageUrl")
+                                
+                                # Also check in attributes if no direct image found
+                                if not struct_image_path and "attributes" in structure_data:
+                                    attributes = structure_data["attributes"]
+                                    if isinstance(attributes, dict):
+                                        struct_image_path = attributes.get("image_path") or attributes.get("imageUrl")
+                                
+                                if struct_image_path and isinstance(struct_image_path, str) and struct_image_path.startswith("http"):
+                                    structure_name = structure_data.get("name", structure_id)
+                                    structure_type = structure_data.get("type", category_key)
+                                    caption = f"[{structure_type.upper()}] {structure_name[:30]}... | Doc: {doc_id[:8]}..."
+                                    image_items.append((struct_image_path, caption))
+                                    structure_count += 1
+                                    logger.debug(f"Added structure image: URL={struct_image_path}, Caption={caption}")
         
-        status_msg = f"✅ Found {len(image_items)} images from {len(documents)} documents in {db_name}.{collection_name}"
+        total_images = len(image_items)
+        status_msg = f"✅ Found {total_images} images ({theme_count} themes, {structure_count} structures) from {len(documents)} documents in {db_name}.{collection_name}"
         logger.info(status_msg)
         logger.debug(f"Image items structure: {image_items[:2] if image_items else 'No items'}")  # Log first 2 items for debugging
         return image_items, status_msg
