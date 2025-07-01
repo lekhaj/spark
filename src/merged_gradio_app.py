@@ -42,6 +42,9 @@ from s3_manager import get_s3_manager
 _prompt_id_mapping = {}
 _grid_id_mapping = {}
 
+# Global variable to store image metadata for 3D generation MongoDB updates
+_image_metadata_cache = []
+
 # Set up logging
 # Setting logging level to DEBUG to capture detailed information, especially for grid issues.
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -1661,6 +1664,32 @@ def build_app():
             logger.info(f"Submitting MongoDB image URL to 3D generation: {image_url}")
             logger.info(f"Settings: texture={with_texture}, format={output_format}, model={model_type}")
             
+            # Find MongoDB metadata for this image URL
+            global _image_metadata_cache
+            mongodb_metadata = None
+            for metadata in _image_metadata_cache:
+                if metadata["url"] == image_url:
+                    mongodb_metadata = metadata
+                    break
+            
+            if mongodb_metadata:
+                logger.info(f"📊 Found MongoDB metadata for image: {mongodb_metadata}")
+                logger.info(f"   Doc ID: {mongodb_metadata.get('doc_id')}")
+                logger.info(f"   Collection: {mongodb_metadata.get('collection')}")
+                logger.info(f"   Type: {mongodb_metadata.get('type')}")
+                logger.info(f"   Category Key: {mongodb_metadata.get('category_key')}")
+                logger.info(f"   Item Key: {mongodb_metadata.get('item_key')}")
+            else:
+                logger.warning(f"⚠️ No MongoDB metadata found for image URL: {image_url}")
+                # Create basic metadata as fallback
+                mongodb_metadata = {
+                    "doc_id": None,
+                    "collection": "biomes",
+                    "type": "unknown",
+                    "category_key": None,
+                    "item_key": None
+                }
+            
             # Extract image name from URL for S3 asset checking
             try:
                 from urllib.parse import urlparse
@@ -1696,9 +1725,15 @@ def build_app():
                     celery_manage_gpu_instance.delay("ensure_running")
                     
                     progress(0.2, desc="Submitting 3D generation task...")
-                    # Submit the 3D generation task with the image URL and user settings
+                    # Submit the 3D generation task with the image URL, user settings, and MongoDB metadata
                     task = celery_generate_3d_model_from_image.apply_async(
                         args=[image_url, with_texture, output_format],
+                        kwargs={
+                            'doc_id': mongodb_metadata.get("doc_id"),
+                            'update_collection': mongodb_metadata.get("collection"),
+                            'category_key': mongodb_metadata.get("category_key"),
+                            'item_key': mongodb_metadata.get("item_key")
+                        },
                         queue='gpu_tasks',  # Route to GPU spot instance
                         retry=True,
                         retry_policy={
@@ -1912,6 +1947,7 @@ def fetch_images_from_mongodb(db_name: str, collection_name: str) -> tuple[list,
         documents = mongo_helper.find_many(db_name, collection_name, query, limit=50)
         
         image_items = []
+        image_metadata = []  # Store metadata for MongoDB updates
         theme_count = 0
         structure_count = 0
         
@@ -1924,6 +1960,15 @@ def fetch_images_from_mongodb(db_name: str, collection_name: str) -> tuple[list,
             if image_path and isinstance(image_path, str) and image_path.startswith("http"):
                 caption = f"[THEME] {doc_name[:40]}... | ID: {doc_id[:8]}..."
                 image_items.append((image_path, caption))
+                # Store metadata for theme image
+                image_metadata.append({
+                    "url": image_path,
+                    "doc_id": doc_id,
+                    "collection": collection_name,
+                    "type": "theme",
+                    "category_key": None,
+                    "item_key": None
+                })
                 theme_count += 1
                 logger.debug(f"Added theme image: URL={image_path}, Caption={caption}")
             
@@ -1948,8 +1993,22 @@ def fetch_images_from_mongodb(db_name: str, collection_name: str) -> tuple[list,
                                     structure_type = structure_data.get("type", category_key)
                                     caption = f"[{structure_type.upper()}] {structure_name[:30]}... | Doc: {doc_id[:8]}..."
                                     image_items.append((struct_image_path, caption))
+                                    # Store metadata for structure image
+                                    image_metadata.append({
+                                        "url": struct_image_path,
+                                        "doc_id": doc_id,
+                                        "collection": collection_name,
+                                        "type": "structure",
+                                        "category_key": category_key,
+                                        "item_key": structure_id
+                                    })
                                     structure_count += 1
                                     logger.debug(f"Added structure image: URL={struct_image_path}, Caption={caption}")
+                                    logger.debug(f"Structure metadata: doc_id={doc_id}, category={category_key}, item={structure_id}")
+        
+        # Store metadata globally for use in 3D generation
+        global _image_metadata_cache
+        _image_metadata_cache = image_metadata
         
         total_images = len(image_items)
         status_msg = f"✅ Found {total_images} images ({theme_count} themes, {structure_count} structures) from {len(documents)} documents in {db_name}.{collection_name}"

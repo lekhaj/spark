@@ -1146,7 +1146,7 @@ def batch_process_mongodb_prompts_task(db_name: str, collection_name: str, limit
     return {"status": "success", "message": "\n".join(results)}
 
 @app.task(name='generate_3d_model_from_image', bind=True)
-def generate_3d_model_from_image(self, image_s3_key_or_path, with_texture=False, output_format='glb', doc_id=None, update_collection=None):
+def generate_3d_model_from_image(self, image_s3_key_or_path, with_texture=False, output_format='glb', doc_id=None, update_collection=None, category_key=None, item_key=None):
     """
     Celery task to generate a 3D model from an image using Hunyuan3D.
     Now supports S3 integration for both input and output.
@@ -1157,6 +1157,8 @@ def generate_3d_model_from_image(self, image_s3_key_or_path, with_texture=False,
         output_format: Output format (glb, obj, etc.)
         doc_id: MongoDB document ID to update with results
         update_collection: Collection name to update
+        category_key: Category key for nested structure updates (e.g., 'settlements')
+        item_key: Item key for nested structure updates (e.g., specific structure ID)
     """
     task_logger.info("🚀 Starting 3D model generation task")
     task_logger.info(f"   Image path/key: {image_s3_key_or_path}")
@@ -1303,15 +1305,26 @@ def generate_3d_model_from_image(self, image_s3_key_or_path, with_texture=False,
             else:
                 task_logger.warning(f"Failed to upload 3D model to S3: {upload_result.get('message')}")
         
-        # Step 5: Update MongoDB with results and status
-        mongodb_updated = False
-        if mongo_mgr and doc_id and update_collection:
+        # Step 5: Update MongoDB with 3D asset link for structure images
+        if mongo_mgr and doc_id and update_collection and s3_urls.get('model'):
             self.update_state(state='PROGRESS', meta={'progress': 90, 'status': 'Updating database...'})
             try:
+                # Import MONGO_DB_NAME here to avoid scope issues
+                try:
+                    from config import MONGO_DB_NAME
+                except ImportError:
+                    MONGO_DB_NAME = "World_builder"
+                
+                model_s3_url = s3_urls['model']  # Get the 3D model URL
+                
                 if category_key and item_key:
-                    # Update nested field for structure images
-                    update_path = f"possible_structures.{category_key}.{item_key}.imageUrl"
-                    update_data = {update_path: s3_url}
+                    # Update nested field for structure images - add 3D asset link
+                    update_path = f"possible_structures.{category_key}.{item_key}.asset_3d_url"
+                    update_data = {
+                        update_path: model_s3_url,
+                        f"possible_structures.{category_key}.{item_key}.asset_3d_generated_at": datetime.now(),
+                        f"possible_structures.{category_key}.{item_key}.asset_3d_format": output_format
+                    }
                     update_op = {"$set": update_data}
                     result_count = mongo_mgr.update_by_id(
                         db_name=MONGO_DB_NAME,
@@ -1319,11 +1332,14 @@ def generate_3d_model_from_image(self, image_s3_key_or_path, with_texture=False,
                         document_id=doc_id,
                         update=update_op
                     )
-                    mongodb_updated = result_count > 0
-                    task_logger.info(f"✅ Updated MongoDB document {doc_id} at {update_path} with S3 URL: {s3_url}")
+                    task_logger.info(f"✅ Updated MongoDB document {doc_id} at {update_path} with 3D asset URL: {model_s3_url}")
                 else:
-                    # Legacy: update root-level image_path
-                    update_data = {"image_path": s3_url}
+                    # Update root-level for theme images
+                    update_data = {
+                        "asset_3d_url": model_s3_url,
+                        "asset_3d_generated_at": datetime.now(),
+                        "asset_3d_format": output_format
+                    }
                     update_op = {"$set": update_data}
                     result_count = mongo_mgr.update_by_id(
                         db_name=MONGO_DB_NAME,
@@ -1331,11 +1347,13 @@ def generate_3d_model_from_image(self, image_s3_key_or_path, with_texture=False,
                         document_id=doc_id,
                         update=update_op
                     )
-                    mongodb_updated = result_count > 0
-                    task_logger.info(f"✅ Updated MongoDB document {doc_id} at image_path with S3 URL: {s3_url}")
+                    task_logger.info(f"✅ Updated MongoDB document {doc_id} at root level with 3D asset URL: {model_s3_url}")
+                
+                result['mongodb_updated'] = result_count > 0
+                
             except Exception as e:
-                task_logger.error(f"Failed to update MongoDB with S3 URL: {e}")
-                mongodb_updated = False
+                task_logger.error(f"Failed to update MongoDB with 3D asset URL: {e}")
+                result['mongodb_updated'] = False
         
         # Step 6: Update MongoDB document by image_path for 3D asset link
         if mongo_mgr and result.get('status') == 'success' and s3_urls.get('model'):
