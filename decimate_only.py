@@ -126,7 +126,7 @@ def main():
         for bldg_key, building in buildings.items():
             status = building.get('status', '').lower()
             # only process those ready
-            if status != 'yet to start':
+            if status != '3D asset generated':
                 print(f"[Skip] {bldg_key} status = {status}")
                 continue
 
