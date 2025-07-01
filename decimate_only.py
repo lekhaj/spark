@@ -1,22 +1,23 @@
 import bpy
 import os
 import sys
-import glob
 import bmesh
 import boto3
 import pymongo
 from mathutils import Vector
+from urllib.parse import urlparse
 
 # ---------------- USER CONFIGURATION ----------------
-bucket_name = "sparkassets"
-s3_prefix = "3d_assets"
-# Updated local folders inside 'sarthak'
-models_folder = "/home/ubuntu/sarthak/input"
-output_folder = "/home/ubuntu/sarthak/output"
-mongo_uri = "mongodb://ec2-13-203-200-155.ap-south-1.compute.amazonaws.com:27017"
+bucket_name       = "sparkassets"
+s3_prefix         = "3d_assets"       # where processed FBXs go: e.g. "3d_assets/generated/"
+models_folder     = "/home/ubuntu/sarthak/input"
+output_folder     = "/home/ubuntu/sarthak/output"
+mongo_uri         = "mongodb://ec2-13-203-200-155.ap-south-1.compute.amazonaws.com:27017"
+db_name           = "World_builder"
+collection_name   = "biomes"
 
 # ---------------- MONGODB CONNECTION ----------------
-def get_mongo_collection(uri, db_name="World_builder", collection_name="biomes"):
+def get_mongo_collection(uri, db_name, collection_name):
     client = pymongo.MongoClient(uri)
     return client[db_name][collection_name]
 
@@ -25,8 +26,7 @@ def download_from_s3(bucket, key, download_path):
     s3 = boto3.client('s3')
     os.makedirs(os.path.dirname(download_path), exist_ok=True)
     s3.download_file(bucket, key, download_path)
-    print(f"[S3] Downloaded: {key} → {download_path}")
-
+    print(f"[S3] Downloaded: {bucket}/{key} → {download_path}")
 
 def upload_to_s3(bucket, key, file_path):
     s3 = boto3.client('s3')
@@ -40,7 +40,6 @@ def clear_scene():
     if hasattr(bpy.ops.outliner, "orphans_purge"):
         bpy.ops.outliner.orphans_purge(do_local_ids=True, do_linked_ids=True, do_recursive=True)
 
-
 def import_glb(filepath):
     bpy.ops.import_scene.gltf(filepath=filepath)
     for obj in bpy.context.selected_objects:
@@ -48,7 +47,6 @@ def import_glb(filepath):
             bpy.context.view_layer.objects.active = obj
             return obj
     return None
-
 
 def decimate_mesh(obj, threshold, mode, param):
     face_count = len(obj.data.polygons)
@@ -69,7 +67,6 @@ def decimate_mesh(obj, threshold, mode, param):
         mod.angle_limit = param
     bpy.ops.object.modifier_apply(modifier=mod.name)
 
-
 def set_origin_to_bottom_face_cursor(obj):
     bpy.ops.object.select_all(action='DESELECT')
     obj.select_set(True)
@@ -88,7 +85,6 @@ def set_origin_to_bottom_face_cursor(obj):
     bpy.context.scene.cursor.location = center
     bpy.ops.object.origin_set(type='ORIGIN_CURSOR')
     obj.location = (0, 0, 0)
-
 
 def export_fbx(filepath, obj):
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
@@ -115,36 +111,41 @@ def main():
         return
     args = argv[argv.index("--") + 1:]
     if len(args) < 3:
+        print("Usage: blender --background --python this_script.py -- <threshold> <mode> <param>")
         return
-    threshold = int(args[0])
-    mode = args[1].upper()
-    param = float(args[2])
 
-    coll = get_mongo_collection(mongo_uri, db_name="World_builder", collection_name="biomes")
+    threshold = int(args[0])
+    mode      = args[1].upper()
+    param     = float(args[2])
+
+    coll = get_mongo_collection(mongo_uri, db_name, collection_name)
     clear_scene()
 
     for doc in coll.find({}):
         buildings = doc.get('possible_structures', {}).get('buildings', {})
         for bldg_key, building in buildings.items():
-            # Use structureId and lowercase status
-            asset_id = building.get('structureId')
-            if not asset_id:
-                print(f"[Warning] Missing 'structureId' for building {bldg_key}")
-                continue
-
             status = building.get('status', '').lower()
-            # Process only when 3D model is generated
-            if status != '3D Model Generated':
-                print(f"[Skip] {asset_id} status = {status}")
+            # only process those ready
+            if status != 'yet to start':
+                print(f"[Skip] {bldg_key} status = {status}")
                 continue
 
-            s3_key = f"{s3_prefix}/{asset_id}.glb"
-            local_glb = os.path.join(models_folder, f"{asset_id}.glb")
+            # read full S3 URL from MongoDB
+            asset_3d_url = building.get('asset_3d_url')
+            if not asset_3d_url:
+                print(f"[Warning] Missing 'asset_3d_url' for building {bldg_key}")
+                continue
 
+            # parse bucket & key from URL
+            parsed = urlparse(asset_3d_url)
+            bucket = parsed.netloc.split('.')[0]
+            key    = parsed.path.lstrip('/')
+
+            local_glb = os.path.join(models_folder, f"{bldg_key}.glb")
             try:
-                download_from_s3(bucket_name, s3_key, local_glb)
+                download_from_s3(bucket, key, local_glb)
             except Exception as e:
-                print(f"[Download Error] {asset_id}: {e}")
+                print(f"[Download Error] {bldg_key}: {e}")
                 coll.update_one(
                     {'_id': doc['_id']},
                     {'$set': {f"possible_structures.buildings.{bldg_key}.status": 'error'}}
@@ -153,14 +154,14 @@ def main():
 
             obj = import_glb(local_glb)
             if not obj:
-                print(f"[Import Error] {asset_id}")
+                print(f"[Import Error] {bldg_key}")
                 coll.update_one(
                     {'_id': doc['_id']},
                     {'$set': {f"possible_structures.buildings.{bldg_key}.status": 'error'}}
                 )
                 continue
 
-            # Mark as Decimating
+            # mark as decimating
             coll.update_one(
                 {'_id': doc['_id']},
                 {'$set': {f"possible_structures.buildings.{bldg_key}.status": 'decimating'}}
@@ -168,28 +169,29 @@ def main():
 
             poly_before = len(obj.data.polygons)
             decimate_mesh(obj, threshold, mode, param)
-            poly_after = len(obj.data.polygons)
+            poly_after  = len(obj.data.polygons)
             set_origin_to_bottom_face_cursor(obj)
 
-            out_name = f"{asset_id}_decimated.fbx"
+            # export & upload
+            out_name = f"{bldg_key}_decimated.fbx"
             local_fbx = os.path.join(output_folder, out_name)
             export_fbx(local_fbx, obj)
 
-            # Upload under '3d_assets/generated/' folder
             s3_dest = f"{s3_prefix}/generated/{out_name}"
             upload_to_s3(bucket_name, s3_dest, local_fbx)
-            s3_url = f"https://{bucket_name}.s3.amazonaws.com/{s3_dest}"
+            new_url = f"https://{bucket_name}.s3.amazonaws.com/{s3_dest}"
 
+            # update MongoDB
             updates = {
                 f"possible_structures.buildings.{bldg_key}.status": 'Decimated',
-                f"possible_structures.buildings.{bldg_key}.model3dUrl": s3_url,
+                f"possible_structures.buildings.{bldg_key}.model3dUrl": new_url,
                 f"possible_structures.buildings.{bldg_key}.poly_before": poly_before,
                 f"possible_structures.buildings.{bldg_key}.poly_after": poly_after,
             }
             coll.update_one({'_id': doc['_id']}, {'$set': updates})
 
-            print(f"[Done] {asset_id}: {poly_before}→{poly_after}")
+            print(f"[Done] {bldg_key}: {poly_before} → {poly_after}")
             clear_scene()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
