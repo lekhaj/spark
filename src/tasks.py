@@ -13,6 +13,9 @@ from celery.signals import worker_process_init
 from celery.utils.log import get_task_logger
 import uuid
 import tempfile
+import requests
+import shutil
+import time
 
 # Ensure current directory is in Python path for local module imports
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -382,12 +385,18 @@ def ensure_processors_initialized():
     return True
 
 @app.task(name='generate_text_image')
-def generate_text_image(prompt: str, width: int, height: int, num_images: int, model_type: str):
-    """Celery task to process text prompt and generate images."""
+def generate_text_image(prompt: str, width: int, height: int, num_images: int, model_type: str, 
+                       doc_id=None, update_collection=None, category_key=None, item_key=None, 
+                       output_s3_prefix="text_generation"):
+    """Celery task to process text prompt and generate images with S3 upload and MongoDB update."""
     global _text_processor, _pipeline
     
     if not ensure_processors_initialized():
         return {"status": "error", "message": "Worker not fully initialized or modules missing."}
+
+    # Initialize managers
+    s3_mgr = get_s3_manager()
+    mongo_mgr = get_mongo_helper()
 
     try:
         task_logger.info(f"Task: Processing text prompt: '{prompt[:50]}' with model {model_type}")
@@ -409,6 +418,10 @@ def generate_text_image(prompt: str, width: int, height: int, num_images: int, m
         
         # Save images
         image_relative_paths = []
+        s3_urls = []
+        mongodb_updated = False
+        mongodb_update_error = None
+        
         if len(images) > 1:
             grid_image = create_image_grid(images)
             unique_id = str(uuid.uuid4())[:8]
@@ -417,11 +430,26 @@ def generate_text_image(prompt: str, width: int, height: int, num_images: int, m
             grid_image.save(grid_path)
             image_relative_paths.append(grid_filename)
 
+            # Upload grid image to S3
+            if s3_mgr:
+                upload_result = s3_mgr.upload_image(grid_path, f"{output_s3_prefix}/grid")
+                if upload_result.get("status") == "success":
+                    s3_urls.append(upload_result.get("s3_url"))
+                    task_logger.info(f"✅ Grid image uploaded to S3: {upload_result.get('s3_url')}")
+
             for i, img in enumerate(images):
                 single_filename = f"text_{unique_id}_{i}.png"
                 single_img_path = os.path.join(OUTPUT_IMAGES_DIR, single_filename)
                 img.save(single_img_path)
                 image_relative_paths.append(single_filename)
+                
+                # Upload individual image to S3
+                if s3_mgr:
+                    upload_result = s3_mgr.upload_image(single_img_path, f"{output_s3_prefix}/individual")
+                    if upload_result.get("status") == "success":
+                        s3_urls.append(upload_result.get("s3_url"))
+                        task_logger.info(f"✅ Individual image {i} uploaded to S3: {upload_result.get('s3_url')}")
+                        
             message = f"Generated {len(images)} images (grid). Saved to {OUTPUT_IMAGES_DIR}"
         else:
             unique_id = str(uuid.uuid4())[:8]
@@ -429,26 +457,76 @@ def generate_text_image(prompt: str, width: int, height: int, num_images: int, m
             img_path = os.path.join(OUTPUT_IMAGES_DIR, img_filename)
             images[0].save(img_path)
             image_relative_paths.append(img_filename)
+            
+            # Upload single image to S3
+            if s3_mgr:
+                upload_result = s3_mgr.upload_image(img_path, output_s3_prefix)
+                if upload_result.get("status") == "success":
+                    s3_urls.append(upload_result.get("s3_url"))
+                    task_logger.info(f"✅ Single image uploaded to S3: {upload_result.get('s3_url')}")
+                    
             message = f"Generated 1 image. Saved to {OUTPUT_IMAGES_DIR}"
 
-        return {"status": "success", "message": message, "image_filenames": image_relative_paths}
+        # Update MongoDB if requested and we have at least one S3 URL
+        if mongo_mgr and doc_id and update_collection and s3_urls:
+            # Use the first S3 URL (main image) for MongoDB update
+            main_s3_url = s3_urls[0]
+            mongodb_updated, mongodb_update_error = update_image_url_in_mongodb(
+                mongo_mgr,
+                doc_id,
+                update_collection,
+                main_s3_url,
+                local_image_path=img_path if len(images) == 1 else grid_path,
+                category_key=category_key,
+                item_key=item_key,
+                metadata={
+                    "prompt": prompt,
+                    "model_type": model_type,
+                    "dimensions": f"{width}x{height}",
+                    "num_images": len(images),
+                    "generation_type": "text_to_image"
+                }
+            )
+
+        result = {
+            "status": "success", 
+            "message": message, 
+            "image_filenames": image_relative_paths,
+            "mongodb_updated": mongodb_updated
+        }
+        
+        if s3_urls:
+            result["s3_image_urls"] = s3_urls
+            result["main_s3_url"] = s3_urls[0]
+            
+        if mongodb_update_error:
+            result["mongodb_update_error"] = mongodb_update_error
+
+        return result
 
     except Exception as e:
         task_logger.error(f"Error in generate_text_image task for prompt '{prompt[:50]}': {e}", exc_info=True)
         return {"status": "error", "message": f"Task failed: {e}"}
 
 @app.task(name='generate_local_image', bind=True)
-def generate_local_image(self, prompt: str, width: int, height: int, num_images: int):
+def generate_local_image(self, prompt: str, width: int, height: int, num_images: int,
+                        doc_id=None, update_collection=None, category_key=None, item_key=None,
+                        output_s3_prefix="local_generation"):
     """
     Celery task specifically for local image generation using the local diffusion model.
     This bypasses the API clients and directly uses the local model for processing.
+    Now includes S3 upload and MongoDB update functionality.
     """
     global _local_image_model
     
-    task_logger.info(f"🎨 Local image generation task started")
+    task_logger.info("🎨 Local image generation task started")
     task_logger.info(f"   Prompt: '{prompt[:50]}...'")
     task_logger.info(f"   Dimensions: {width}x{height}")
     task_logger.info(f"   Number of images: {num_images}")
+    
+    # Initialize managers
+    s3_mgr = get_s3_manager()
+    mongo_mgr = get_mongo_helper()
     
     # Update progress
     self.update_state(state='PROGRESS', meta={'progress': 5, 'status': 'Initializing local model...'})
@@ -483,7 +561,10 @@ def generate_local_image(self, prompt: str, width: int, height: int, num_images:
         
         # Save images
         image_relative_paths = []
+        s3_urls = []
         unique_id = str(uuid.uuid4())[:8]
+        mongodb_updated = False
+        mongodb_update_error = None
         
         if len(images) > 1:
             # Create grid image for multiple images
@@ -493,12 +574,27 @@ def generate_local_image(self, prompt: str, width: int, height: int, num_images:
             grid_image.save(grid_path)
             image_relative_paths.append(grid_filename)
             
+            # Upload grid image to S3
+            if s3_mgr:
+                self.update_state(state='PROGRESS', meta={'progress': 70, 'status': 'Uploading grid image to S3...'})
+                upload_result = s3_mgr.upload_image(grid_path, f"{output_s3_prefix}/grid")
+                if upload_result.get("status") == "success":
+                    s3_urls.append(upload_result.get("s3_url"))
+                    task_logger.info(f"✅ Grid image uploaded to S3: {upload_result.get('s3_url')}")
+            
             # Save individual images as well
             for i, img in enumerate(images):
                 single_filename = f"local_{unique_id}_{i}.png"
                 single_img_path = os.path.join(OUTPUT_IMAGES_DIR, single_filename)
                 img.save(single_img_path)
                 image_relative_paths.append(single_filename)
+                
+                # Upload individual image to S3
+                if s3_mgr:
+                    upload_result = s3_mgr.upload_image(single_img_path, f"{output_s3_prefix}/individual")
+                    if upload_result.get("status") == "success":
+                        s3_urls.append(upload_result.get("s3_url"))
+                        task_logger.info(f"✅ Individual image {i} uploaded to S3: {upload_result.get('s3_url')}")
                 
             task_logger.info(f"✅ Generated {len(images)} images locally (grid + individual)")
             message = f"Generated {len(images)} images locally (with grid). Saved to {OUTPUT_IMAGES_DIR}"
@@ -509,16 +605,47 @@ def generate_local_image(self, prompt: str, width: int, height: int, num_images:
             images[0].save(img_path)
             image_relative_paths.append(img_filename)
             
-            task_logger.info(f"✅ Generated 1 image locally")
+            # Upload single image to S3
+            if s3_mgr:
+                self.update_state(state='PROGRESS', meta={'progress': 70, 'status': 'Uploading image to S3...'})
+                upload_result = s3_mgr.upload_image(img_path, output_s3_prefix)
+                if upload_result.get("status") == "success":
+                    s3_urls.append(upload_result.get("s3_url"))
+                    task_logger.info(f"✅ Single image uploaded to S3: {upload_result.get('s3_url')}")
+            
+            task_logger.info("✅ Generated 1 image locally")
             message = f"Generated 1 image locally. Saved to {OUTPUT_IMAGES_DIR}"
+        
+        # Update MongoDB if requested and we have at least one S3 URL
+        if mongo_mgr and doc_id and update_collection and s3_urls:
+            self.update_state(state='PROGRESS', meta={'progress': 90, 'status': 'Updating database...'})
+            # Use the first S3 URL (main image) for MongoDB update
+            main_s3_url = s3_urls[0]
+            mongodb_updated, mongodb_update_error = update_image_url_in_mongodb(
+                mongo_mgr,
+                doc_id,
+                update_collection,
+                main_s3_url,
+                local_image_path=img_path if len(images) == 1 else grid_path,
+                category_key=category_key,
+                item_key=item_key,
+                metadata={
+                    "prompt": prompt,
+                    "model_type": "local",
+                    "dimensions": f"{width}x{height}",
+                    "num_images": len(images),
+                    "generation_type": "local_image_generation"
+                }
+            )
         
         self.update_state(state='PROGRESS', meta={'progress': 100, 'status': 'Local image generation completed!'})
         
-        return {
+        result = {
             "status": "success", 
             "message": message, 
             "image_filenames": image_relative_paths,
             "model_type": "local",
+            "mongodb_updated": mongodb_updated,
             "generation_stats": {
                 "prompt": prompt,
                 "dimensions": f"{width}x{height}",
@@ -526,18 +653,33 @@ def generate_local_image(self, prompt: str, width: int, height: int, num_images:
             }
         }
         
+        if s3_urls:
+            result["s3_image_urls"] = s3_urls
+            result["main_s3_url"] = s3_urls[0]
+            
+        if mongodb_update_error:
+            result["mongodb_update_error"] = mongodb_update_error
+        
+        return result
+        
     except Exception as e:
         error_msg = f"Local image generation failed: {str(e)}"
         task_logger.error(f"❌ {error_msg}", exc_info=True)
         return {"status": "error", "message": error_msg}
 
 @app.task(name='generate_grid_image')
-def generate_grid_image(grid_string: str, width: int, height: int, num_images: int, model_type: str):
-    """Celery task to process grid data and generate terrain images."""
+def generate_grid_image(grid_string: str, width: int, height: int, num_images: int, model_type: str,
+                       doc_id=None, update_collection=None, category_key=None, item_key=None,
+                       output_s3_prefix="grid_generation"):
+    """Celery task to process grid data and generate terrain images with S3 upload and MongoDB update."""
     global _grid_processor, _pipeline
     
     if not ensure_processors_initialized():
         return {"status": "error", "message": "Worker not fully initialized or modules missing."}
+
+    # Initialize managers
+    s3_mgr = get_s3_manager()
+    mongo_mgr = get_mongo_helper()
 
     try:
         task_logger.info(f"Task: Processing grid data with model {model_type}")
@@ -558,6 +700,9 @@ def generate_grid_image(grid_string: str, width: int, height: int, num_images: i
         
         unique_id = str(uuid.uuid4())[:8]
         image_filenames = []
+        s3_urls = []
+        mongodb_updated = False
+        mongodb_update_error = None
         
         # Save visualization if available
         if grid_viz is not None:
@@ -565,6 +710,13 @@ def generate_grid_image(grid_string: str, width: int, height: int, num_images: i
             viz_path = os.path.join(OUTPUT_IMAGES_DIR, viz_filename)
             grid_viz.save(viz_path)
             image_filenames.append(viz_filename)
+            
+            # Upload visualization to S3
+            if s3_mgr:
+                upload_result = s3_mgr.upload_image(viz_path, f"{output_s3_prefix}/visualization")
+                if upload_result.get("status") == "success":
+                    s3_urls.append(upload_result.get("s3_url"))
+                    task_logger.info(f"✅ Grid visualization uploaded to S3: {upload_result.get('s3_url')}")
 
         if len(images) > 1:
             grid_image = create_image_grid(images)
@@ -573,20 +725,79 @@ def generate_grid_image(grid_string: str, width: int, height: int, num_images: i
             grid_image.save(grid_path)
             image_filenames.append(grid_filename)
             
+            # Upload grid image to S3
+            if s3_mgr:
+                upload_result = s3_mgr.upload_image(grid_path, f"{output_s3_prefix}/grid")
+                if upload_result.get("status") == "success":
+                    s3_urls.append(upload_result.get("s3_url"))
+                    task_logger.info(f"✅ Terrain grid uploaded to S3: {upload_result.get('s3_url')}")
+            
             for i, img in enumerate(images):
                 single_filename = f"terrain_{unique_id}_{i}.png"
                 single_img_path = os.path.join(OUTPUT_IMAGES_DIR, single_filename)
                 img.save(single_img_path)
                 image_filenames.append(single_filename)
+                
+                # Upload individual terrain image to S3
+                if s3_mgr:
+                    upload_result = s3_mgr.upload_image(single_img_path, f"{output_s3_prefix}/individual")
+                    if upload_result.get("status") == "success":
+                        s3_urls.append(upload_result.get("s3_url"))
+                        task_logger.info(f"✅ Individual terrain image {i} uploaded to S3: {upload_result.get('s3_url')}")
+                        
             message = f"Generated {len(images)} images (grid). Saved to {OUTPUT_IMAGES_DIR}"
         else:
             img_filename = f"terrain_image_{unique_id}.png"
             img_path = os.path.join(OUTPUT_IMAGES_DIR, img_filename)
             images[0].save(img_path)
             image_filenames.append(img_filename)
+            
+            # Upload single terrain image to S3
+            if s3_mgr:
+                upload_result = s3_mgr.upload_image(img_path, output_s3_prefix)
+                if upload_result.get("status") == "success":
+                    s3_urls.append(upload_result.get("s3_url"))
+                    task_logger.info(f"✅ Single terrain image uploaded to S3: {upload_result.get('s3_url')}")
+                    
             message = f"Generated 1 image. Saved to {OUTPUT_IMAGES_DIR}"
 
-        return {"status": "success", "message": message, "image_filenames": image_filenames}
+        # Update MongoDB if requested and we have at least one S3 URL
+        if mongo_mgr and doc_id and update_collection and s3_urls:
+            # Use the first S3 URL (main image) for MongoDB update
+            main_s3_url = s3_urls[0]
+            mongodb_updated, mongodb_update_error = update_image_url_in_mongodb(
+                mongo_mgr,
+                doc_id,
+                update_collection,
+                main_s3_url,
+                local_image_path=img_path if len(images) == 1 else grid_path,
+                category_key=category_key,
+                item_key=item_key,
+                metadata={
+                    "grid_string": grid_string[:100] + "..." if len(grid_string) > 100 else grid_string,
+                    "model_type": model_type,
+                    "dimensions": f"{width}x{height}",
+                    "num_images": len(images),
+                    "generation_type": "grid_to_terrain",
+                    "has_visualization": grid_viz is not None
+                }
+            )
+
+        result = {
+            "status": "success", 
+            "message": message, 
+            "image_filenames": image_filenames,
+            "mongodb_updated": mongodb_updated
+        }
+        
+        if s3_urls:
+            result["s3_image_urls"] = s3_urls
+            result["main_s3_url"] = s3_urls[0]
+            
+        if mongodb_update_error:
+            result["mongodb_update_error"] = mongodb_update_error
+
+        return result
 
     except Exception as e:
         task_logger.error(f"Error in generate_grid_image task: {e}", exc_info=True)
@@ -594,9 +805,11 @@ def generate_grid_image(grid_string: str, width: int, height: int, num_images: i
 
 @app.task(name='process_local_generation', bind=True)
 def process_local_generation(self, input_data: str, input_type: str, width: int, height: int, num_images: int, 
-                           enhance_prompt: bool = True):
+                           enhance_prompt: bool = True, doc_id=None, update_collection=None, 
+                           category_key=None, item_key=None, output_s3_prefix="local_processing"):
     """
     Comprehensive local processing task that can handle various input types with local models.
+    Now includes S3 upload and MongoDB update functionality.
     
     Args:
         input_data: The input content (prompt, grid string, etc.)
@@ -605,12 +818,21 @@ def process_local_generation(self, input_data: str, input_type: str, width: int,
         height: Image height 
         num_images: Number of images to generate
         enhance_prompt: Whether to enhance text prompts for better results
+        doc_id: MongoDB document ID to update
+        update_collection: Collection name to update
+        category_key: Category key for nested document updates
+        item_key: Item key for nested document updates
+        output_s3_prefix: S3 prefix for uploaded images
     """
-    task_logger.info(f"🚀 Local processing task started")
+    task_logger.info("🚀 Local processing task started")
     task_logger.info(f"   Input type: {input_type}")
     task_logger.info(f"   Input data: '{input_data[:50]}...'")
     task_logger.info(f"   Dimensions: {width}x{height}")
     task_logger.info(f"   Number of images: {num_images}")
+    
+    # Initialize managers
+    s3_mgr = get_s3_manager()
+    mongo_mgr = get_mongo_helper()
     
     # Update progress
     self.update_state(state='PROGRESS', meta={'progress': 5, 'status': f'Initializing local {input_type} processing...'})
@@ -670,14 +892,17 @@ def process_local_generation(self, input_data: str, input_type: str, width: int,
             task_logger.error(f"❌ {error_msg}")
             return {"status": "error", "message": error_msg}
         
-        self.update_state(state='PROGRESS', meta={'progress': 70, 'status': 'Saving generated content...'})
+        self.update_state(state='PROGRESS', meta={'progress': 60, 'status': 'Saving generated content...'})
         
         # Ensure output directory exists
         os.makedirs(OUTPUT_IMAGES_DIR, exist_ok=True)
         
         # Save images
         image_relative_paths = []
+        s3_urls = []
         unique_id = str(uuid.uuid4())[:8]
+        mongodb_updated = False
+        mongodb_update_error = None
         
         if len(images) > 1:
             # Create grid image for multiple images
@@ -687,12 +912,27 @@ def process_local_generation(self, input_data: str, input_type: str, width: int,
             grid_image.save(grid_path)
             image_relative_paths.append(grid_filename)
             
+            # Upload grid image to S3
+            if s3_mgr:
+                self.update_state(state='PROGRESS', meta={'progress': 70, 'status': 'Uploading grid image to S3...'})
+                upload_result = s3_mgr.upload_image(grid_path, f"{output_s3_prefix}/grid")
+                if upload_result.get("status") == "success":
+                    s3_urls.append(upload_result.get("s3_url"))
+                    task_logger.info(f"✅ Grid image uploaded to S3: {upload_result.get('s3_url')}")
+            
             # Save individual images
             for i, img in enumerate(images):
                 single_filename = f"local_{input_type}_{unique_id}_{i}.png"
                 single_img_path = os.path.join(OUTPUT_IMAGES_DIR, single_filename)
                 img.save(single_img_path)
                 image_relative_paths.append(single_filename)
+                
+                # Upload individual image to S3
+                if s3_mgr:
+                    upload_result = s3_mgr.upload_image(single_img_path, f"{output_s3_prefix}/individual")
+                    if upload_result.get("status") == "success":
+                        s3_urls.append(upload_result.get("s3_url"))
+                        task_logger.info(f"✅ Individual image {i} uploaded to S3: {upload_result.get('s3_url')}")
                 
             message = f"Generated {len(images)} {input_type} images locally (with grid)"
         else:
@@ -702,6 +942,14 @@ def process_local_generation(self, input_data: str, input_type: str, width: int,
             images[0].save(img_path)
             image_relative_paths.append(img_filename)
             
+            # Upload single image to S3
+            if s3_mgr:
+                self.update_state(state='PROGRESS', meta={'progress': 70, 'status': 'Uploading image to S3...'})
+                upload_result = s3_mgr.upload_image(img_path, output_s3_prefix)
+                if upload_result.get("status") == "success":
+                    s3_urls.append(upload_result.get("s3_url"))
+                    task_logger.info(f"✅ Single image uploaded to S3: {upload_result.get('s3_url')}")
+            
             message = f"Generated 1 {input_type} image locally"
         
         # Save grid visualization if available (for grid inputs)
@@ -710,6 +958,36 @@ def process_local_generation(self, input_data: str, input_type: str, width: int,
             viz_path = os.path.join(OUTPUT_IMAGES_DIR, viz_filename)
             grid_viz.save(viz_path)
             image_relative_paths.append(viz_filename)
+            
+            # Upload visualization to S3
+            if s3_mgr:
+                upload_result = s3_mgr.upload_image(viz_path, f"{output_s3_prefix}/visualization")
+                if upload_result.get("status") == "success":
+                    s3_urls.append(upload_result.get("s3_url"))
+                    task_logger.info(f"✅ Grid visualization uploaded to S3: {upload_result.get('s3_url')}")
+        
+        # Update MongoDB if requested and we have at least one S3 URL
+        if mongo_mgr and doc_id and update_collection and s3_urls:
+            self.update_state(state='PROGRESS', meta={'progress': 90, 'status': 'Updating database...'})
+            # Use the first S3 URL (main image) for MongoDB update
+            main_s3_url = s3_urls[0]
+            mongodb_updated, mongodb_update_error = update_image_url_in_mongodb(
+                mongo_mgr,
+                doc_id,
+                update_collection,
+                main_s3_url,
+                local_image_path=img_path if len(images) == 1 else grid_path,
+                category_key=category_key,
+                item_key=item_key,
+                metadata={
+                    "input_data": input_data[:100] + "..." if len(input_data) > 100 else input_data,
+                    "input_type": input_type,
+                    "dimensions": f"{width}x{height}",
+                    "num_images": len(images),
+                    "enhanced_prompt": enhance_prompt if input_type == 'text' else False,
+                    "generation_type": f"local_{input_type}_processing"
+                }
+            )
         
         self.update_state(state='PROGRESS', meta={'progress': 100, 'status': f'Local {input_type} processing completed!'})
         
@@ -719,6 +997,7 @@ def process_local_generation(self, input_data: str, input_type: str, width: int,
             "image_filenames": image_relative_paths,
             "model_type": "local",
             "input_type": input_type,
+            "mongodb_updated": mongodb_updated,
             "generation_stats": {
                 "input_data": input_data[:100] + "..." if len(input_data) > 100 else input_data,
                 "dimensions": f"{width}x{height}",
@@ -726,6 +1005,13 @@ def process_local_generation(self, input_data: str, input_type: str, width: int,
                 "enhanced_prompt": enhance_prompt if input_type == 'text' else False
             }
         }
+        
+        if s3_urls:
+            result["s3_image_urls"] = s3_urls
+            result["main_s3_url"] = s3_urls[0]
+            
+        if mongodb_update_error:
+            result["mongodb_update_error"] = mongodb_update_error
         
         task_logger.info(f"✅ Local {input_type} processing completed successfully")
         return result
