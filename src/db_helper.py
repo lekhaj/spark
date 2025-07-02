@@ -1,6 +1,8 @@
 from pymongo import MongoClient
 from typing import Dict, List, Any, Optional, Union
 from bson.objectid import ObjectId
+import os
+import os
 
 class MongoDBHelper:
     """
@@ -385,6 +387,99 @@ class MongoDBHelper:
         # Perform text search
         return list(collection.find({"$text": {"$search": search_text}}))
     
+    def find_by_image_path(self, db_name: str, collection_name: str, image_path: str) -> Optional[Dict]:
+        """
+        Find a document by its image_path field with multiple search strategies.
+        
+        Args:
+            db_name: Name of the database
+            collection_name: Name of the collection
+            image_path: Image path to search for
+            
+        Returns:
+            The found document or None
+        """
+        collection = self.get_collection(db_name, collection_name)
+        
+        # Extract filename from the path
+        filename = os.path.basename(image_path)
+        
+        # Clean the image path - remove S3 prefixes if present
+        clean_path = image_path
+        if clean_path.startswith('s3://sparkassets/'):
+            clean_path = clean_path.replace('s3://sparkassets/', '')
+        elif clean_path.startswith('s3://'):
+            clean_path = clean_path.split('/', 2)[2] if '/' in clean_path[5:] else clean_path
+        elif clean_path.startswith('https://'):
+            from urllib.parse import urlparse
+            parsed_url = urlparse(clean_path)
+            clean_path = parsed_url.path.lstrip('/')
+        
+        # If this is a temp path, extract the meaningful part
+        # Pattern: mongo_<id>_<timestamp>.png
+        if filename.startswith('mongo_') and '_' in filename:
+            # Extract the mongo ID from filename
+            parts = filename.split('_')
+            if len(parts) >= 2:
+                mongo_id_part = parts[1]  # The part after 'mongo_'
+                # Try to find document by this ID pattern
+                try:
+                    from bson.objectid import ObjectId
+                    if len(mongo_id_part) == 24:  # Standard MongoDB ObjectId length
+                        result = collection.find_one({"_id": ObjectId(mongo_id_part)})
+                        if result:
+                            return result
+                except:
+                    pass  # Not a valid ObjectId, continue with other searches
+        
+        # Try multiple search strategies
+        search_queries = [
+            {"image_path": clean_path},  # Exact match
+            {"image_path": image_path},  # Original path
+            {"image_path": filename},  # Just filename
+            {"image_path": {"$regex": filename.replace('.', '\\.')}},  # Regex search for filename
+            {"image_path": {"$regex": filename.split('.')[0]}},  # Search without extension
+        ]
+        
+        # If filename has a pattern like mongo_<id>_timestamp, search for documents with that ID pattern
+        if filename.startswith('mongo_') and '_' in filename:
+            parts = filename.split('_')
+            if len(parts) >= 2:
+                search_queries.append({"image_path": {"$regex": parts[1]}})  # Search for the ID part
+        
+        for query in search_queries:
+            try:
+                result = collection.find_one(query)
+                if result:
+                    return result
+            except Exception:
+                continue  # Skip invalid queries
+        
+        return None
+
+    def debug_image_paths(self, db_name: str, collection_name: str, limit: int = 10) -> List[Dict]:
+        """
+        Debug method to see what image_path values exist in the collection.
+        
+        Args:
+            db_name: Name of the database
+            collection_name: Name of the collection
+            limit: Number of documents to sample
+            
+        Returns:
+            List of documents with their image_path and _id
+        """
+        collection = self.get_collection(db_name, collection_name)
+        
+        # Get sample documents and their image_path values
+        pipeline = [
+            {"$match": {"image_path": {"$exists": True}}},
+            {"$project": {"_id": 1, "image_path": 1}},
+            {"$limit": limit}
+        ]
+        
+        return list(collection.aggregate(pipeline))
+
     def close(self):
         """Close the MongoDB connection"""
         self.client.close()

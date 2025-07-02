@@ -1,7 +1,7 @@
 # Environment variables and secrets
 env/
 .env
-.env.*
+
 !.env.example
 .aws
 # Python cache files
@@ -67,3 +67,4 @@ logs/
 /gradio_cache
 
 config.py
+/outputs
