@@ -1,4 +1,61 @@
-# Text to grid ,2D-to-3D Generation Pipeline
+# Spark Biome Inspector & 2D/3D Generation Pipeline
+
+## Overview
+This project provides a robust Gradio-based UI for inspecting, generating, and monitoring 2D/3D biomes and assets, with MongoDB integration and GPU control utilities for AWS EC2 instances.
+
+- **Multi-tab Gradio UI**: Biome inspector, text-to-image, grid-to-image, file upload, MongoDB prompt/grid, and 3D decimation monitor.
+- **MongoDB Integration**: Robust to DB failures, with mock fallback.
+- **3D Model Handling**: Images and 3D models are separated; 3D models are downloadable.
+- **GPU Instance Control**: Easily start/stop/list AWS EC2 GPU instances with `ec2_gpu_control.py`.
+
+## Features
+- Inspect and generate biomes with structure images and downloadable 3D models.
+- Generate images from text, grid, or file input.
+- Batch process MongoDB prompts and grids.
+- Monitor and dispatch 3D decimation tasks.
+- Control AWS EC2 GPU instances from the command line.
+
+## Setup
+1. **Clone the repository**
+2. **Install dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   # For AWS EC2 control:
+   pip install boto3
+   ```
+3. **Configure MongoDB and AWS credentials** as needed (see `config.py` and AWS CLI docs).
+
+## Running the Gradio App
+```bash
+python src/merged_gradio_app.py --port 8080 --host 0.0.0.0
+```
+
+## AWS EC2 GPU Control
+The `ec2_gpu_control.py` script allows you to list, start, and stop GPU EC2 instances in your AWS account.
+
+### Usage
+```bash
+python src/ec2_gpu_control.py start <instance-id-1> 
+python src/ec2_gpu_control.py stop <instance-id-1>
+```
+
+- Requires `boto3` and valid AWS credentials (see [AWS CLI setup](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-quickstart.html)).
+
+## File Structure
+- `src/merged_gradio_app.py` — Main Gradio UI application
+- `src/ec2_gpu_control.py` — AWS EC2 GPU instance control utility
+- `src/config.py` — Configuration (MongoDB, S3, etc.)
+- `src/db_helper.py` — MongoDB helper functions
+- `src/pipeline/` — Image/grid/text processing pipeline
+- `src/utils/` — Utility functions
+
+## Notes
+- The UI is robust to MongoDB failures and will use mock data if the DB is unavailable.
+- 3D models are provided as download links, not previews.
+- Structure names are displayed below images in the gallery.
+
+## License
+MIT# Text to grid ,2D-to-3D Generation Pipeline
 
 A versatile pipeline that converts text prompts and terrain grids into images, and then transforms those images into 3D models using Hunyuan3D-2.
 
