@@ -1322,6 +1322,7 @@ def generate_3d_model_from_image(self, image_s3_key_or_path, with_texture=False,
                     update_path = f"possible_structures.{category_key}.{item_key}.asset_3d_url"
                     update_data = {
                         update_path: model_s3_url,
+                        f"possible_structures.{category_key}.{item_key}.status": "3d_asset_generated",
                         f"possible_structures.{category_key}.{item_key}.asset_3d_generated_at": datetime.now(),
                         f"possible_structures.{category_key}.{item_key}.asset_3d_format": output_format
                     }
@@ -1337,6 +1338,7 @@ def generate_3d_model_from_image(self, image_s3_key_or_path, with_texture=False,
                     # Update root-level for theme images
                     update_data = {
                         "asset_3d_url": model_s3_url,
+                        "status": "3d_asset_generated",
                         "asset_3d_generated_at": datetime.now(),
                         "asset_3d_format": output_format
                     }
@@ -1392,6 +1394,7 @@ def generate_3d_model_from_image(self, image_s3_key_or_path, with_texture=False,
                             "3d_asset_url": s3_urls['model'],
                             "3d_asset_generated_at": datetime.now(),
                             "3d_asset_format": output_format,
+                            "status": "3d_asset_generated",
                             "processed": False  # Set processed to false as requested
                         }
                     }
@@ -2008,7 +2011,7 @@ def batch_generate_images_sdxl_turbo(
     
         self.update_state(state='SUCCESS', meta={'progress': 100, 'status': 'Batch generation completed'})
         
-        successful_count = len([r for r in results if r['status'] == 'success'])
+        successful_count = len([r for r in results if r.get('status') == 'success'])
         task_logger.info(f"✅ Batch generation completed: {successful_count}/{total_prompts} successful")
         
         return {
@@ -2022,7 +2025,7 @@ def batch_generate_images_sdxl_turbo(
     except Exception as e:
         error_msg = f"Batch generation failed: {str(e)}"
         task_logger.error(f"❌ {error_msg}", exc_info=True)
-        return {"status": "error", "message": error_msg}
+        return {"image_generated": "error", "message": error_msg}
 
 def update_image_url_in_mongodb(mongo_mgr, doc_id, update_collection, s3_url, local_image_path=None, category_key=None, item_key=None, metadata=None):
     """
@@ -2055,6 +2058,7 @@ def update_image_url_in_mongodb(mongo_mgr, doc_id, update_collection, s3_url, lo
         if category_key and item_key:
             update_path = f"possible_structures.{category_key}.{item_key}.imageUrl"
             update_data[update_path] = s3_url
+            update_data[f"possible_structures.{category_key}.{item_key}.status"] = "image_generated"
             if local_image_path:
                 update_data[f"possible_structures.{category_key}.{item_key}.local_image_path"] = local_image_path
             if metadata:
@@ -2062,6 +2066,7 @@ def update_image_url_in_mongodb(mongo_mgr, doc_id, update_collection, s3_url, lo
             task_logger.info(f"📝 Nested update path: {update_path}")
         else:
             update_data["image_path"] = s3_url
+            update_data["status"] = "image_generated"
             if local_image_path:
                 update_data["local_image_path"] = local_image_path
             if metadata:
