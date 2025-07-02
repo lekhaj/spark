@@ -11,14 +11,14 @@ from .grid_placement_logic import generate_grid_from_hints # Corrected: now a re
 
 logger = logging.getLogger(__name__) # Ensure logger is defined at module level
 
-async def generate_biome(theme_prompt, structure_type_list):
+def generate_biome(theme_prompt, structure_type_list):
     """
     Generates a biome based on a theme prompt and a list of structure type names.
     """
 
     next_id = structure_registry.get_next_structure_id() 
 
-    structure_defs_raw = await llm.call_llm_for_structure_definitions(theme_prompt, structure_type_list) 
+    structure_defs_raw = llm.call_llm_for_structure_definitions(theme_prompt, structure_type_list) 
     logger.info(f"DEBUG: Raw LLM structure response from llm.py: {structure_defs_raw}") 
 
     try:
@@ -31,8 +31,14 @@ async def generate_biome(theme_prompt, structure_type_list):
         return f"❌ Error: Failed to process structure definitions: {e}"
 
     try:
-        llm_hints, biome_name_suggestion = await placement_suggestor.get_biome_generation_hints(structured_buildings, theme_prompt) 
-        biome_name = biome_name_suggestion
+        # DEBUG: Log the input to placement_suggestor
+        logger.debug(f"Calling get_biome_generation_hints with structured_buildings: {json.dumps(structured_buildings, indent=2)} and theme_prompt: {theme_prompt}")
+        llm_hints = placement_suggestor.get_biome_generation_hints(structured_buildings, theme_prompt)
+        logger.debug(f"Raw LLM hints output: {llm_hints}")
+        # Extra: Log placement_rules if present
+        if isinstance(llm_hints, dict):
+            logger.debug(f"Parsed placement_rules: {json.dumps(llm_hints.get('placement_rules', []), indent=2)}")
+        biome_name = llm_hints.get("biome_name", utils.generate_biome_name_from_prompt(theme_prompt))
     except ValueError as e:
         logger.error(f"[ERROR] Failed to get LLM placement hints: {e}")
         biome_name = utils.generate_biome_name_from_prompt(theme_prompt) 
