@@ -184,7 +184,7 @@ def main():
             # update MongoDB
             updates = {
                 f"possible_structures.buildings.{bldg_key}.status": 'Decimated',
-                f"possible_structures.buildings.{bldg_key}.model3dUrl": new_url,
+                f"possible_structures.buildings.{bldg_key}.decimated_3d_asset": new_url,
                 f"possible_structures.buildings.{bldg_key}.poly_before": poly_before,
                 f"possible_structures.buildings.{bldg_key}.poly_after": poly_after,
             }
