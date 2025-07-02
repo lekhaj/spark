@@ -8,7 +8,7 @@ import os # Added for path logging
 
 # Import directly from the top-level config.py
 # Alias MONGO_BIOME_COLLECTION to COLLECTION_NAME as it's used that way below
-from config import MONGO_URI, MONGO_DB_NAME, MONGO_BIOME_COLLECTION as COLLECTION_NAME, STRUCTURE_TYPES, GRID_DIMENSIONS
+from config import MONGO_URI, MONGO_DB_NAME, MONGO_BIOME_COLLECTION, USE_CELERY as COLLECTION_NAME, STRUCTURE_TYPES, GRID_DIMENSIONS, USE_CELERY
 
 logger = logging.getLogger(__name__)
 
