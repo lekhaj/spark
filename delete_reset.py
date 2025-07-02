@@ -31,33 +31,44 @@ def main():
     query = {}
     if TARGET_BIOME_ID:
         query["_id"] = ObjectId(TARGET_BIOME_ID)
-    # Only look at buildings that have a model3dUrl field
+    # Only look at documents that have buildings at all
     query["possible_structures.buildings"] = {"$exists": True}
 
     for doc in coll.find(query):
         biome_id = doc["_id"]
         buildings = doc.get("possible_structures", {}).get("buildings", {})
-        print(f"\nBiome {_id}: found {len(buildings)} buildings")
+        print(f"\nBiome {biome_id}: found {len(buildings)} buildings")
 
         for bkey, bld in buildings.items():
             url = bld.get("model3dUrl")
             if not url:
                 continue
+
+            print(f" - Building {bkey} has model3dUrl")
+
             # Delete from S3
             try:
                 delete_s3_object(url)
             except Exception as e:
-                print(f"   ! failed to delete {url}: {e}")
+                print(f"   ! Failed to delete {url}: {e}")
                 continue
 
-            # Optionally: unset the model3dUrl and reset status
+            # Optionally: unset model3dUrl and decimated_3d_asset, and reset status
             coll.update_one(
-                { "_id": biome_id },
+                {"_id": biome_id},
                 {
-                  "$unset": { f"possible_structures.buildings.{bkey}.model3dUrl": "" },
-                  "$set":   { f"possible_structures.buildings.{bkey}.status": "3D asset generated" }
+                    "$unset": {
+                        f"possible_structures.buildings.{bkey}.model3dUrl": "",
+                        f"possible_structures.buildings.{bkey}.decimated_3d_asset": "",
+                        f"possible_structures.buildings.{bkey}.poly_before": "",
+                        f"possible_structures.buildings.{bkey}.poly_after": ""
+                    },
+                    "$set": {
+                        f"possible_structures.buildings.{bkey}.status": "3D asset generated"
+                    }
                 }
             )
+
             print(f"   ✓ Updated MongoDB building {bkey}")
 
 if __name__ == "__main__":
