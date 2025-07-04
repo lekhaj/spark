@@ -1089,6 +1089,7 @@ def check_s3_3d_asset_exists(source_image_name, output_format="glb"):
     except Exception as e:
         logger.error(f"Error checking S3 asset existence: {e}")
         return False, None
+        return False, None
 
 # Global variable to store active 3D generation tasks
 _active_3d_tasks = {}
@@ -1436,6 +1437,13 @@ def build_app():
                                 value="glb", 
                                 label="Output Format"
                             )
+                        
+                        with gr.Row():
+                            threeded_force_regenerate = gr.Checkbox(
+                                label="Force regenerate (even if asset already exists)",
+                                value=False,
+                                info="Check this to force creating a new 3D asset even if one already exists in S3"
+                            )
                         gr.Markdown("""
                         **Texture**: Include color/texture information in the 3D model  
                         **Format**: GLB (complete with textures), OBJ (geometry only), PLY (point cloud)
@@ -1651,7 +1659,7 @@ def build_app():
         )
         
         # Generate 3D model from selected MongoDB image with progress tracking
-        def generate_3d_from_mongodb_image_with_progress(image_url, with_texture, output_format, model_type, progress=gr.Progress()):
+        def generate_3d_from_mongodb_image_with_progress(image_url, with_texture, output_format, model_type, force_regenerate=False, progress=gr.Progress()):
             """Send MongoDB image URL directly to 3D generation with user-configured settings and progress tracking"""
             if not image_url:
                 return None, "❌ No image selected. Please select an image from the MongoDB gallery above.", ""
@@ -1697,11 +1705,13 @@ def build_app():
                 image_filename = os.path.basename(parsed_url.path)
                 
                 # Check if 3D asset already exists in S3
-                if USE_S3_STORAGE:
+                if USE_S3_STORAGE and not force_regenerate:
                     progress(0.05, desc="Checking existing 3D assets...")
                     asset_exists, existing_s3_url = check_s3_3d_asset_exists(image_filename, output_format)
                     if asset_exists:
-                        return existing_s3_url, f"✅ 3D model already exists in S3!\nModel URL: {existing_s3_url}\nDownload the model from the link above.", "✅ Asset found in S3 storage"
+                        return existing_s3_url, f"✅ 3D model already exists in S3!\nModel URL: {existing_s3_url}\nDownload the model from the link above.\n\nTo generate a new asset, check 'Force regenerate' and try again.", "✅ Asset found in S3 storage"
+                elif force_regenerate:
+                    progress(0.05, desc="Force regenerating 3D asset...")
                 
             except Exception as e:
                 logger.warning(f"Could not check for existing S3 assets: {e}")
@@ -1814,7 +1824,7 @@ def build_app():
         
         threeded_generate_btn.click(
             generate_3d_from_mongodb_image_with_progress,
-            inputs=[selected_image_url, threeded_with_texture, threeded_output_format, threeded_model_type],
+            inputs=[selected_image_url, threeded_with_texture, threeded_output_format, threeded_model_type, threeded_force_regenerate],
             outputs=[threeded_image_output, threeded_image_message, threeded_progress]
         )
         
