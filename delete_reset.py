@@ -31,7 +31,6 @@ def main():
     query = {}
     if TARGET_BIOME_ID:
         query["_id"] = ObjectId(TARGET_BIOME_ID)
-    # Only look at documents that have buildings at all
     query["possible_structures.buildings"] = {"$exists": True}
 
     for doc in coll.find(query):
@@ -40,20 +39,29 @@ def main():
         print(f"\nBiome {biome_id}: found {len(buildings)} buildings")
 
         for bkey, bld in buildings.items():
-            url = bld.get("model3dUrl")
-            if not url:
+            urls_to_delete = []
+
+            model3dUrl = bld.get("model3dUrl")
+            if model3dUrl:
+                urls_to_delete.append(model3dUrl)
+
+            decimatedUrl = bld.get("decimated_3d_asset")
+            if decimatedUrl:
+                urls_to_delete.append(decimatedUrl)
+
+            if not urls_to_delete:
+                print(f" - Building {bkey}: No 3D URLs to delete")
                 continue
 
-            print(f" - Building {bkey} has model3dUrl")
+            print(f" - Building {bkey}: Deleting {len(urls_to_delete)} S3 assets")
 
-            # Delete from S3
-            try:
-                delete_s3_object(url)
-            except Exception as e:
-                print(f"   ! Failed to delete {url}: {e}")
-                continue
+            for url in urls_to_delete:
+                try:
+                    delete_s3_object(url)
+                except Exception as e:
+                    print(f"   ! Failed to delete {url}: {e}")
 
-            # Optionally: unset model3dUrl and decimated_3d_asset, and reset status
+            # Unset all 3D fields in MongoDB, reset status
             coll.update_one(
                 {"_id": biome_id},
                 {
@@ -69,7 +77,7 @@ def main():
                 }
             )
 
-            print(f"   ✓ Updated MongoDB building {bkey}")
+            print(f"   ✓ Reset MongoDB fields for building {bkey}")
 
 if __name__ == "__main__":
     main()
