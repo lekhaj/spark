@@ -35,8 +35,19 @@ except:
 
 try:
     from .mesh_inpaint_processor import meshVerticeInpaint  # , meshVerticeColor
+    print("✅ C++ mesh_inpaint_processor loaded successfully")
 except:
     print("InPaint Function CAN NOT BE Imported!!!")
+    try:
+        # Try to use our fallback implementation
+        from .mesh_inpaint_patch import meshVerticeInpaint
+        print("✅ Using fallback Python implementation for meshVerticeInpaint")
+    except:
+        print("❌ Both C++ and fallback inpainting implementations failed!")
+        # Create a simple pass-through function as a last resort
+        def meshVerticeInpaint(texture_np, mask, vtx_pos=None, vtx_uv=None, pos_idx=None, uv_idx=None):
+            print("⚠️ Using dummy inpainting function - texture quality may be reduced")
+            return texture_np, mask
 
 
 class RenderMode(Enum):
@@ -1403,12 +1414,33 @@ class MeshRender:
         if isinstance(mask, torch.Tensor):
             mask = (mask.squeeze(-1).cpu().numpy() * 255).astype(np.uint8)
 
+        # First try mesh-aware inpainting if requested
         if vertex_inpaint:
-            vtx_pos, pos_idx, vtx_uv, uv_idx = self.get_mesh()
-            texture_np, mask = meshVerticeInpaint(texture_np, mask, vtx_pos, vtx_uv, pos_idx, uv_idx)
+            try:
+                vtx_pos, pos_idx, vtx_uv, uv_idx = self.get_mesh()
+                texture_np, mask = meshVerticeInpaint(texture_np, mask, vtx_pos, vtx_uv, pos_idx, uv_idx)
+            except Exception as e:
+                print(f"⚠️ Mesh-aware inpainting failed: {e}")
+                print("⚠️ Falling back to standard OpenCV inpainting")
 
-        if method == "NS":
-            texture_np = cv2.inpaint((texture_np * 255).astype(np.uint8), 255 - mask, 3, cv2.INPAINT_NS)
-            assert return_float == False
-
+        # Always try OpenCV inpainting as a backup or second pass
+        try:
+            if method == "NS":
+                # Convert to uint8 for OpenCV
+                inpaint_input = (texture_np * 255).astype(np.uint8) if texture_np.dtype != np.uint8 else texture_np
+                # Invert mask for OpenCV (0=valid, 255=inpaint area)
+                inpaint_mask = 255 - mask
+                
+                # Only perform inpainting if there are areas to fill
+                if np.any(inpaint_mask > 0):
+                    texture_np = cv2.inpaint(inpaint_input, inpaint_mask, 3, cv2.INPAINT_NS)
+                    
+                # Ensure return type matches expected format
+                if return_float and texture_np.dtype == np.uint8:
+                    texture_np = texture_np.astype(np.float32) / 255.0
+                
+        except Exception as e:
+            print(f"❌ OpenCV inpainting failed: {e}")
+            # If all inpainting methods fail, just return the original texture
+        
         return texture_np

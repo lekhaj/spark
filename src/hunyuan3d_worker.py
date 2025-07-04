@@ -210,18 +210,79 @@ def initialize_hunyuan3d_processors():
                 hy3dpaint_path = os.path.join(project_root, 'Hunyuan3D-2.1', 'hy3dpaint')
                 if hy3dpaint_path not in sys.path:
                     sys.path.insert(0, hy3dpaint_path)
+                
+                # Check and compile mesh_inpaint_processor if needed
+                diff_renderer_path = os.path.join(hy3dpaint_path, 'DifferentiableRenderer')
+                if diff_renderer_path not in sys.path:
+                    sys.path.insert(0, diff_renderer_path)
+                
+                mesh_inpaint_cpp = os.path.join(diff_renderer_path, 'mesh_inpaint_processor.cpp')
+                if os.path.exists(mesh_inpaint_cpp):
+                    # Check if mesh_inpaint_processor is already compiled
+                    import glob
+                    inpaint_so_files = glob.glob(os.path.join(diff_renderer_path, 'mesh_inpaint_processor*.so'))
+                    
+                    if not inpaint_so_files:
+                        logger.info("🔧 Compiling mesh_inpaint_processor for texture inpainting...")
+                        try:
+                            import subprocess
+                            # Install pybind11 if needed
+                            subprocess.run([sys.executable, "-m", "pip", "install", "pybind11"], check=True)
+                            
+                            # Change to DifferentiableRenderer directory
+                            cwd = os.getcwd()
+                            os.chdir(diff_renderer_path)
+                            
+                            # Compile the mesh_inpaint_processor
+                            compile_cmd = f"c++ -O3 -Wall -shared -std=c++11 -fPIC `{sys.executable} -m pybind11 --includes` mesh_inpaint_processor.cpp -o mesh_inpaint_processor`{sys.executable}-config --extension-suffix`"
+                            subprocess.run(compile_cmd, shell=True, check=True)
+                            
+                            # Return to original directory
+                            os.chdir(cwd)
+                            logger.info("✅ mesh_inpaint_processor compiled successfully")
+                        except Exception as e:
+                            logger.error(f"❌ Failed to compile mesh_inpaint_processor: {e}")
+                    else:
+                        logger.info(f"✅ mesh_inpaint_processor already compiled: {inpaint_so_files[0]}")
+                
+                # Try importing mesh_inpaint_processor to verify it's available
+                try:
+                    from mesh_inpaint_processor import meshVerticeInpaint
+                    logger.info("✅ Mesh inpaint processor successfully loaded")
+                except ImportError as e:
+                    logger.error(f"❌ Mesh inpaint processor failed to import: {e}")
+                    logger.error("This will cause texture generation to fail")
+                except Exception as e:
+                    logger.error(f"❌ Mesh inpaint processor error: {e}")
+                
                 from textureGenPipeline import Hunyuan3DPaintPipeline, Hunyuan3DPaintConfig
                 
-                # Create PBR-enabled configuration for GPU loading
-                paint_config = Hunyuan3DPaintConfig(
-                    max_num_view=HUNYUAN3D_PAINT_CONFIG_MAX_VIEWS,
-                    resolution=HUNYUAN3D_PAINT_CONFIG_RESOLUTION,
-                    torch_dtype=torch.float16,  # Use float16 for memory efficiency
-                )
+                try:
+                    # First try with torch_dtype parameter
+                    logger.info("Creating PBR-enabled configuration for texture generation...")
+                    paint_config = Hunyuan3DPaintConfig(
+                        max_num_view=HUNYUAN3D_PAINT_CONFIG_MAX_VIEWS,
+                        resolution=HUNYUAN3D_PAINT_CONFIG_RESOLUTION,
+                        torch_dtype=torch.float16,  # Use float16 for memory efficiency
+                    )
+                except TypeError as e:
+                    # If torch_dtype parameter is not supported, retry without it
+                    if "unexpected keyword argument 'torch_dtype'" in str(e) or "got an unexpected" in str(e):
+                        logger.info("torch_dtype parameter not supported, using default configuration")
+                        paint_config = Hunyuan3DPaintConfig(
+                            max_num_view=HUNYUAN3D_PAINT_CONFIG_MAX_VIEWS,
+                            resolution=HUNYUAN3D_PAINT_CONFIG_RESOLUTION,
+                        )
+                    else:
+                        raise
+                    
+                # Configure paths
                 paint_config.realesrgan_ckpt_path = "hy3dpaint/ckpt/RealESRGAN_x4plus.pth"
                 paint_config.multiview_cfg_path = "hy3dpaint/cfgs/hunyuan-paint-pbr.yaml"
                 paint_config.custom_pipeline = "hy3dpaint/hunyuanpaintpbr"
                 
+                # Initialize pipeline
+                logger.info("Initializing Hunyuan3D texture generation pipeline...")
                 _hunyuan_texgen_worker = Hunyuan3DPaintPipeline(paint_config)
                 
                 # Explicitly move to GPU and ensure it stays there

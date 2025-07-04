@@ -98,38 +98,32 @@ hunyuan_paths = [
     os.path.join(script_dir, "Hunyuan3D-2"),
     os.path.join(script_dir, "Hunyuan3D-1"), 
     "./Hunyuan3D-2.1",
-    "./Hunyuan3D-2",
-    "./Hunyuan3D-1"
 ]
 
-hunyuan_found = False
+found_hunyuan = False
 for path in hunyuan_paths:
-    if os.path.exists(path):
-        print(f"✅ Found Hunyuan3D directory: {path}")
-        hunyuan_found = True
+    if os.path.isdir(path):
+        found_hunyuan = True
+        print(f"✅ Hunyuan3D found at {path}")
+        sys.path.insert(0, path)
         
-        # Check if hy3dshape module exists (for 2.1)
-        hy3dshape_path = os.path.join(path, "hy3dshape")
-        if os.path.exists(hy3dshape_path):
-            print(f"✅ Found hy3dshape module: {hy3dshape_path}")
-            
-            # Add to Python path temporarily
-            if path not in sys.path:
-                sys.path.insert(0, path)
-                print(f"✅ Added {path} to Python path")
-        
-        # Check if hy3dgen module exists (for older versions)
-        hy3dgen_path = os.path.join(path, "hy3dgen")
-        if os.path.exists(hy3dgen_path):
-            print(f"✅ Found hy3dgen module: {hy3dgen_path}")
-            
-            # Add to Python path temporarily
-            if path not in sys.path:
-                sys.path.insert(0, path)
-                print(f"✅ Added {path} to Python path")
+        # Test for mesh inpaint processor
+        try:
+            # Add DifferentiableRenderer to path
+            render_path = os.path.join(path, "hy3dpaint", "DifferentiableRenderer")
+            sys.path.insert(0, render_path)
+            from mesh_inpaint_processor import meshVerticeInpaint
+            print(f"✅ Mesh inpaint processor (meshVerticeInpaint) found and imported successfully")
+        except ImportError as e:
+            print(f"❌ Mesh inpaint processor import failed: {e}")
+            print("   This will cause texture generation to fail")
+            print("   Solution: Navigate to Hunyuan3D-2.1/hy3dpaint/DifferentiableRenderer/ and run:")
+            print("   c++ -O3 -Wall -shared -std=c++11 -fPIC `python3 -m pybind11 --includes` mesh_inpaint_processor.cpp -o mesh_inpaint_processor`python3-config --extension-suffix`")
+        except Exception as e:
+            print(f"❌ Mesh inpaint processor error: {e}")
         break
 
-if not hunyuan_found:
+if not found_hunyuan:
     print("❌ Hunyuan3D directory not found")
     print("   Expected locations:", hunyuan_paths)
     print("   Please clone Hunyuan3D repository:")

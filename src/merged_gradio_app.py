@@ -1916,7 +1916,9 @@ def enhance_prompt_for_3d_generation(prompt):
         "professional lighting",
         "centered composition",
         "no shadows on background",
-        "isolated object"
+        "isolated object", 
+        "from outside",
+        "full view"
     ]
     
     # Combine original prompt with enhancements

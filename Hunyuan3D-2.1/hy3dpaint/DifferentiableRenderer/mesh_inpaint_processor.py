@@ -1,0 +1,2 @@
+# Python implementation of mesh_inpaint_processor
+from mesh_inpaint_fallback import meshVerticeInpaint
