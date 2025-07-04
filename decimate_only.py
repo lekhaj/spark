@@ -9,12 +9,20 @@ from urllib.parse import urlparse
 
 # ---------------- USER CONFIGURATION ----------------
 bucket_name       = "sparkassets"
-s3_prefix         = "3d_assets"       # where processed FBXs go: e.g. "3d_assets/generated/"
+s3_prefix         = "3d_assets"
 models_folder     = "/home/ubuntu/sarthak/input"
 output_folder     = "/home/ubuntu/sarthak/output"
 mongo_uri         = "mongodb://ec2-13-203-200-155.ap-south-1.compute.amazonaws.com:27017"
 db_name           = "World_builder"
 collection_name   = "biomes"
+
+# ---------------- DECIMATION PROFILES ----------------
+DECIMATION_PROFILES = [
+    ("5k", 5000, "COLLAPSE", None),
+    ("6k", 6000, "COLLAPSE", None),
+    ("8k", 8000, "COLLAPSE", None),
+    ("10k", 10000, "COLLAPSE", None),
+]
 
 # ---------------- MONGODB CONNECTION ----------------
 def get_mongo_collection(uri, db_name, collection_name):
@@ -58,7 +66,7 @@ def decimate_mesh(obj, threshold, mode, param):
     mod = obj.modifiers.new("Decimate", "DECIMATE")
     if mode == 'COLLAPSE':
         mod.decimate_type = 'COLLAPSE'
-        mod.ratio = min(1.0, threshold/face_count)
+        mod.ratio = min(1.0, threshold / face_count)
     elif mode == 'UNSUBDIV':
         mod.decimate_type = 'UNSUBDIV'
         mod.iterations = int(param)
@@ -108,15 +116,11 @@ def export_fbx(filepath, obj):
 def main():
     argv = sys.argv
     if "--" not in argv:
-        return
-    args = argv[argv.index("--") + 1:]
-    if len(args) < 3:
-        print("Usage: blender --background --python this_script.py -- <threshold> <mode> <param>")
-        return
-
-    threshold = int(args[0])
-    mode      = args[1].upper()
-    param     = float(args[2])
+        print("Running with hard-coded profiles (5k, 6k, 8k, 10k)")
+    else:
+        args = argv[argv.index("--") + 1:]
+        if len(args) > 0:
+            print("Warning: This version ignores CLI args and uses hard-coded profiles.")
 
     coll = get_mongo_collection(mongo_uri, db_name, collection_name)
     clear_scene()
@@ -125,21 +129,18 @@ def main():
         buildings = doc.get('possible_structures', {}).get('buildings', {})
         for bldg_key, building in buildings.items():
             status = building.get('status', '').lower()
-            # only process those ready
             if status != '3d asset generated':
                 print(f"[Skip] {bldg_key} status = {status}")
                 continue
 
-            # read full S3 URL from MongoDB
             asset_3d_url = building.get('asset_3d_url')
             if not asset_3d_url:
                 print(f"[Warning] Missing 'asset_3d_url' for building {bldg_key}")
                 continue
 
-            # parse bucket & key from URL
             parsed = urlparse(asset_3d_url)
             bucket = parsed.netloc.split('.')[0]
-            key    = parsed.path.lstrip('/')
+            key = parsed.path.lstrip('/')
 
             local_glb = os.path.join(models_folder, f"{bldg_key}.glb")
             try:
@@ -152,46 +153,46 @@ def main():
                 )
                 continue
 
-            obj = import_glb(local_glb)
-            if not obj:
-                print(f"[Import Error] {bldg_key}")
+            for suffix, threshold, mode, param in DECIMATION_PROFILES:
+                clear_scene()
+                obj = import_glb(local_glb)
+                if not obj:
+                    print(f"[Import Error] {bldg_key}")
+                    coll.update_one(
+                        {'_id': doc['_id']},
+                        {'$set': {f"possible_structures.buildings.{bldg_key}.status": 'error'}}
+                    )
+                    break
+
                 coll.update_one(
                     {'_id': doc['_id']},
-                    {'$set': {f"possible_structures.buildings.{bldg_key}.status": 'error'}}
+                    {'$set': {f"possible_structures.buildings.{bldg_key}.status": f'decimating_{suffix}'}}
                 )
-                continue
 
-            # mark as decimating
-            coll.update_one(
-                {'_id': doc['_id']},
-                {'$set': {f"possible_structures.buildings.{bldg_key}.status": 'decimating'}}
-            )
+                poly_before = len(obj.data.polygons)
+                decimate_mesh(obj, threshold, mode, param)
+                poly_after = len(obj.data.polygons)
+                set_origin_to_bottom_face_cursor(obj)
 
-            poly_before = len(obj.data.polygons)
-            decimate_mesh(obj, threshold, mode, param)
-            poly_after  = len(obj.data.polygons)
-            set_origin_to_bottom_face_cursor(obj)
+                out_name = f"{bldg_key}_{suffix}_decimated.fbx"
+                local_fbx = os.path.join(output_folder, out_name)
+                export_fbx(local_fbx, obj)
 
-            # export & upload
-            out_name = f"{bldg_key}_decimated.fbx"
-            local_fbx = os.path.join(output_folder, out_name)
-            export_fbx(local_fbx, obj)
+                s3_dest = f"{s3_prefix}/generated/{out_name}"
+                upload_to_s3(bucket_name, s3_dest, local_fbx)
+                new_url = f"https://{bucket_name}.s3.amazonaws.com/{s3_dest}"
 
-            s3_dest = f"{s3_prefix}/generated/{out_name}"
-            upload_to_s3(bucket_name, s3_dest, local_fbx)
-            new_url = f"https://{bucket_name}.s3.amazonaws.com/{s3_dest}"
+                updates = {
+                    f"possible_structures.buildings.{bldg_key}.status_{suffix}": 'Decimated',
+                    f"possible_structures.buildings.{bldg_key}.decimated_3d_asset_{suffix}": new_url,
+                    f"possible_structures.buildings.{bldg_key}.poly_before_{suffix}": poly_before,
+                    f"possible_structures.buildings.{bldg_key}.poly_after_{suffix}": poly_after,
+                }
+                coll.update_one({'_id': doc['_id']}, {'$set': updates})
 
-            # update MongoDB
-            updates = {
-                f"possible_structures.buildings.{bldg_key}.status": 'Decimated',
-                f"possible_structures.buildings.{bldg_key}.decimated_3d_asset": new_url,
-                f"possible_structures.buildings.{bldg_key}.poly_before": poly_before,
-                f"possible_structures.buildings.{bldg_key}.poly_after": poly_after,
-            }
-            coll.update_one({'_id': doc['_id']}, {'$set': updates})
+                print(f"[Done {suffix}] {bldg_key}: {poly_before} → {poly_after}")
 
-            print(f"[Done] {bldg_key}: {poly_before} → {poly_after}")
-            clear_scene()
+    print("[Complete] All decimation profiles processed.")
 
 if __name__ == "__main__":
     main()
