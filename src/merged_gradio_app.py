@@ -1,5 +1,4 @@
 # merged_gradio_app.py - Frontend Gradio Application with Multiple Image Display
-
 import os
 import time
 import uuid
@@ -226,22 +225,25 @@ os.makedirs(OUTPUT_3D_ASSETS_DIR, exist_ok=True)
 
 # --- Biome Inspector Functions ---
 
-def display_selected_biome(db_name: str, collection_name: str, name: str) -> tuple[str, str, list[tuple[str, str]]]:
+def display_selected_biome(db_name: str, collection_name: str, name: str) -> tuple[str, str, list[tuple[str, str]], list[str], list[str]]:
     """
     Fetches biome details, separates grid data, formats main details as JSON,
     and collects S3 image URLs with captions for display in Gradio Gallery.
-    Returns (formatted_json_text, grid_text, list_of_image_tuples_with_captions).
+    Also collects decimated and undecimated model links.
+    Returns (formatted_json_text, grid_text, list_of_image_tuples_with_captions, decimated_links, undecimated_links).
     """
     if not name:
         _biome_logger.info("No biome selected for display.")
-        return "", "", []
+        return "", "", [], [], []
 
     _biome_logger.info(f"Fetching biome details for: '{name}' from DB: '{db_name}', Collection: '{collection_name}'")
     biome = fetch_biome(db_name, collection_name, name)
 
     formatted_json_text = ""
     grid_text = ""
-    image_display_items = [] # Changed to store (url, caption) tuples
+    image_display_items = [] # (url, caption)
+    decimated_links = []
+    undecimated_links = []
 
     if biome:
         _biome_logger.info(f"Successfully fetched biome '{name}'.")
@@ -362,39 +364,50 @@ def display_selected_biome(db_name: str, collection_name: str, name: str) -> tup
             image_display_items.append((top_level_image_path, f"Main Biome Image: {biome_name_for_caption}")) # <<< Changed to tuple
             _biome_logger.info(f"Found top-level S3 URL for biome: {top_level_image_path}")
 
-        # Collect image_path from each structure
+        # Collect image_path/imageUrl and model links from each structure
         possible_structures = biome.get("possible_structures", {})
         buildings = possible_structures.get("buildings", {})
 
         for struct_id, struct_data in buildings.items():
-            img_path = struct_data.get("image_path")
-            caption = struct_data.get("type", f"Structure: {type}") # Use description as caption
-            
+            # --- Images ---
+            img_path = struct_data.get("image_path") or struct_data.get("imageUrl")
+            caption = struct_data.get("type", f"Structure: {struct_id}")
             if not (img_path and isinstance(img_path, str) and img_path.startswith("http")):
                 attributes = struct_data.get("attributes", {})
-                img_path = attributes.get("image_path")
+                img_path = attributes.get("image_path") or attributes.get("imageUrl")
                 if "type" in attributes:
-                    caption = attributes["type"] # Use attribute description if available
-
+                    caption = attributes["type"]
             if img_path and isinstance(img_path, str) and img_path.startswith("http"):
                 image_display_items.append((img_path, caption)) # <<< Changed to tuple
                 _biome_logger.info(f"Found S3 URL for structure {struct_id}: {img_path}")
             elif img_path:
                 _biome_logger.warning(f"Image path for structure {struct_id} is not a valid S3 URL or is empty: {img_path}")
 
+            # --- Decimated/Undecimated Model Links ---
+            decimated = struct_data.get("decimated_3d_asset")
+            if decimated and isinstance(decimated, str) and decimated.startswith("http"):
+                decimated_links.append(decimated)
+            undecimated = struct_data.get("asset_3d_url")
+            if undecimated and isinstance(undecimated, str) and undecimated.startswith("http"):
+                undecimated_links.append(undecimated)
+
         if not image_display_items:
             _biome_logger.info(f"No S3 image_paths found for biome '{name}' or its structures.")
-        # --- End Image Collection with Captions ---
+        if decimated_links:
+            _biome_logger.info(f"Found {len(decimated_links)} decimated model links for biome '{name}'.")
+        if undecimated_links:
+            _biome_logger.info(f"Found {len(undecimated_links)} undecimated model links for biome '{name}'.")
 
     else:
         _biome_logger.warning(f"Biome '{name}' not found in the registry for DB '{db_name}' and Collection '{collection_name}'.")
         formatted_json_text = f"Biome '{name}' not found in the registry for DB '{db_name}' and Collection '{collection_name}'."
 
-    # Add a debug log to confirm what URLs are being passed to Gradio Gallery
     _biome_logger.debug(f"Final image_display_items for gallery: {image_display_items}")
 
-    # Return the list of tuples
-    return formatted_json_text, grid_text, image_display_items
+    # Only return the JSON as a <pre> block, and pass the links as separate lists for display below the gallery
+    formatted_json_text_html = f'<pre style="font-size:13px;line-height:1.4;background:#222;color:#eee;padding:10px;border-radius:6px;overflow-x:auto;">{formatted_json_text}</pre>'
+    # Return the JSON, grid, gallery, and the two lists (to be rendered as clickable links in the UI, not in the JSON)
+    return formatted_json_text_html, grid_text, image_display_items, decimated_links, undecimated_links
 
 
 async def handler(theme: str, structure_types_str: str, db_name: str, collection_name: str) -> tuple[str, gr.Dropdown]:
@@ -464,10 +477,19 @@ def process_image_generation_task(prompt_or_grid_content, width, height, num_ima
         enhanced_prompt = prompt_or_grid_content
     
     if USE_CELERY:
-        # Route SDXL Turbo tasks to GPU worker
+        # Define which models are GPU-appropriate (add to this list as needed)
+        GPU_MODELS = {"sdxl-turbo", "sdxl", "stable-diffusion-xl", "stable-diffusion", "anything-v5", "juggernaut-xl", "juggernaut", "realistic-vision", "dreamshaper", "midjourney", "dalle3", "dalle-3", "dalle2", "dalle-2", "gpu-model-1", "gpu-model-2"}
+        # You can expand GPU_MODELS as needed for your deployment
+
+        # Route GPU-appropriate models to 'gpu_tasks', others to 'cpu_tasks'
+        if model_type.lower() in GPU_MODELS:
+            queue_name = 'gpu_tasks'
+        else:
+            queue_name = 'cpu_tasks'
+
+        # SDXL Turbo still uses its own optimized Celery task if needed
         if model_type == "sdxl-turbo":
             if is_grid_input:
-                # For grid input with SDXL, we'll use single prompt for now (could be enhanced to batch later)
                 task = celery_generate_image_sdxl_turbo.apply_async(
                     args=[enhanced_prompt],
                     kwargs={
@@ -479,7 +501,7 @@ def process_image_generation_task(prompt_or_grid_content, width, height, num_ima
                         'category_key': category_key,
                         'item_key': item_key
                     },
-                    queue='sdxl_tasks'  # Route to GPU instance
+                    queue=queue_name
                 )
                 return None, None, f"✅ SDXL Turbo grid processing task submitted to GPU worker (ID: {task.id}). Image will be saved to GPU worker storage.\n🎯 3D-Optimized prompt enhancement applied for better 3D asset generation."
             else:
@@ -494,11 +516,10 @@ def process_image_generation_task(prompt_or_grid_content, width, height, num_ima
                         'category_key': category_key,
                         'item_key': item_key
                     },
-                    queue='sdxl_tasks'  # Route to GPU instance
+                    queue=queue_name
                 )
                 return None, f"✅ SDXL Turbo task submitted to GPU worker (ID: {task.id}). High-quality image will be generated on GPU.\n🎯 3D-Optimized prompt used for better 3D asset generation."
         else:
-            # Route other models to CPU worker
             if is_grid_input:
                 task = celery_generate_grid_image.apply_async(
                     args=[enhanced_prompt, width, height, num_images, model_type],
@@ -508,9 +529,12 @@ def process_image_generation_task(prompt_or_grid_content, width, height, num_ima
                         'category_key': category_key,
                         'item_key': item_key
                     },
-                    queue='cpu_tasks'  # Route to CPU instance
+                    queue=queue_name
                 )
-                return None, None, f"✅ Grid processing task submitted to CPU instance (ID: {task.id}). Image will be saved to '{OUTPUT_IMAGES_DIR}' on the worker."
+                if queue_name == 'gpu_tasks':
+                    return None, None, f"✅ Grid processing task submitted to GPU worker (ID: {task.id}). Image will be saved to GPU worker storage."
+                else:
+                    return None, None, f"✅ Grid processing task submitted to CPU instance (ID: {task.id}). Image will be saved to '{OUTPUT_IMAGES_DIR}' on the worker."
             else:
                 task = celery_generate_text_image.apply_async(
                     args=[enhanced_prompt, width, height, num_images, model_type],
@@ -520,9 +544,12 @@ def process_image_generation_task(prompt_or_grid_content, width, height, num_ima
                         'category_key': category_key,
                         'item_key': item_key
                     },
-                    queue='cpu_tasks'  # Route to CPU instance
+                    queue=queue_name
                 )
-                return None, f"✅ Text-to-image task submitted to CPU instance (ID: {task.id}). Image will be saved to '{OUTPUT_IMAGES_DIR}' on the worker.\n🎯 3D-Optimized prompt used for better 3D asset generation."
+                if queue_name == 'gpu_tasks':
+                    return None, f"✅ Text-to-image task submitted to GPU worker (ID: {task.id}). Image will be saved to GPU worker storage.\n🎯 3D-Optimized prompt used for better 3D asset generation."
+                else:
+                    return None, f"✅ Text-to-image task submitted to CPU instance (ID: {task.id}). Image will be saved to '{OUTPUT_IMAGES_DIR}' on the worker.\n🎯 3D-Optimized prompt used for better 3D asset generation."
     else:
         # Direct processing in DEV mode
         if _dev_pipeline is None:
@@ -641,18 +668,6 @@ def get_prompts_from_mongodb(db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_
                                 if structure_desc and isinstance(structure_desc, str):
                                     structure_type = structure_data.get("type", structure_id)
                                     prompt_items.append((f"{doc_id}_{structure_id}", f"[{structure_type}] {structure_desc}"))
-                                
-                                # Check for description in attributes
-                                elif "attributes" in structure_data and isinstance(structure_data["attributes"], dict):
-                                    attr_desc = structure_data["attributes"].get("description")
-                                    if attr_desc and isinstance(attr_desc, str):
-                                        structure_type = structure_data.get("type", structure_id)
-                                        prompt_items.append((f"{doc_id}_{structure_id}_attr", f"[{structure_type}] {attr_desc}"))
-                                
-                                # Fallback: use structure type and name if available
-                                elif structure_data.get("type"):
-                                    structure_type = structure_data.get("type")
-                                    structure_name = structure_data.get("name", structure_id)
                                     fallback_desc = f"A {structure_type.lower()} called {structure_name}"
                                     prompt_items.append((f"{doc_id}_{structure_id}_fallback", f"[{structure_type}] {fallback_desc}"))
                                 
@@ -1104,7 +1119,7 @@ def build_app():
 
     title_html = f"""
     <div style="font-size: 2em; font-weight: bold; text-align: center; margin-bottom: 5px">
-    Integrated 2D Generation Pipeline ({'Celery Enabled' if USE_CELERY else 'Development Mode'})
+    Integrated Asset Generation Pipeline ({'Celery Enabled' if USE_CELERY else 'Development Mode'})
     </div>
     <div align="center">
     Generate 2D images for terrain and biomes. {'Heavy tasks are offloaded to Celery workers.' if USE_CELERY else 'Tasks are processed directly on this server.'}
@@ -1150,24 +1165,27 @@ def build_app():
 
                 gr.Markdown("## View Generated Biomes")
 
+
                 initial_biome_names = []
                 initial_selected_biome = None
                 try:
                     initial_biome_names = get_biome_names(biome_db_name.value, biome_collection_name.value)
+                    logger.info(f"Biome Inspector: initial_biome_names = {initial_biome_names}")
                     if initial_biome_names:
                         initial_selected_biome = initial_biome_names[-1] # Set the last biome as default
                 except Exception as e:
-                    _biome_logger.error(f"Error fetching initial biome names for inspector: {e}")
+                    logger.error(f"Error fetching initial biome names for inspector: {e}")
 
                 # Calculate initial display values for the selected biome (if any)
                 initial_biome_display_text = ""
                 initial_grid_display_text = ""
                 initial_image_urls_for_gallery_init = [] # This will hold only URLs (strings) for initial value
+                initial_biome_3d_links_html = ""
 
                 if initial_selected_biome:
                     try:
                         # Call the display function to get the initial content in the (url, caption) format
-                        temp_json, temp_grid, temp_image_tuples = display_selected_biome(
+                        temp_json, temp_grid, temp_image_tuples, decimated_links, undecimated_links = display_selected_biome(
                             biome_db_name.value,
                             biome_collection_name.value,
                             initial_selected_biome
@@ -1176,6 +1194,29 @@ def build_app():
                         initial_grid_display_text = temp_grid
                         # Extract only URLs for the initial value of gr.Gallery
                         initial_image_urls_for_gallery_init = [item[0] for item in temp_image_tuples]
+                        # Build initial 3D asset links HTML
+                        current_biome = fetch_biome(biome_db_name.value, biome_collection_name.value, initial_selected_biome)
+                        decimated_map = {}
+                        undecimated_map = {}
+                        if current_biome and "possible_structures" in current_biome:
+                            for struct_id, struct_data in current_biome["possible_structures"].get("buildings", {}).items():
+                                struct_name = struct_data.get("type") or struct_id
+                                # Collect all decimated asset urls (keys containing 'decimated_3d_asset')
+                                for k, v in struct_data.items():
+                                    if k.startswith("decimated_3d_asset") and isinstance(v, str) and v:
+                                        decimated_map[f"{struct_name} [{k.replace('decimated_3d_asset','decimated')}]"] = v
+                                # Undecimated asset (main 3d url)
+                                asset_url = struct_data.get("asset_3d_url")
+                                if asset_url:
+                                    undecimated_map[struct_name] = asset_url
+                        # fallback for any url not found
+                        for url in decimated_links:
+                            if url not in decimated_map.values():
+                                decimated_map[url.split("/")[-1]] = url
+                        for url in undecimated_links:
+                            if url not in undecimated_map.values():
+                                undecimated_map[url.split("/")[-1]] = url
+                        initial_biome_3d_links_html = make_links_section("Decimated 3D Assets", decimated_map) + make_links_section("Undecimated 3D Assets", undecimated_map)
                     except Exception as e:
                         _biome_logger.error(f"Error fetching initial biome display details for inspector: {e}")
 
@@ -1209,8 +1250,6 @@ def build_app():
                     with gr.Column(scale=1):
                         biome_image_display = gr.Gallery(
                             label="Generated Biome Images",
-                            # For initial value, Gradio Gallery expects a list of URLs (strings).
-                            # For updates, it can take lists of (url, caption) tuples or dicts.
                             value=initial_image_urls_for_gallery_init,
                             interactive=False,
                             height=400,
@@ -1219,6 +1258,55 @@ def build_app():
                             object_fit="contain",
                             preview=True,
                         )
+                        biome_3d_links_html = gr.HTML(initial_biome_3d_links_html, label="3D Asset Links", elem_id="biome_3d_links_html")
+                # --- Helper to format 3D asset links as HTML ---
+                def make_links_section(title, links):
+                    if not links:
+                        return ""
+                    html = f'<div style="margin-top:10px;margin-bottom:10px;"><b>{title}</b><ul style="margin:0 0 0 20px;padding:0;">'
+                    for struct_caption, url in links.items():
+                        label = struct_caption if struct_caption else url.split("/")[-1]
+                        html += f'<li style="margin-bottom:6px;">'
+                        html += f'<a href="{url}" target="_blank" style="color:#1976d2;text-decoration:underline;">{label}</a>'
+                        html += '</li>'
+                    html += '</ul></div>'
+                    return html
+
+                # --- Update function for biome selector ---
+                def update_biome_inspector_outputs(db_name, collection_name, biome_name):
+                    json_html, grid_text, gallery_items, decimated_links, undecimated_links = display_selected_biome(db_name, collection_name, biome_name)
+                    # decimated_links and undecimated_links are now lists of URLs
+                    # Build {struct_name: url} dicts for each, using correct keys for decimated and undecimated assets
+                    current_biome = fetch_biome(db_name, collection_name, biome_name)
+                    decimated_map = {}
+                    undecimated_map = {}
+                    if current_biome and "possible_structures" in current_biome:
+                        for struct_id, struct_data in current_biome["possible_structures"].get("buildings", {}).items():
+                            struct_name = struct_data.get("type") or struct_id
+                            # Collect all decimated asset urls (keys containing 'decimated_3d_asset')
+                            for k, v in struct_data.items():
+                                if k.startswith("decimated_3d_asset") and isinstance(v, str) and v:
+                                    decimated_map[f"{struct_name} [{k.replace('decimated_3d_asset','decimated')}]"] = v
+                            # Undecimated asset (main 3d url)
+                            asset_url = struct_data.get("asset_3d_url")
+                            if asset_url:
+                                undecimated_map[struct_name] = asset_url
+                    # fallback for any url not found
+                    for url in decimated_links:
+                        if url not in decimated_map.values():
+                            decimated_map[url.split("/")[-1]] = url
+                    for url in undecimated_links:
+                        if url not in undecimated_map.values():
+                            undecimated_map[url.split("/")[-1]] = url
+                    links_html = make_links_section("Decimated 3D Assets", decimated_map) + make_links_section("Raw 3D Assets", undecimated_map)
+                    return json_html, grid_text, gallery_items, links_html
+
+                biome_inspector_selector.change(
+                    fn=update_biome_inspector_outputs,
+                    inputs=[biome_db_name, biome_collection_name, biome_inspector_selector],
+                    outputs=[biome_inspector_display, biome_grid_display, biome_image_display, biome_3d_links_html],
+                    show_progress=True
+                )
 
             # Text to Image Tab
             with gr.TabItem("Text to Image", id="tab_text_image"):
@@ -2067,20 +2155,32 @@ def main():
             logger.error(f"❌ Redis connection failed: {e}")
             logger.warning("⚠️ Continuing without Celery - using direct processing mode")
     
-    # Test MongoDB connectivity
+    # Test MongoDB connectivity with detailed diagnostics
     logger.info("Testing MongoDB connectivity...")
     try:
         from db_helper import MongoDBHelper
+        import os
+        # Print out the MongoDB URI and DB name for diagnostics
+        mongo_uri = os.environ.get("MONGO_URI", None)
+        logger.info(f"MongoDB URI (from env): {mongo_uri}")
+        logger.info(f"MONGO_DB_NAME: {globals().get('MONGO_DB_NAME', None)}")
+        logger.info(f"MONGO_BIOME_COLLECTION: {globals().get('MONGO_BIOME_COLLECTION', None)}")
+
         mongo_helper = MongoDBHelper()
+        # Print the actual client address if possible
+        try:
+            logger.info(f"MongoDB client address: {getattr(mongo_helper.client, 'address', 'N/A')}")
+        except Exception:
+            pass
         # Simple connection test
         test_db = mongo_helper.client[MONGO_DB_NAME]
         result = test_db.command("ping")
         if result.get("ok") == 1:
             logger.info("✅ MongoDB connection successful")
         else:
-            logger.warning("⚠️ MongoDB connection issues")
+            logger.warning("⚠️ MongoDB connection issues (ping did not return ok=1)")
     except Exception as e:
-        logger.warning(f"⚠️ MongoDB connection failed: {e}")
+        logger.error(f"❌ MongoDB connection failed: {e}", exc_info=True)
         logger.info("📝 MongoDB features will use mock data")
     
     # Check GPU availability
