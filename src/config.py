@@ -53,7 +53,7 @@ os.makedirs(OUTPUT_IMAGES_DIR, exist_ok=True) # Ensure the 'images' directory ex
 os.makedirs(OUTPUT_3D_ASSETS_DIR, exist_ok=True)
 
 # --- MongoDB Configuration ---
-MONGO_URI="mongodb://sagar:KrSiDnSI9m8RgcHE@ec2-13-203-200-155.ap-south-1.compute.amazonaws.com:27017/World_builder?authSource=admin"
+MONGO_URI="mongodb://sagar:KrSiDnSI9m8RgcHE@ec2-15-206-99-66.ap-south-1.compute.amazonaws.com:27017/World_builder?authSource=admin"
 MONGO_DB_NAME="World_builder"
 MONGO_BIOME_COLLECTION="biomes" # This will be the main collection for biome data
 
@@ -94,7 +94,7 @@ LOCAL_MODEL_PATH = os.getenv('LOCAL_MODEL_PATH', './models/local')
 WORKER_TYPE = os.getenv('WORKER_TYPE', 'cpu')  # 'cpu' or 'gpu'
 
 # GPU Spot Instance specific configuration
-GPU_SPOT_INSTANCE_IP = os.getenv('GPU_SPOT_INSTANCE_IP', '15.206.99.66')
+GPU_SPOT_INSTANCE_IP = os.getenv('GPU_SPOT_INSTANCE_IP', '13.204.29.107')
 GPU_INSTANCE_REDIS_PORT = int(os.getenv('GPU_INSTANCE_REDIS_PORT', '6379'))
 
 # Enhanced Redis Configuration
