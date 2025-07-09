@@ -277,7 +277,12 @@ def initialize_hunyuan3d_processors():
                         raise
                     
                 # Configure paths
-                paint_config.realesrgan_ckpt_path = "hy3dpaint/ckpt/RealESRGAN_x4plus.pth"
+                #paint_config.realesrgan_ckpt_path = "hy3dpaint/ckpt/RealESRGAN_x4plus.pth"
+                import os
+                paint_config.realesrgan_ckpt_path = os.getenv(
+                 "HUNYUAN3D_REALESRGAN_CKPT_PATH",
+                 "/mnt/persistant_data/spark/hy3dpaint/ckpt/RealESRGAN_x4plus.pth"
+                )
                 paint_config.multiview_cfg_path = "hy3dpaint/cfgs/hunyuan-paint-pbr.yaml"
                 paint_config.custom_pipeline = "hy3dpaint/hunyuanpaintpbr"
                 
