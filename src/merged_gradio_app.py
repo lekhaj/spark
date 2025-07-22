@@ -667,6 +667,7 @@ def get_prompts_from_mongodb(db_name=MONGO_DB_NAME, collection_name=MONGO_BIOME_
                                 structure_desc = structure_data.get("description")
                                 if structure_desc and isinstance(structure_desc, str):
                                     structure_type = structure_data.get("type", structure_id)
+                                    structure_name = structure_data.get("name", structure_id)
                                     prompt_items.append((f"{doc_id}_{structure_id}", f"[{structure_type}] {structure_desc}"))
                                     fallback_desc = f"A {structure_type.lower()} called {structure_name}"
                                     prompt_items.append((f"{doc_id}_{structure_id}_fallback", f"[{structure_type}] {fallback_desc}"))
