@@ -53,7 +53,7 @@ os.makedirs(OUTPUT_IMAGES_DIR, exist_ok=True) # Ensure the 'images' directory ex
 os.makedirs(OUTPUT_3D_ASSETS_DIR, exist_ok=True)
 
 # --- MongoDB Configuration ---
-MONGO_URI="mongodb://sagar:KrSiDnSI9m8RgcHE@ec2-13-203-200-155.ap-south-1.compute.amazonaws.com:27017/World_builder?authSource=admin"
+MONGO_URI="mongodb://sagar:KrSiDnSI9m8RgcHE@ec2-15-206-99-66.ap-south-1.compute.amazonaws.com:27017/World_builder?authSource=admin"
 MONGO_DB_NAME="World_builder"
 MONGO_BIOME_COLLECTION="biomes" # This will be the main collection for biome data
 
