@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 from bson import ObjectId
 
 # ——— CONFIG ———
-MONGO_URI      = "mongodb://ec2-13-203-200-155.ap-south-1.compute.amazonaws.com:27017"
+MONGO_URI      = "mongodb://ec2-15-206-99-66.ap-south-1.compute.amazonaws.com:27017"
 DB_NAME        = "World_builder"
 COLLECTION     = "biomes"
 
