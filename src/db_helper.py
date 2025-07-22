@@ -9,7 +9,7 @@ class MongoDBHelper:
     A helper class to perform CRUD operations and run queries on MongoDB.
     """
     
-    def __init__(self, connection_string: str = "mongodb://ec2-13-203-200-155.ap-south-1.compute.amazonaws.com:27017"):
+    def __init__(self, connection_string: str = "mongodb://ec2-15-206-99-66.ap-south-1.compute.amazonaws.com:27017"):
         """
         Initialize MongoDB connection.
         
