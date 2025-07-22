@@ -12,7 +12,7 @@ def print_json(data):
 def main():
     """Main function to interact with MongoDB"""
     parser = argparse.ArgumentParser(description="MongoDB Explorer Tool")
-    parser.add_argument("--connection", "-c", default="mongodb://ec2-13-203-200-155.ap-south-1.compute.amazonaws.com:27017",
+    parser.add_argument("--connection", "-c", default="mongodb://ec2-15-206-99-66.ap-south-1.compute.amazonaws.com:27017",
                         help="MongoDB connection string")
     parser.add_argument("--list-dbs", "-ld", action="store_true", help="List all databases")
     parser.add_argument("--list-collections", "-lc", metavar="DB_NAME", help="List collections in database")
