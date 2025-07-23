@@ -90,7 +90,7 @@ def get_biome_names(db_name: str, collection_name: str):
         return []
     try:
         collection = db[MONGO_BIOME_COLLECTION]
-        names = structure_collection.distinct("biome_name")
+        names = collection.distinct("biome_name")
         return sorted(list(names))
     except Exception as e:
         logger.error(f"Error fetching biome names: {e}")
@@ -109,7 +109,7 @@ def fetch_biome(db_name: str, collection_name: str, name: str):
         return None
     try:
         collection = db[MONGO_BIOME_COLLECTION]
-        biome = structure_collection.find_one({"biome_name": name})
+        biome = collection.find_one({"biome_name": name})
         if biome:
             if '_id' in biome:
                 biome['_id'] = str(biome['_id'])
