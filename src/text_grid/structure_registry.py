@@ -89,6 +89,7 @@ def get_biome_names(db_name: str, collection_name: str):
         logger.error("Cannot fetch biome names: MongoDB not connected within structure_registry.")
         return []
     try:
+        collection = db[MONGO_BIOME_COLLECTION]
         names = structure_collection.distinct("biome_name")
         return sorted(list(names))
     except Exception as e:
@@ -107,6 +108,7 @@ def fetch_biome(db_name: str, collection_name: str, name: str):
         logger.error("Cannot fetch biome: MongoDB not connected within structure_registry.")
         return None
     try:
+        collection = db[MONGO_BIOME_COLLECTION]
         biome = structure_collection.find_one({"biome_name": name})
         if biome:
             if '_id' in biome:
