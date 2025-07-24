@@ -56,6 +56,8 @@ os.makedirs(OUTPUT_3D_ASSETS_DIR, exist_ok=True)
 MONGO_URI="mongodb://sagar:KrSiDnSI9m8RgcHE@ec2-15-206-99-66.ap-south-1.compute.amazonaws.com:27017/World_builder?authSource=admin"
 MONGO_DB_NAME="World_builder"
 MONGO_BIOME_COLLECTION="biomes" # This will be the main collection for biome data
+MONGO_STRUCTURE_COLLECTION = "structures"
+
 
 # --- Grid/Structure Definitions ---
 GRID_DIMENSIONS = (10, 10) # 10x10 grid
