@@ -5,19 +5,24 @@ set -e
 
 echo "🚀 Installing Hunyuan3D-2.1 dependencies..."
 
-# Check and activate virtual environment "venv"
-echo "🔍 Checking virtual environment..."
-if [ -d "venv" ]; then
-    echo "✅ Found virtual environment 'venv'"
-    echo "🔄 Activating virtual environment 'venv'..."
-    source venv/bin/activate
-    echo "✅ Activated environment: $VIRTUAL_ENV"
+
+# Check and activate conda environment "3d_gen"
+echo "🔍 Checking conda environment..."
+if conda info --envs | grep -q "3d_gen"; then
+    echo "✅ Found conda environment '3d_gen'"
+    echo "🔄 Activating conda environment '3d_gen'..."
+    source $(conda info --base)/etc/profile.d/conda.sh
+    conda activate 3d_gen
+    echo "✅ Activated environment: $CONDA_DEFAULT_ENV"
 else
-    echo "❌ Virtual environment 'venv' not found!"
+    echo "❌ Conda environment '3d_gen' not found!"
+    echo "📋 Available environments:"
+    conda info --envs
     echo ""
     echo "💡 Please create the environment first:"
-    echo "   python3 -m venv venv"
-    echo "   source venv/bin/activate"
+    echo "   conda create -n 3d_gen python=3.10 -y"
+    echo "   conda activate 3d_gen"
+
     exit 1
 fi
 

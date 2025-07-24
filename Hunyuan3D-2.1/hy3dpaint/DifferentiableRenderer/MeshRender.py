@@ -35,6 +35,7 @@ except:
 
 try:
     from .mesh_inpaint_processor import meshVerticeInpaint  # , meshVerticeColor
+
     print("✅ C++ mesh_inpaint_processor loaded successfully")
 except:
     print("InPaint Function CAN NOT BE Imported!!!")
@@ -48,6 +49,7 @@ except:
         def meshVerticeInpaint(texture_np, mask, vtx_pos=None, vtx_uv=None, pos_idx=None, uv_idx=None):
             print("⚠️ Using dummy inpainting function - texture quality may be reduced")
             return texture_np, mask
+
 
 
 class RenderMode(Enum):
@@ -1414,6 +1416,7 @@ class MeshRender:
         if isinstance(mask, torch.Tensor):
             mask = (mask.squeeze(-1).cpu().numpy() * 255).astype(np.uint8)
 
+
         # First try mesh-aware inpainting if requested
         if vertex_inpaint:
             try:
@@ -1443,4 +1446,5 @@ class MeshRender:
             print(f"❌ OpenCV inpainting failed: {e}")
             # If all inpainting methods fail, just return the original texture
         
+
         return texture_np

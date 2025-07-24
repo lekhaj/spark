@@ -210,6 +210,7 @@ def initialize_hunyuan3d_processors():
                 hy3dpaint_path = os.path.join(project_root, 'Hunyuan3D-2.1', 'hy3dpaint')
                 if hy3dpaint_path not in sys.path:
                     sys.path.insert(0, hy3dpaint_path)
+
                 
                 # Check and compile mesh_inpaint_processor if needed
                 diff_renderer_path = os.path.join(hy3dpaint_path, 'DifferentiableRenderer')
@@ -288,6 +289,7 @@ def initialize_hunyuan3d_processors():
                 
                 # Initialize pipeline
                 logger.info("Initializing Hunyuan3D texture generation pipeline...")
+
                 _hunyuan_texgen_worker = Hunyuan3DPaintPipeline(paint_config)
                 
                 # Explicitly move to GPU and ensure it stays there

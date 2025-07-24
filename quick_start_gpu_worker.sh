@@ -111,6 +111,7 @@ except Exception as e:
 # Test Hunyuan3D-2.1 setup
 echo "🧪 Testing Hunyuan3D-2.1 setup..."
 
+
 # Compile mesh_inpaint_processor if needed
 echo "🔧 Compiling mesh inpaint processor for texture generation..."
 # Use dedicated compilation script if available
@@ -187,6 +188,7 @@ fi
 # Add note about bpy (Blender) dependency being optional
 echo "📝 Note: bpy (Blender) dependency is optional for texture generation"
 echo "   The fallback inpainting method will be used instead"
+
 
 python3 test_hunyuan3d_setup.py
 

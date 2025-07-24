@@ -94,7 +94,9 @@ LOCAL_MODEL_PATH = os.getenv('LOCAL_MODEL_PATH', './models/local')
 WORKER_TYPE = os.getenv('WORKER_TYPE', 'cpu')  # 'cpu' or 'gpu'
 
 # GPU Spot Instance specific configuration
-GPU_SPOT_INSTANCE_IP = os.getenv('GPU_SPOT_INSTANCE_IP', '13.204.29.107')
+
+GPU_SPOT_INSTANCE_IP = os.getenv('GPU_SPOT_INSTANCE_IP', '15.206.99.66')
+
 GPU_INSTANCE_REDIS_PORT = int(os.getenv('GPU_INSTANCE_REDIS_PORT', '6379'))
 
 # Enhanced Redis Configuration

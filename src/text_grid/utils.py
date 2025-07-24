@@ -5,49 +5,66 @@ import logging
 import re # Added for more robust JSON extraction
 from datetime import datetime
 import nltk
+os.environ["NLTK_DATA"] = "/home/ubuntu/nltk_data"
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
-from . import llm # Relative import
+import demjson3
+# Note: Removed relative import of .llm as it's not directly used in utils for LLM calls
+# and was causing potential circular dependency issues.
 
 # Download necessary NLTK resources
-nltk.download("punkt")
-nltk.download("stopwords")
+# Ensure download_dir is accessible and persistent on your worker.
+nltk.download("punkt", quiet=True, download_dir='/home/ubuntu/nltk_data')
+nltk.download("stopwords", quiet=True, download_dir='/home/ubuntu/nltk_data')
 
 # Logging setup
 LOG_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'logs'))
 os.makedirs(LOG_DIR, exist_ok=True)
-logging.basicConfig(filename=os.path.join(LOG_DIR, "biome_generator.log"), level=logging.DEBUG) 
+logging.basicConfig(filename=os.path.join(LOG_DIR, "biome_generator.log"), level=logging.DEBUG)
 
 logger = logging.getLogger(__name__)
 
+def clean_llm_output(text):
+    """
+    Removes common chat template artifacts and special tokens from LLM output.
+    """
+    # Remove lines starting with <| or similar artifacts
+    lines = text.splitlines()
+    cleaned_lines = [line for line in lines if not line.strip().startswith('<|')]
+    # Remove empty lines
+    cleaned = "\n".join(line for line in cleaned_lines if line.strip())
+    return cleaned
 
 def extract_first_json_block(text):
     """
     Extract the first valid JSON object from a string.
-    Prioritizes markdown code blocks, then tries to find a standalone JSON object.
+    Returns only the substring from the first '{' to its matching '}' (balanced).
+    Ignores any trailing text after the closing brace.
     """
     # Try to extract from markdown code blocks first
-    json_match = re.search(r'```json\n(.*?)\n```', text, re.DOTALL)
+    json_match = re.search(r'```json\s*(\{.*?\})\s*```', text, re.DOTALL)
     if json_match:
         return json_match.group(1).strip()
-    
-    # Fallback: Try to find a balanced JSON object without markdown fences
+
+    # Fallback: Find the first balanced {...} block
     brace_stack = []
-    start_idx = -1
+    start_idx = None
     for i, char in enumerate(text):
         if char == '{':
-            if not brace_stack:
-                start_idx = i 
+            if start_idx is None:
+                start_idx = i
             brace_stack.append('{')
         elif char == '}':
             if brace_stack:
                 brace_stack.pop()
-                if not brace_stack and start_idx != -1:
-                    # Found a complete, balanced JSON object
+                if not brace_stack and start_idx is not None:
+                    # Return only the first complete JSON object
                     return text[start_idx:i+1]
+    # Fallback: Try to extract a placement_rules array fragment
+    match = re.search(r'"placement_rules"\s*:\s*\[.*?\]', text, re.DOTALL)
+    if match:
+        return '{' + match.group(0) + '}'
     return None
-
-
 # --- NEW or MODIFIED LLM PROMPT FUNCTIONS ---
 
 def get_grid_placement_hints_prompt(structure_definitions, theme_prompt, grid_dimensions=(10, 10)):
@@ -62,8 +79,9 @@ def get_grid_placement_hints_prompt(structure_definitions, theme_prompt, grid_di
     ])
 
     # IMPORTANT: The prompt is now even more aggressive in demanding ONLY JSON output.
+    # Removed explicit `--- JSON_OUTPUT_START ---` and `--- JSON_OUTPUT_END ---`
+    # as the `extract_first_json_block` handles ```json` fences primarily.
     return (
-        f"--- JSON_OUTPUT_START ---\n"
         f"```json\n"
         f"{{\n"
         f'   "biome_name_suggestion": "Your generated biome name (max 4 words)",\n'
@@ -74,7 +92,6 @@ def get_grid_placement_hints_prompt(structure_definitions, theme_prompt, grid_di
         f'   "general_density": <float> // (0.0 to 1.0, overall structure density)\n'
         f'}}\n'
         f"```\n"
-        f"--- JSON_OUTPUT_END ---\n\n"
         f"As an expert game environment designer specializing in procedural generation, "
         f"your task is to suggest strategic placement rules and parameters for a "
         f"{grid_dimensions[0]}x{grid_dimensions[1]} grid based on the theme: '{theme_prompt}'.\n"
@@ -95,29 +112,56 @@ def get_grid_placement_hints_prompt(structure_definitions, theme_prompt, grid_di
 
 def parse_llm_hints(llm_response: str):
     """
-    Parses the LLM's JSON response containing grid placement hints.
+    Parses the LLM's JSON response or fragment containing grid placement hints.
+    Handles both full JSON objects and fragments like "placement_rules": [...]
     Includes robust error handling and sets default values if parsing fails or data is missing.
     """
-    current_logger = logging.getLogger(__name__) 
-    current_logger.info(f"Raw LLM response for hints:\n{llm_response}") 
-    try:
-        cleaned = extract_first_json_block(llm_response)
-        if not cleaned:
-            raise ValueError("No JSON block found in LLM response for hints")
-        parsed = json.loads(cleaned)
+    import re
+    current_logger = logging.getLogger(__name__)
+    current_logger.info(f"Raw LLM response for hints:\n{llm_response}")
 
+    try:
+        cleaned_response = clean_llm_output(llm_response)
+        cleaned = extract_first_json_block(cleaned_response)
+        
+        # If no full JSON block, try to extract a placement_rules array fragment
+        if not cleaned:
+            match = re.search(r'"placement_rules"\s*:\s*\[.*?\]', llm_response, re.DOTALL)
+            if match:
+                # Wrap the fragment in a JSON object
+                cleaned = '{' + match.group(0) + '}'
+            else:
+                raise ValueError("No JSON block or placement_rules fragment found in LLM response for hints")
+
+        parsed = None
+        try:
+            parsed = json.loads(cleaned)
+        except json.JSONDecodeError as e:
+            current_logger.warning(f"Initial JSON parse failed for hints. Attempting repair: {e}")
+            repaired_json = _repair_json_string(cleaned)
+            try:
+                parsed = json.loads(repaired_json)
+                current_logger.info("JSON hints successfully parsed after repair.")
+            except json.JSONDecodeError as repair_e:
+                current_logger.error(f"[ERROR] JSON repair failed for hints: {repair_e}\nRepaired string: {repaired_json}")
+                raise ValueError(f"Failed to parse LLM hints even after repair: {repair_e}")
+
+        if parsed is None:
+            raise ValueError("Parsed JSON is None after all attempts.")
+
+        # If only placement_rules are present, fill in defaults for other fields
         grid_dims = parsed.get("grid_dimensions", {"width": 10, "height": 10})
         if not isinstance(grid_dims, dict) or "width" not in grid_dims or "height" not in grid_dims:
-             grid_dims = {"width": 10, "height": 10} 
+            grid_dims = {"width": 10, "height": 10}
 
         rules = []
         for r in parsed.get("placement_rules", []):
-            try: 
+            try:
                 rule_id = int(r.get("structure_id")) if isinstance(r.get("structure_id"), (str, int)) else 0
                 rule_type = str(r.get("type", "unknown"))
                 min_c = int(r.get("min_count", 0))
                 max_c = int(r.get("max_count", 1))
-                size_w, size_h = (1,1)
+                size_w, size_h = (1, 1)
                 if isinstance(r.get("size"), list) and len(r["size"]) == 2:
                     size_w, size_h = int(r["size"][0]), int(r["size"][1])
                 p_zones = [str(z) for z in r.get("priority_zones", ["any"])]
@@ -136,7 +180,7 @@ def parse_llm_hints(llm_response: str):
                 })
             except Exception as rule_e:
                 current_logger.warning(f"Skipping malformed placement rule: {r} - Error: {rule_e}")
-        
+
         general_density = float(parsed.get("general_density", 0.3))
 
         return {
@@ -151,37 +195,202 @@ def parse_llm_hints(llm_response: str):
         return {
             "biome_name_suggestion": "Default Biome",
             "grid_dimensions": {"width": 10, "height": 10},
-            "placement_rules": [], 
+            "placement_rules": [],
             "general_density": 0.3
         }
+# --- NEW: JSON Repair Helper Function ---
+def _repair_json_string(malformed_json_str: str) -> str:
+    """
+    Attempts to repair common JSON errors, including:
+    - unquoted string values (including those with spaces/units)
+    - missing commas between object fields or array items
+    - removes comments (// ...)
+    """
+    logger.info("Attempting to repair malformed JSON string...")
 
+    # 0. Remove comments (// ...)
+    repaired_str = re.sub(r'//.*', '', malformed_json_str)
 
-# --- Existing Utility Functions (no change from previous update) ---
-def build_structure_definitions(structure_defs_raw_str, start_id): 
+    # 1. Fix unquoted string values (single words)
+    pattern = re.compile(r'("[a-zA-Z_][a-zA-Z0-9_]*"\s*:\s*)([a-zA-Z_][a-zA-Z0-9_]*)([\s,\]\}])')
+    def replacer(match):
+        before = match.group(1)
+        value = match.group(2)
+        after = match.group(3)
+        # Only quote if not a JSON literal
+        if value not in ['true', 'false', 'null'] and not value.isdigit():
+            value = f'"{value}"'
+        return f"{before}{value}{after}"
+    repaired_str = pattern.sub(replacer, repaired_str)
+
+    # 1b. Fix unquoted string values with spaces/units (e.g., 100TB, 1000 credits/month, 500 meters)
+    # This pattern matches: "key": value with spaces or units (not quoted)
+    pattern_units = re.compile(r'("([a-zA-Z_][a-zA-Z0-9_]*)"\s*:\s*)([^\[\{"][^,\}\n]*)')
+    def replacer_units(match):
+        before = match.group(1)
+        value = match.group(3).strip()
+        # If already quoted or a number, skip
+        if value.startswith('"') or value in ['true', 'false', 'null']:
+            return match.group(0)
+        # Try to convert to float/int, if fails, quote it
+        try:
+            float(value)
+            return match.group(0)
+        except Exception:
+            # Remove trailing commas/brackets/braces from value
+            value_clean = re.sub(r'[\s,}\]]*$', '', value)
+            return f'{before}"{value_clean}"'
+    repaired_str = pattern_units.sub(replacer_units, repaired_str)
+
+    # 1c. Fix unquoted values with units (e.g., 100TB, 100mph, 5m, 10kg, 3.5GHz)
+    # This pattern matches: "key": value_with_units (not quoted)
+    pattern_units = re.compile(r'("[a-zA-Z_][a-zA-Z0-9_]*"\s*:\s*)([+-]?\d+(?:\.\d+)?[a-zA-Z%/]+)([\s,}\]])')
+    def replacer_units(match):
+        before = match.group(1)
+        value = match.group(2)
+        after = match.group(3)
+        # Quote the value if not already quoted
+        return f'{before}"{value}"{after}'
+    repaired_str = pattern_units.sub(replacer_units, repaired_str)
+
+    # 2. Insert missing commas at the end of lines before a new field/object/array
+    repaired_str = re.sub(r'([}\]"])\s*\n\s*(")', r'\1,\n\2', repaired_str)
+    repaired_str = re.sub(r'([}\]"])\s*\n\s*([}\]])', r'\1,\n\2', repaired_str)
+    repaired_str = re.sub(r'([}\]0-9"])\s*([\[{""])', r'\1,\2', repaired_str)
+    repaired_str = re.sub(r'("|\d|\]|\})\s*("|\{)', r'\1,\2', repaired_str)
+    repaired_str = re.sub(r'(\}|\])\s*("|\{)', r'\1,\2', repaired_str)
+
+    # Remove trailing commas before closing braces/brackets (which can be introduced by the above)
+    repaired_str = re.sub(r',(\s*[}\]])', r'\1', repaired_str)
+
+    logger.debug(f"Original JSON string (first 200 chars): {malformed_json_str[:200]}")
+    logger.debug(f"Repaired JSON string (first 200 chars): {repaired_str[:200]}")
+
+    return repaired_str
+    """
+    Attempts to repair common JSON errors, including:
+    - unquoted string values
+    - missing commas between object fields or array items
+    """
+    logger.info("Attempting to repair malformed JSON string...")
+
+    # 1. Fix unquoted string values (existing logic)
+    pattern = re.compile(r'("[a-zA-Z_][a-zA-Z0-9_]*"\s*:\s*)([a-zA-Z_][a-zA-Z0-9_]*)([\s,\]\}])')
+    def replacer(match):
+        before = match.group(1)
+        value = match.group(2)
+        after = match.group(3)
+        # Only quote if not a JSON literal
+        if value not in ['true', 'false', 'null'] and not value.isdigit():
+            value = f'"{value}"'
+        return f"{before}{value}{after}"
+    repaired_str = pattern.sub(replacer, malformed_json_str)
+
+    # 2. Insert missing commas between object fields or array items
+    # Add a comma between }" or }{ or ]" or ]{ or }[ or ][ etc.
+    repaired_str = re.sub(r'([}\]0-9"])\s*([\[{""])', r'\1,\2', repaired_str)
+    # Add a comma between closing quote/number/bracket and a quote or opening brace/bracket, but not inside strings
+    repaired_str = re.sub(r'("|\d|\]|\})\s*("|\{)', r'\1,\2', repaired_str)
+    # Add a comma between closing brace/bracket and a quote or opening brace/bracket, but not inside strings
+    repaired_str = re.sub(r'(\}|\])\s*("|\{)', r'\1,\2', repaired_str)
+
+    # Remove trailing commas before closing braces/brackets (which can be introduced by the above)
+    repaired_str = re.sub(r',(\s*[}\]])', r'\1', repaired_str)
+
+    logger.debug(f"Original JSON string (first 200 chars): {malformed_json_str[:200]}")
+    logger.debug(f"Repaired JSON string (first 200 chars): {repaired_str[:200]}")
+
+    return repaired_str
+# --- Existing Utility Functions (modified for robustness) ---
+
+def build_structure_definitions(structure_defs_raw_str, start_id):
     """
     Converts structure definitions into an ID-keyed dictionary.
     Accepts a stringified JSON (expected to be a single object where keys are structure names).
+    Also returns a mapping from structure type to structure_id for use in placement rules.
     """
-    current_logger = logging.getLogger(__name__) 
-    current_logger.info(f"Raw LLM response for structure definitions:\n{structure_defs_raw_str}") 
-    
-    if structure_defs_raw_str is None or not structure_defs_raw_str.strip():
-        raise ValueError("LLM response for structure definitions is empty or None. Cannot process.")
+    current_logger = logging.getLogger(__name__)
+    current_logger.info(f"Raw LLM response for structure definitions:\n{structure_defs_raw_str}")
+    current_logger.info(f"Type of structure_defs_raw_str: {type(structure_defs_raw_str)}")
+    current_logger.info(f"Value of start_id: {start_id} (type: {type(start_id)})")
+
+    if structure_defs_raw_str is None or not isinstance(structure_defs_raw_str, str) or not structure_defs_raw_str.strip():
+        current_logger.error("LLM response for structure definitions is empty, None, or not a string. Cannot process.")
+        raise ValueError("LLM response for structure definitions is empty, None, or not a string. Cannot process.")
+
 
     parsed_json = None
+    cleaned_json = None
+
     try:
         cleaned_json = extract_first_json_block(structure_defs_raw_str)
+        current_logger.debug(f"[DEBUG] cleaned_json: {cleaned_json}")
         if not cleaned_json:
-            raise ValueError("No valid JSON block found in LLM response for structure definitions.")
-        parsed_json = json.loads(cleaned_json)
-    except json.JSONDecodeError as e:
-        current_logger.error(f"[ERROR] JSON decoding failed for structure definitions: {e}")
-        current_logger.debug(f"[DEBUG] Raw input: {structure_defs_raw_str}")
-        raise ValueError("Failed to decode structure_defs JSON string. Invalid JSON format.")
+            # Try to extract all top-level "name": { ... } pairs (handles LLM output with multiple objects)
+            matches = re.findall(r'"[^"]+"\s*:\s*\{[^}]*\}', structure_defs_raw_str)
+            current_logger.debug(f"[DEBUG] matches: {matches}")
+            if matches:
+                cleaned_json = '{' + ','.join(matches) + '}'
+            else:
+                # Fallback: try to wrap the whole output in braces if it looks like multiple objects
+                lines = [line for line in structure_defs_raw_str.strip().splitlines() if line.strip()]
+                if lines and not structure_defs_raw_str.strip().startswith("{"):
+                    # Remove trailing commas and wrap in braces
+                    joined = "\n".join(lines)
+                    # Remove trailing commas before closing braces
+                    joined = re.sub(r',\s*}', '}', joined)
+                    joined = re.sub(r',\s*$', '', joined)
+                    cleaned_json = '{' + joined + '}'
+                else:
+                    current_logger.error("No valid JSON block or structure fragments found in LLM response for structure definitions.")
+                    raise ValueError("No valid JSON block or structure fragments found in LLM response for structure definitions.")
+        cleaned_json = re.sub(r',([\s]*[}\]])', r'\1', cleaned_json)
+
+        # Try parsing as-is first (demjson3, then ast, then json)
+        try:
+            parsed_json = demjson3.decode(cleaned_json)
+            current_logger.debug(f"[DEBUG] parsed_json (demjson3, no repair): {parsed_json}")
+        except Exception as dem_e:
+            current_logger.warning(f"demjson3 failed to parse structure definitions (no repair): {dem_e}. Trying ast.literal_eval as next step.")
+            import ast
+            try:
+                no_indent = "\n".join(line.lstrip() for line in cleaned_json.splitlines())
+                parsed_json = ast.literal_eval(no_indent)
+                current_logger.debug(f"[DEBUG] parsed_json (ast.literal_eval, no repair): {parsed_json}")
+            except Exception as ast_e:
+                current_logger.warning(f"ast.literal_eval failed (no repair): {ast_e}. Trying json.loads as next step.")
+                try:
+                    parsed_json = json.loads(cleaned_json)
+                    current_logger.debug(f"[DEBUG] parsed_json (json.loads, no repair): {parsed_json}")
+                except Exception as json_e:
+                    current_logger.warning(f"json.loads failed (no repair): {json_e}. Will attempt repair.")
+                    # Only attempt repair if all direct parses fail
+                    repaired_json_str = _repair_json_string(cleaned_json)
+                    current_logger.debug(f"[DEBUG] repaired_json_str: {repaired_json_str}")
+                    try:
+                        parsed_json = demjson3.decode(repaired_json_str)
+                        current_logger.debug(f"[DEBUG] parsed_json (demjson3, after repair): {parsed_json}")
+                    except Exception as dem_e2:
+                        current_logger.warning(f"demjson3 failed to parse structure definitions after repair: {dem_e2}. Trying ast.literal_eval as last resort.")
+                        try:
+                            no_indent = "\n".join(line.lstrip() for line in repaired_json_str.splitlines())
+                            parsed_json = ast.literal_eval(no_indent)
+                            current_logger.debug(f"[DEBUG] parsed_json (ast.literal_eval, after repair): {parsed_json}")
+                        except Exception as ast_e2:
+                            current_logger.warning(f"ast.literal_eval failed after repair: {ast_e2}. Trying json.loads as last resort.")
+                            try:
+                                parsed_json = json.loads(repaired_json_str)
+                                current_logger.debug(f"[DEBUG] parsed_json (json.loads, after repair): {parsed_json}")
+                            except Exception as json_e2:
+                                current_logger.error(f"json.loads failed to parse structure definitions after repair: {json_e2}")
+                                current_logger.error(f"Raw input for debugging:\n{structure_defs_raw_str}")
+                                current_logger.error(f"Failed to parse structure_defs even with demjson3, ast.literal_eval, and json.loads after repair: {json_e2}")
+                                parsed_json = {}
+
     except Exception as e:
         current_logger.error(f"[ERROR] An unexpected error occurred during JSON extraction/parsing for structure definitions: {e}")
-        current_logger.debug(f"[DEBUG] Raw input: {structure_defs_raw_str}")
-        raise ValueError(f"Failed to process raw structure definitions: {e}")
+        current_logger.error(f"[DEBUG] Raw input: {structure_defs_raw_str}")
+        parsed_json = {}
 
     if not isinstance(parsed_json, dict):
         current_logger.error(f"[ERROR] LLM returned unexpected type for structure definitions. Expected dict, got {type(parsed_json)}")
@@ -189,26 +398,73 @@ def build_structure_definitions(structure_defs_raw_str, start_id):
         raise ValueError("Expected LLM response for structure definitions to be a dictionary.")
 
     structure_list = list(parsed_json.values())
-    
+
     structured = {}
+    type_to_id = {}
     current_id = start_id
-    for struct in structure_list:
+    for idx, struct in enumerate(structure_list):
+        current_logger.debug(f"[DEBUG] Processing struct at index {idx}: {struct}")
         if not isinstance(struct, dict):
-            current_logger.debug(f"[DEBUG] Invalid struct in list: {struct}")
-            raise ValueError(f"[ERROR] Each structure in the LLM-provided list must be a dict. Got: {type(struct)}")
-        
+            current_logger.warning(f"[SKIP] Structure at index {idx} is not a dict: {struct}")
+            continue
         attributes = struct.get("attributes", {})
         if not isinstance(attributes, dict):
             current_logger.warning(f"Attributes for structure type '{struct.get('type')}' is not a dict. Defaulting to empty dict.")
             attributes = {}
-
+        # --- Parse adjacent_environmental_objects robustly ---
+        adj_env_objs = struct.get("adjacent_environmental_objects", [])
+        normalized_adj_env_objs = []
+        if isinstance(adj_env_objs, dict):
+            for k, v in adj_env_objs.items():
+                if isinstance(v, dict):
+                    obj_type = v.get("type", k)
+                    desc = v.get("description", "")
+                    attrs = v.get("attributes", {})
+                    if not isinstance(attrs, dict):
+                        attrs = {}
+                    normalized_adj_env_objs.append({
+                        "type": obj_type,
+                        "description": desc,
+                        "attributes": attrs
+                    })
+        elif isinstance(adj_env_objs, list):
+            for obj in adj_env_objs:
+                if isinstance(obj, dict):
+                    obj_type = obj.get("type", "Unknown Object")
+                    desc = obj.get("description", "")
+                    attrs = obj.get("attributes", {})
+                    if not isinstance(attrs, dict):
+                        attrs = {}
+                    normalized_adj_env_objs.append({
+                        "type": obj_type,
+                        "description": desc,
+                        "attributes": attrs
+                    })
+                elif isinstance(obj, str):
+                    normalized_adj_env_objs.append({
+                        "type": obj,
+                        "description": "",
+                        "attributes": {}
+                    })
+        elif isinstance(adj_env_objs, str):
+            normalized_adj_env_objs.append({
+                "type": adj_env_objs,
+                "description": "",
+                "attributes": {}
+            })
+        # --- End robust parsing ---
+        # Accept even if some fields are missing
         structured[str(current_id)] = {
-            "type": struct.get("type", "Unnamed Structure"), 
+            "type": struct.get("type", f"Unnamed Structure {current_id}"),
             "description": struct.get("description", ""),
-            "attributes": attributes
+            "attributes": attributes,
+            "adjacent_environmental_objects": normalized_adj_env_objs
         }
+        type_to_id[struct.get("type", f"Unnamed Structure {current_id}")] = str(current_id)
+        current_logger.debug(f"[DEBUG] Added structure with id {current_id}: {structured[str(current_id)]}")
         current_id += 1
-    return structured
+    current_logger.info(f"[INFO] Final structured dict: {structured}")
+    return structured, type_to_id
 
 def get_structure_definition_prompt(theme_prompt, structure_types):
     """
@@ -220,22 +476,14 @@ def get_structure_definition_prompt(theme_prompt, structure_types):
         f"The structure types required are: {', '.join(structure_types)}.\n\n"
         "For each structure type, return a JSON dictionary containing:\n"
         "- 'type': name of the structure (string)\n"
-        "- 'description': short description of its role in the biome (string)\n"
-        "- 'attributes': a dictionary of relevant properties (e.g. material, usage, magical affinity, HP)\n\n"
+        "- 'description': a detailed, multi-sentence description (at least 3 sentences) focusing on appearance, materials, function, and unique features. Avoid generic or vague statements. Do not invent features not plausible for the theme.\n"
+        "- 'attributes': a dictionary of relevant properties (e.g. material, usage, magical affinity, HP). Ensure all attribute values are JSON-compatible (strings, numbers, booleans, arrays, or objects).\n\n"
+        "- 'adjacent_environmental_objects': a list of objects, each with:\n"
+           " - 'type': string\n"
+           " - 'description': a detailed, multi-sentence description (at least 3 sentences), focusing mainly on appearance and materials, and. Do not invent features not plausible for the theme and do not add living beings like animals and humans, plants are fine.\n"
+           " - 'attributes': dictionary\n"
+        "If a detail is not clear, state 'unknown' or omit it.\n" # Added instruction
         "Return a single valid JSON object where keys are structure type names, and values are their definitions.\n\n"
-        "Example output:\n"
-        "{\n"
-        "   \"Herbalist's Hut\": {\n"
-        "     \"type\": \"Herbalist's Hut\",\n"
-        "     \"description\": \"A small wooden hut used to prepare herbal remedies.\",\n"
-        "     \"attributes\": {\"hp\": 50}\n"
-        "   },\n"
-        "   \"Forest Shrine\": {\n"
-        "     \"type\": \"Forest Shrine\",\n"
-        "     \"description\": \"A mystical shrine to forest spirits.\",\n"
-        "     \"attributes\": {\"hp\": 100}\n"
-        "   }\n"
-        "}"
     )
 
 
@@ -248,3 +496,4 @@ def generate_biome_name_from_prompt(prompt: str) -> str:
     keywords = [w.capitalize() for w in words if w.isalpha() and w not in stop_words]
     name = " ".join(keywords[:4])  # Allow up to 4 words
     return name or "Generated Biome"
+
