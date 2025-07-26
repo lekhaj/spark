@@ -1728,7 +1728,7 @@ def batch_process_s3_images_for_3d(self, image_s3_keys, processing_options=None)
         "results": results
     }
 
-@app.task(name='generate_image_sdxl_turbo', bind=True)
+@app.task(name='generate_image_sdxl_turbo', bind=True,queue='gpu')
 def generate_image_sdxl_turbo(
     self, 
     prompt, 
