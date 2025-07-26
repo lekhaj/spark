@@ -16,8 +16,12 @@ import tempfile
 import requests
 import shutil
 import time
+
 import multiprocessing as mp
-mp.set_start_method("spawn", force=True)
+
+if __name__ == "__main__":
+    mp.set_start_method('spawn', force=True)
+
 
 
 # Ensure current directory is in Python path for local module imports
