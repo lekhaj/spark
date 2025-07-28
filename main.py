@@ -2,6 +2,8 @@
 import os
 import sys
 import argparse
+import multiprocessing as mp
+mp.set_start_method("spawn", force=True)
 
 # Add src directory to Python path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
