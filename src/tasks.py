@@ -1,6 +1,10 @@
 # src/tasks.py
 # Updated for Hunyuan3D-2.1 compatibility with S3 integration
 
+import multiprocessing as mp
+mp.set_start_method('spawn', force=True)
+
+
 import os
 import sys
 import logging
@@ -17,10 +21,7 @@ import requests
 import shutil
 import time
 
-import multiprocessing as mp
 
-if __name__ == "__main__":
-    mp.set_start_method('spawn', force=True)
 
 
 
