@@ -113,25 +113,35 @@ if os.path.exists(hunyuan_paint_path):
     sys.path.insert(0, hunyuan_paint_path)
 
 # Try importing the specific Hunyuan3D 2.1 modules
-from hy3dshape.pipelines import Hunyuan3DDiTFlowMatchingPipeline
-from hy3dshape.postprocessors import MeshSimplifier, mesh_normalize
-from hy3dshape.rembg import BackgroundRemover
-from textureGenPipeline import Hunyuan3DPaintPipeline, Hunyuan3DPaintConfig
-import trimesh
+def load_hunyuan3d_modules():
+    """Dynamically import all Hunyuan3D modules inside a subprocess to avoid CUDA re-init error."""
+    global Hunyuan3DDiTFlowMatchingPipeline, MeshSimplifier, mesh_normalize
+    global BackgroundRemover, Hunyuan3DPaintPipeline, Hunyuan3DPaintConfig
+    global initialize_hunyuan3d_processors, generate_3d_from_image_core
+    global get_model_info, cleanup_models
+    global TASK_3D_MODULES_LOADED
 
-task_logger.info("✓ Hunyuan3D-2.1 core modules imported successfully")
+    try:
+        from hy3dshape.pipelines import Hunyuan3DDiTFlowMatchingPipeline
+        from hy3dshape.postprocessors import MeshSimplifier, mesh_normalize
+        from hy3dshape.rembg import BackgroundRemover
+        from textureGenPipeline import Hunyuan3DPaintPipeline, Hunyuan3DPaintConfig
 
-# Try importing the worker functions
-from hunyuan3d_worker import (
-    initialize_hunyuan3d_processors, 
-    generate_3d_from_image_core,
-    get_model_info,
-    cleanup_models
-)
+        from hunyuan3d_worker import (
+            initialize_hunyuan3d_processors,
+            generate_3d_from_image_core,
+            get_model_info,
+            cleanup_models
+        )
 
-# Initialize logging
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-task_logger = logging.getLogger('celery_tasks')
+        TASK_3D_MODULES_LOADED = True
+        task_logger.info("✅ Hunyuan3D modules loaded successfully inside worker subprocess.")
+        return True
+
+    except Exception as e:
+        task_logger.error(f"❌ Failed to load Hunyuan3D modules in worker subprocess: {e}")
+        TASK_3D_MODULES_LOADED = False
+        return False
 
 # Initialize default values
 DEFAULT_TEXT_MODEL = "stability"
@@ -374,6 +384,9 @@ def initialize_processors_for_worker(**kwargs):
     global _text_processor, _grid_processor, _pipeline
 
     log_cuda_info()
+    
+    if TASK_3D_MODULES_LOADED:
+        load_hunyuan3d_modules()
     
     if not TASK_2D_MODULES_LOADED:
         task_logger.error("Skipping processor initialization: Core task modules failed to load.")
