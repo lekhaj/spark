@@ -1,5 +1,8 @@
 # src/tasks.py
 # Updated for Hunyuan3D-2.1 compatibility with S3 integration
+import multiprocessing as mp
+mp.set_start_method('spawn', force=True)
+
 import sys
 import os
 
@@ -8,8 +11,6 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-import multiprocessing as mp
-mp.set_start_method('spawn', force=True)
 
 
 import os
@@ -28,8 +29,7 @@ import requests
 import shutil
 import time
 
-
-
+torch = None
 
 
 # Ensure current directory is in Python path for local module imports
@@ -183,20 +183,19 @@ _hunyuan_texgen_worker = None
 TASK_3D_MODULES_LOADED = False
 
 # Step 1: Test basic PyTorch and CUDA
-try:
-    import torch
-    task_logger.info(f"✓ PyTorch loaded: {torch.__version__}")
-    task_logger.info(f"✓ CUDA available: {torch.cuda.is_available()}")
-    
-    if torch.cuda.is_available():
-        task_logger.info(f"✓ GPU device: {torch.cuda.get_device_name()}")
-        task_logger.info(f"✓ GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
-    else:
-        task_logger.warning("⚠ CUDA not available, will use CPU")
-        
-except ImportError as e:
-    task_logger.error(f"✗ PyTorch import failed: {e}")
-    torch = None
+def log_cuda_info():
+    try:
+        import torch
+        task_logger.info(f"✓ PyTorch loaded: {torch.__version__}")
+        task_logger.info(f"✓ CUDA available: {torch.cuda.is_available()}")
+
+        if torch.cuda.is_available():
+            task_logger.info(f"✓ GPU device: {torch.cuda.get_device_name()}")
+            task_logger.info(f"✓ GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+        else:
+            task_logger.warning("⚠ CUDA not available, will use CPU")
+    except ImportError as e:
+        task_logger.error(f"✗ PyTorch import failed: {e}")
 
 # Step 2: Test Transformers and Diffusers
 try:
@@ -366,6 +365,8 @@ def ensure_local_model_initialized():
 def initialize_processors_for_worker(**kwargs):
     """Initialize processors for the worker process"""
     global _text_processor, _grid_processor, _pipeline
+
+    log_cuda_info()
     
     if not TASK_2D_MODULES_LOADED:
         task_logger.error("Skipping processor initialization: Core task modules failed to load.")
