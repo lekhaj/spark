@@ -253,16 +253,23 @@ except Exception as e:
     TASK_3D_MODULES_LOADED = False
 
 # Try to import SDXL Turbo worker
-TASK_SDXL_MODULES_LOADED = False
 _sdxl_worker = None
+TASK_SDXL_MODULES_LOADED = False
 
-try:
-    from sdxl_turbo_worker import SDXLTurboWorker, get_sdxl_worker
-    TASK_SDXL_MODULES_LOADED = True
-    task_logger.info("✅ SDXL Turbo worker modules loaded successfully")
-except ImportError as e:
-    task_logger.error(f"✗ Failed to load SDXL Turbo worker modules: {e}")
-    TASK_SDXL_MODULES_LOADED = False
+def ensure_sdxl_worker():
+    """Safely initialize SDXL Turbo worker after multiprocessing context is ready."""
+    global _sdxl_worker, TASK_SDXL_MODULES_LOADED
+    if _sdxl_worker is None:
+        try:
+            from sdxl_turbo_worker import get_sdxl_worker
+            _sdxl_worker = get_sdxl_worker()
+            TASK_SDXL_MODULES_LOADED = True
+            task_logger.info("✅ SDXL Turbo worker modules loaded successfully")
+        except ImportError as e:
+            task_logger.error(f"✗ Failed to load SDXL Turbo worker modules: {e}")
+        except Exception as e:
+            task_logger.error(f"❌ Error loading SDXL Turbo model: {e}")
+
 
 # Create function aliases
 _generate_3d_from_image_core = generate_3d_from_image_core
@@ -1803,9 +1810,10 @@ def generate_image_sdxl_turbo(
         self.update_state(state='PROGRESS', meta={'progress': 5, 'status': 'Initializing SDXL Turbo...'})
         
         task_logger.info("🔧 Initializing SDXL Turbo worker...")
-        from sdxl_turbo_worker import get_sdxl_worker
+        ensure_sdxl_worker()
+        sdxl_worker = _sdxl_worker
         
-        sdxl_worker = get_sdxl_worker()
+        
         
         # Check worker health
         health = sdxl_worker.health_check()
