@@ -269,16 +269,20 @@ TASK_SDXL_MODULES_LOADED = False
 def ensure_sdxl_worker():
     """Safely initialize SDXL Turbo worker after multiprocessing context is ready."""
     global _sdxl_worker, TASK_SDXL_MODULES_LOADED
+
     if _sdxl_worker is None:
         try:
-            from sdxl_turbo_worker import get_sdxl_worker
-            _sdxl_worker = get_sdxl_worker()
+            import torch  # delayed
+            mp.set_start_method('spawn', force=True)  # just to be extra safe
+
+            from sdxl_turbo_worker import get_sdxl_worker  # move here
+            _sdxl_worker = get_sdxl_worker()  # this triggers the model load
+
             TASK_SDXL_MODULES_LOADED = True
             task_logger.info("✅ SDXL Turbo worker modules loaded successfully")
-        except ImportError as e:
-            task_logger.error(f"✗ Failed to load SDXL Turbo worker modules: {e}")
         except Exception as e:
             task_logger.error(f"❌ Error loading SDXL Turbo model: {e}")
+
 
 
 # Create function aliases
