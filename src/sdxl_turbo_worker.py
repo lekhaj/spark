@@ -3,21 +3,21 @@ SDXL Turbo Image Generation Worker
 Optimized for 15-20GB VRAM with memory management and model offloading
 """
 
-import torch
 import gc
 import logging
-from typing import Optional, Dict, Any, Tuple
-from PIL import Image
 import os
-from datetime import datetime
-import psutil
-from diffusers import StableDiffusionXLPipeline, DiffusionPipeline
-from diffusers.pipelines.stable_diffusion_xl import StableDiffusionXLPipelineOutput
 import threading
+from typing import Optional, Dict, Any, Tuple
+from datetime import datetime
+from PIL import Image
+import psutil
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Lazy imports to avoid CUDA init in main process
+torch = None
+StableDiffusionXLPipeline = None
+
 logger = logging.getLogger(__name__)
+
 
 class SDXLTurboWorker:
     """
@@ -79,6 +79,11 @@ class SDXLTurboWorker:
         logger.info("Memory cleared")
     
     def load_model(self) -> bool:
+        global torch, StableDiffusionXLPipeline
+        if torch is None or StableDiffusionXLPipeline is None:
+            import torch
+            from diffusers import StableDiffusionXLPipeline
+
         """Load the SDXL Turbo model with memory optimizations"""
         try:
             with self.lock:
