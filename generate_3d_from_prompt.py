@@ -36,7 +36,7 @@ image = load_image(image_path).convert("RGB")
 print("🧱 Generating 3D mesh from image...")
 hunyuan_pipe = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
     "tencent/Hunyuan3D-2.1",
-    subfolder="hunyuan3d-dit-v2-1",
+    subfolder="hunyuan3d-dit-v2-mini",
     torch_dtype=torch.float16
 ).to(device)
 
