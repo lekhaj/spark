@@ -5,9 +5,17 @@ import logging
 from diffusers import StableDiffusionXLPipeline
 from diffusers.utils import load_image
 from hy3dshape.pipelines import Hunyuan3DDiTFlowMatchingPipeline
+from datetime import datetime
+import sys # Import sys module
+import shutil # Import shutil for directory removal
+
+# Ensure the current script's directory is in sys.path for local module imports
+# This is a more robust way to ensure s3_manager and db_helper are found
+script_dir = os.path.dirname(os.path.abspath(__file__))
+if script_dir not in sys.path:
+    sys.path.insert(0, script_dir)
 
 # Import S3Manager and MongoDBHelper from the provided files
-# Assuming s3_manager.py and db_helper.py are in the same directory or accessible via PYTHONPATH
 try:
     from s3_manager import S3Manager, get_s3_manager
     from db_helper import MongoDBHelper
@@ -137,9 +145,19 @@ if os.path.exists(image_path):
     logger.info("🧱 Generating 3D mesh from image...")
     hunyuan_pipe = None
     try:
+        # Before loading, explicitly clear the cache for tencent/Hunyuan3D-2mini
+        # This prevents it from loading the wrong subfolder from a previous cache
+        hunyuan_mini_cache_path = os.path.expanduser("~/.cache/huggingface/hub/models--tencent--Hunyuan3D-2mini")
+        if os.path.exists(hunyuan_mini_cache_path):
+            logger.info(f"Clearing Hugging Face cache for {hunyuan_mini_cache_path}...")
+            shutil.rmtree(hunyuan_mini_cache_path)
+            logger.info("Hugging Face cache cleared for Hunyuan3D-2mini.")
+
+        # CORRECTED: Change the main model ID to "tencent/Hunyuan3D-2mini"
+        # and re-add the subfolder argument as per its Hugging Face usage example.
         hunyuan_pipe = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
-            "tencent/Hunyuan3D-2.1",
-            subfolder="hunyuan3d-dit-v2-mini",
+            "tencent/Hunyuan3D-2mini", # CORRECTED MODEL ID
+            subfolder="hunyuan3d-dit-v2-mini", # RE-ADDED SUBFOLDER for the mini model
             torch_dtype=torch.float16
         ).to(device)
 
