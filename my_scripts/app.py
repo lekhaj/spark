@@ -1,263 +1,289 @@
-# tasks.py
-import torch
-from PIL import Image, ImageDraw
-from diffusers import StableDiffusionPipeline
-from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
-import numpy as np
 import os
-import boto3
-import logging
-import datetime
-from botocore.exceptions import ClientError
-import trimesh
-from uuid import uuid4
-import json
-import tempfile
-from celery import Celery
 import io
+import boto3
+from celery import Celery, Task
+from diffusers import StableDiffusionPipeline
+import json
+from PIL import Image
+import numpy as np
+import trimesh
+from skimage import measure
+import torch
+from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
+from io import BytesIO
+import base64
+from pymongo import MongoClient
+from datetime import datetime
+from uuid import uuid4
+from bson.objectid import ObjectId
 
-# Initialize Celery with the configuration file
-celery_app = Celery('tasks')
-celery_app.config_from_object('celeryconfig')
+# --- AWS Configuration from environment variables ---
+AWS_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID")
+AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")
+AWS_REGION = os.environ.get("AWS_REGION", "us-east-1") # Defaulting to us-east-1 if not set
 
-logging.basicConfig(level=logging.INFO)
+# --- Redis Configuration ---
+redis_ip = "172.31.8.113"
+celery_app = Celery("app", broker=f"redis://{redis_ip}:6379/0", backend=f"redis://{redis_ip}:6379/0")
 
-def upload_file_to_s3(file_data, bucket, object_name=None):
-    """
-    Uploads file data to an S3 bucket from a BytesIO object.
-    """
-    s3_client = boto3.client('s3')
-    try:
-        s3_client.upload_fileobj(file_data, bucket, object_name)
-        logging.info(f"Successfully uploaded to s3://{bucket}/{object_name}")
-        return f"https://{bucket}.s3.amazonaws.com/{object_name}"
-    except ClientError as e:
-        logging.error(f"Failed to upload to S3: {e}")
-        return None
-    except Exception as e:
-        logging.error(f"An unexpected error occurred during S3 upload: {e}")
-        return None
+# --- MongoDB Configuration ---
+MONGO_URI = os.environ.get("MONGO_URI", "mongodb://sagar:KrSiDnSI9m8RgcHE@ec2-15-206-99-66.ap-south-1.compute.amazonaws.com:27017/World_builder?authSource=admin")
+MONGO_DB_NAME = os.environ.get("MONGO_DB_NAME", "World_builder")
 
-def decimate_mesh(mesh_data, target_faces=1000):
-    """
-    Decimates a 3D mesh from a file-like object.
-    """
-    print(f"\n--- Starting Decimation Step ---")
-    print(f"Decimating mesh to approximately {target_faces} faces...")
-    
-    mesh = trimesh.load(file_obj=io.BytesIO(mesh_data), file_type='glb')
-    if isinstance(mesh, trimesh.Scene):
-        if not mesh.geometry:
-            print("Warning: Scene contains no geometry. Decimation skipped.")
-            return None
-        if mesh.dump():
-            mesh = trimesh.util.concatenate(list(mesh.geometry.values()))
-        else:
-            print("Warning: Scene has no dumpable geometry. Decimation skipped.")
-            return None
+# Initialize MongoDB client
+try:
+    mongo_client = MongoClient(MONGO_URI)
+    mongo_db = mongo_client[MONGO_DB_NAME]
+    print(f"Connected to MongoDB database: {MONGO_DB_NAME}")
+except Exception as e:
+    print(f"Could not connect to MongoDB: {e}")
+    mongo_client = None
+    mongo_db = None
 
-    decimated_mesh = mesh.simplify_quadric_decimation(face_count=target_faces)
-    print(f"Original faces: {len(mesh.faces)}, Decimated faces: {len(decimated_mesh.faces)}")
-    
-    decimated_data = io.BytesIO()
-    decimated_mesh.export(file_obj=decimated_data, file_type='glb')
-    decimated_data.seek(0)
-    return decimated_data
+# --- S3 Client Initialization ---
+s3_client = boto3.client(
+    "s3",
+    aws_access_key_id=AWS_ACCESS_KEY_ID,
+    aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+    region_name=AWS_REGION
+)
 
-@celery_app.task(bind=True)
-def generate_2d_image_task(self, text_prompt: str, width: int, height: int, num_images: int, s3_bucket_name: str, base_filename: str):
-    """
-    Celery task to generate 2D images from a text prompt.
-    The filename includes the base filename, a timestamp, and an index.
-    """
-    self.update_state(state='PROGRESS', meta={'status': "Optimizing prompt and generating image(s)...", 'result': []})
-    
-    optimized_prompt = f"{text_prompt}, 3D render, octane render, unreal engine, cinematic, highly detailed"
-    
-    stable_diffusion_model_id = "runwayml/stable-diffusion-v1-5"
-    
-    # Try to use GPU, fallback to CPU
-    try:
-        sd_pipe = StableDiffusionPipeline.from_pretrained(
-            stable_diffusion_model_id, torch_dtype=torch.float16
-        ).to("cuda")
-    except Exception:
-        sd_pipe = StableDiffusionPipeline.from_pretrained(stable_diffusion_model_id).to("cpu")
-
-    negative_prompt = "blurry, low quality, bad anatomy, ugly, artifacts, text, watermark"
-    
-    generated_urls = []
-    for i in range(num_images):
-        current_status = f"Generating image {i+1}/{num_images}..."
-        self.update_state(state='PROGRESS', meta={'status': current_status, 'result': generated_urls})
-        
-        image = sd_pipe(
-            optimized_prompt,
-            negative_prompt=negative_prompt,
-            num_inference_steps=25,
-            width=width,
-            height=height
-        ).images[0]
-        
-        timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
-        filename = f"images/{base_filename}_{timestamp}_{i}.png"
-        
-        image_data = io.BytesIO()
-        image.save(image_data, format='PNG')
-        image_data.seek(0)
-        
-        s3_url = upload_file_to_s3(image_data, s3_bucket_name, filename)
-        if s3_url:
-            print(f"Uploaded 2D image to: {s3_url}")
-            generated_urls.append(s3_url)
-    
-    self.update_state(state='SUCCESS', meta={'status': "Image generation complete!", 'result': generated_urls})
-    return generated_urls
-
-@celery_app.task(bind=True)
-def generate_image_from_grid_task(self, grid_data_str: str, width: int, height: int, num_images: int, s3_bucket_name: str, base_filename: str):
-    """
-    Celery task to generate image visualizations from grid data.
-    The filename includes the base filename, a timestamp, and an index.
-    """
-    self.update_state(state='PROGRESS', meta={'status': "Parsing grid data and generating visualization...", 'result': []})
-
-    try:
-        grid_data = json.loads(grid_data_str)
-        # Validation checks
-        if not isinstance(grid_data, list) or not all(isinstance(row, list) and all(isinstance(cell, int) for cell in row) for row in grid_data):
-            raise ValueError("Grid data must be a valid JSON array of arrays of integers.")
-        if not grid_data or not grid_data[0]:
-            raise ValueError("Grid data is empty.")
-
-        cell_size = 50 
-        img_width = len(grid_data[0]) * cell_size
-        img_height = len(grid_data) * cell_size
-
-        terrain_colors = {
-            0: (144, 238, 144), 1: (34, 139, 34), 2: (139, 69, 19), 3: (65, 105, 225),
-            4: (244, 164, 96), 5: (240, 248, 255), 6: (102, 51, 153), 7: (160, 82, 45),
-            8: (105, 105, 105), 9: (128, 128, 128)
-        }
-
-        generated_urls = []
-        for i in range(num_images):
-            img = Image.new('RGB', (img_width, img_height), color='white')
-            d = ImageDraw.Draw(img)
-
-            for r_idx, row in enumerate(grid_data):
-                for c_idx, cell_value in enumerate(row):
-                    color = terrain_colors.get(cell_value, (0, 0, 0))
-                    x1, y1 = c_idx * cell_size, r_idx * cell_size
-                    x2, y2 = x1 + cell_size, y1 + cell_size
-                    d.rectangle([x1, y1, x2, y2], fill=color, outline=(0,0,0))
-            
-            timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
-            filename = f"images/grid_visualizations/{base_filename}_{timestamp}_{i}.png"
-            
-            image_data = io.BytesIO()
-            img.save(image_data, format='PNG')
-            image_data.seek(0)
-            
-            s3_url = upload_file_to_s3(image_data, s3_bucket_name, filename)
-            if s3_url:
-                print(f"Uploaded grid visualization to: {s3_url}")
-                generated_urls.append(s3_url)
-            
-            self.update_state(state='PROGRESS', meta={'status': f"Generated visualization {i+1}/{num_images}", 'result': generated_urls})
-
-        self.update_state(state='SUCCESS', meta={'status': "Grid visualization complete!", 'result': generated_urls})
-        return generated_urls
-
-    except json.JSONDecodeError:
-        self.update_state(state='FAILURE', meta={'error': "Invalid JSON format for Grid Data."})
-        raise
-    except ValueError as ve:
-        self.update_state(state='FAILURE', meta={'error': str(ve)})
-        raise
-    except Exception as e:
-        self.update_state(state='FAILURE', meta={'error': f"An unexpected error occurred: {e}"})
-        raise
-
-@celery_app.task(bind=True)
-def generate_3d_from_2d_task(self, image_bytes: bytes, s3_bucket_name: str, base_filename: str):
-    """
-    Celery task to generate a 3D model from a 2D image.
-    The filename is the base filename provided by the user.
-    """
-    self.update_state(state='PROGRESS', meta={'status': "Generating 3D model from 2D image...", 'result': None})
-    
-    image_2d_input = Image.open(io.BytesIO(image_bytes))
-    
-    hunyuan_model_id = 'tencent/Hunyuan3D-2mini'
-    hunyuan_subfolder = 'hunyuan3d-dit-v2-mini'
-    
-    hunyuan_pipeline = None
-    try:
-        hunyuan_pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
-            hunyuan_model_id,
-            subfolder=hunyuan_subfolder,
-            use_safetensors=True,
-            torch_dtype=torch.float16,
-            device_map="auto"
-        )
-    except Exception as e:
-        print(f"Failed to load Hunyuan3D-2mini with GPU. Error: {e}")
+# --- AI Model Caching ---
+global_sd_pipe = None
+def get_stable_diffusion_pipeline():
+    """Initializes and returns a cached Stable Diffusion pipeline."""
+    global global_sd_pipe
+    if global_sd_pipe is None:
         try:
-            hunyuan_pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+            print("Loading Stable Diffusion model...")
+            global_sd_pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5", use_safetensors=True)
+            global_sd_pipe = global_sd_pipe.to("cuda")
+            print("Stable Diffusion model loaded successfully.")
+        except Exception as e:
+            print(f"Error loading Stable Diffusion model: {e}")
+            global_sd_pipe = None
+    return global_sd_pipe
+
+global_hunyuan_pipe = None
+def get_hunyuan_pipeline():
+    """Initializes and returns a cached Hunyuan 3D pipeline."""
+    global global_hunyuan_pipe
+    if global_hunyuan_pipe is None:
+        try:
+            print("Loading Hunyuan3D-2mini model...")
+            hunyuan_model_id = 'tencent/Hunyuan3D-2mini'
+            hunyuan_subfolder = 'hunyuan3d-dit-v2-mini'
+            global_hunyuan_pipe = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
                 hunyuan_model_id,
                 subfolder=hunyuan_subfolder,
-                use_safetensors=True
-            ).to("cpu")
-            print("Successfully loaded model on CPU.")
-        except Exception as cpu_e:
-            error_msg = f"Failed to load Hunyuan3D-2mini on CPU. Error: {cpu_e}"
-            print(error_msg)
-            self.update_state(state='FAILURE', meta={'error': error_msg})
-            return
-            
-    with torch.no_grad():
-        mesh = hunyuan_pipeline(
-            image=image_2d_input,
-            num_inference_steps=30,
-            octree_resolution=256,
-            generator=torch.Generator(device=hunyuan_pipeline.device).manual_seed(42)
-        )[0]
-    
-    mesh_data = io.BytesIO()
-    mesh.export(file_obj=mesh_data, file_type='glb')
-    mesh_data.seek(0)
-    
-    filename = f"3d_assets/{base_filename}.glb"
-    s3_url = upload_file_to_s3(mesh_data, s3_bucket_name, filename)
-    
-    if s3_url:
-        self.update_state(state='SUCCESS', meta={'status': "3D model generation complete and uploaded to S3!", 'result': s3_url})
-    else:
-        self.update_state(state='FAILURE', meta={'error': "Failed to upload 3D model to S3."})
+                use_safetensors=True,
+                torch_dtype=torch.float16,
+                device_map="auto"
+            )
+            print("Hunyuan3D-2mini model loaded successfully.")
+        except Exception as e:
+            print(f"Failed to load Hunyuan3D-2mini with GPU. Error: {e}")
+            try:
+                global_hunyuan_pipe = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+                    hunyuan_model_id,
+                    subfolder=hunyuan_subfolder,
+                    use_safetensors=True
+                ).to("cpu")
+                print("Successfully loaded model on CPU.")
+            except Exception as cpu_e:
+                print(f"Failed to load Hunyuan3D-2mini on CPU. Error: {cpu_e}")
+                global_hunyuan_pipe = None
+    return global_hunyuan_pipe
 
-@celery_app.task(bind=True)
-def decimate_3d_task(self, input_3d_bytes: bytes, s3_bucket_name: str, base_filename: str):
+
+@celery_app.task(name="app.generate_2d_image_task")
+def generate_2d_image_task(biome_name, theme_prompt, width, height, num_images, s3_bucket_name, base_filename):
     """
-    Celery task to decimate a 3D model.
-    The filename is the base filename with "_decimated" appended.
+    Generates a 2D image, stores the image path in a new MongoDB document, and returns the document ID.
     """
-    self.update_state(state='PROGRESS', meta={'status': "Decimating 3D model...", 'result': None})
-    
+    if not mongo_db:
+        return {"status": "error", "message": "MongoDB connection failed."}
+
     try:
-        decimated_mesh_data = decimate_mesh(input_3d_bytes, target_faces=1000)
+        pipe = get_stable_diffusion_pipeline()
+        if pipe is None:
+            return {"status": "error", "message": "Stable Diffusion model failed to load."}
         
-        if decimated_mesh_data is not None:
-            filename = f"processed/{base_filename}_decimated.glb"
-            s3_url = upload_file_to_s3(decimated_mesh_data, s3_bucket_name, filename)
-            if s3_url:
-                self.update_state(state='SUCCESS', meta={'status': "3D model decimated and uploaded to S3!", 'result': s3_url})
-            else:
-                self.update_state(state='FAILURE', meta={'error': "Failed to upload decimated 3D model to S3."})
-        else:
-            self.update_state(state='FAILURE', meta={'error': "Decimation failed: No valid mesh produced."})
+        # Create an initial MongoDB document
+        new_doc = {
+            "_id": str(uuid4()),
+            "biome_name": biome_name,
+            "theme_prompt": theme_prompt,
+            "possible_structures": {},
+            "possible_grids": [],
+            "model_used": "runwayml/stable-diffusion-v1-5",
+            "processed": False,
+            "processed_at": datetime.utcnow(),
+            "image_path": None, # Will be filled after generation
+            "3d_asset_url": None,
+            "3d_asset_format": None,
+            "3d_asset_generated_at": None,
+        }
+        mongo_db.biomes.insert_one(new_doc)
+        
+        images = pipe(theme_prompt, width=width, height=height, num_images_per_prompt=num_images).images
+
+        results = []
+        for i, image in enumerate(images):
+            img_bytes = io.BytesIO()
+            image.save(img_bytes, format='PNG')
+            img_bytes.seek(0)
             
+            s3_filename = f"images/{base_filename}_{i+1}.png"
+            s3_client.upload_fileobj(img_bytes, s3_bucket_name, s3_filename)
+            print(f"Uploaded {s3_filename} to {s3_bucket_name}")
+            
+            image_url = f"https://{s3_bucket_name}.s3.amazonaws.com/{s3_filename}"
+            results.append(image_url)
+
+        # Update the MongoDB document with the image path
+        mongo_db.biomes.update_one(
+            {"_id": new_doc["_id"]},
+            {"$set": {
+                "image_path": results[0],
+                "processed_at": datetime.utcnow(),
+                "model_used": "stable_diffusion",
+                "possible_grids": [{
+                    "grid_id": "grid_001",
+                    "layout": [], # Placeholder for grid layout
+                    "model_used": "stability",
+                    "processed": False,
+                    "processed_at": datetime.utcnow(),
+                    "image_path": results[0],
+                    "3d_asset_url": None,
+                    "3d_asset_format": None,
+                    "3d_asset_generated_at": None
+                }]
+            }}
+        )
+        
+        return {"status": "success", "document_id": new_doc["_id"]}
     except Exception as e:
-        error_msg = f"Error during decimation: {e}"
-        self.update_state(state='FAILURE', meta={'error': error_msg})
-        raise
+        print(f"An error occurred during image generation: {e}")
+        return {"status": "error", "message": str(e)}
+
+@celery_app.task(name="app.generate_3d_from_2d_task")
+def generate_3d_from_2d_task(document_id, s3_bucket_name, base_filename):
+    """
+    Generates a 3D asset from a 2D image, updates the MongoDB document, and returns the document ID.
+    """
+    if not mongo_db:
+        return {"status": "error", "message": "MongoDB connection failed."}
+
+    try:
+        # Fetch the MongoDB document to get the 2D image URL
+        doc = mongo_db.biomes.find_one({"_id": document_id})
+        if not doc or not doc.get("image_path"):
+            return {"status": "error", "message": "Document not found or image path is missing."}
+        
+        image_url = doc["image_path"]
+        
+        # Download the image from S3
+        response = s3_client.get_object(Bucket=s3_bucket_name, Key=image_url.split('/')[-2] + '/' + image_url.split('/')[-1])
+        image_bytes = response['Body'].read()
+        image_2d_input = Image.open(BytesIO(image_bytes))
+
+        # Get the Hunyuan pipeline
+        hunyuan_pipeline = get_hunyuan_pipeline()
+        if hunyuan_pipeline is None:
+            return {"status": "error", "message": "Hunyuan model failed to load."}
+
+        with torch.no_grad():
+            mesh = hunyuan_pipeline(
+                image=image_2d_input,
+                num_inference_steps=30,
+                octree_resolution=256,
+                generator=torch.Generator(device=hunyuan_pipeline.device).manual_seed(42)
+            )[0]
+        
+        model_bytes = mesh.export(file_type='glb')
+        
+        # Define the S3 path and upload the model
+        s3_filename = f"3d_assets/generated/{base_filename}_{document_id}.glb"
+        s3_client.put_object(Bucket=s3_bucket_name, Key=s3_filename, Body=model_bytes)
+        
+        print(f"Uploaded generated 3D asset to {s3_filename}")
+        
+        s3_url = f"https://{s3_bucket_name}.s3.amazonaws.com/{s3_filename}"
+
+        # Update the MongoDB document with the 3D asset details
+        mongo_db.biomes.update_one(
+            {"_id": document_id, "possible_grids.image_path": image_url},
+            {"$set": {
+                "3d_asset_url": s3_url,
+                "3d_asset_format": "glb",
+                "3d_asset_generated_at": datetime.utcnow(),
+                "processed": True,
+                "possible_grids.$.3d_asset_url": s3_url,
+                "possible_grids.$.3d_asset_format": "glb",
+                "possible_grids.$.3d_asset_generated_at": datetime.utcnow(),
+                "possible_grids.$.processed": True
+            }}
+        )
+        
+        return {"status": "success", "document_id": document_id, "result": s3_url}
+    except Exception as e:
+        print(f"An error occurred during 3D generation: {e}")
+        return {"status": "error", "message": str(e)}
+
+@celery_app.task(name="app.decimate_3d_task")
+def decimate_3d_task(file_bytes, s3_bucket_name, base_filename):
+    """
+    Decimates a 3D asset using the trimesh library.
+    """
+    try:
+        # Load the 3D model from bytes
+        mesh = trimesh.load(io.BytesIO(file_bytes), file_type='glb')
+        
+        # Perform decimation (e.g., reduce to 10% of the original faces)
+        num_faces_to_keep = int(len(mesh.faces) * 0.1)
+        decimated_mesh = mesh.simplify_quadric_decimation(num_faces_to_keep)
+        
+        # Export the decimated mesh to bytes in GLB format
+        decimated_model_bytes = decimated_mesh.export(file_type='glb')
+        
+        # Define the S3 path and upload the decimated model
+        s3_filename = f"processed/{base_filename}_decimated.glb"
+        s3_client.put_object(Bucket=s3_bucket_name, Key=s3_filename, Body=decimated_model_bytes)
+        
+        print(f"Uploaded decimated 3D asset to {s3_filename}")
+
+        s3_url = f"https://{s3_bucket_name}.s3.amazonaws.com/{s3_filename}"
+
+        return {"status": "success", "result": s3_url}
+    except Exception as e:
+        print(f"An error occurred during decimation: {e}")
+        return {"status": "error", "message": str(e)}
+
+@celery_app.task(name="app.generate_image_from_grid_task")
+def generate_image_from_grid_task(grid_data_str, width, height, num_images, s3_bucket_name, base_filename):
+    """
+    Generates an image from a 3D grid.
+    """
+    # Placeholder for your logic to convert the grid into an image.
+    try:
+        grid_data = json.loads(grid_data_str)
+        from PIL import Image
+        img = Image.new('RGB', (width, height), color = 'white')
+        
+        results = []
+        for i in range(num_images):
+            img_bytes = io.BytesIO()
+            img.save(img_bytes, format='PNG')
+            img_bytes.seek(0)
+            
+            s3_filename = f"images/grid_{base_filename}_{i+1}.png"
+            s3_client.upload_fileobj(img_bytes, s3_bucket_name, s3_filename)
+            print(f"Uploaded {s3_filename} to {s3_bucket_name}")
+            results.append(s3_filename)
+            
+        return {"status": "success", "result": results}
+    except Exception as e:
+        print(f"An error occurred during grid visualization: {e}")
+        return {"status": "error", "message": str(e)}
+
