@@ -1,12 +1,13 @@
-# app.py
+# web_app.py
 import gradio as gr
-from tasks import generate_2d_image_task, generate_image_from_grid_task, generate_3d_from_2d_task, decimate_3d_task
+from app import generate_2d_image_task, generate_image_from_grid_task, generate_3d_from_2d_task, decimate_3d_task
 import json
 import time
 import io
 from PIL import Image
 
 def load_sample_grid():
+    """Loads a predefined sample grid as a string."""
     sample_grid = """
 [[0,0,1,1,0,0,2,2,0,0],
 [0,1,1,1,1,0,2,2,2,0],
@@ -26,71 +27,73 @@ def launch_2d_generation(text_prompt, width, height, num_images, s3_bucket_name,
     task = generate_2d_image_task.delay(text_prompt, width, height, num_images, s3_bucket_name, base_filename)
     return task.id
 
-def check_2d_generation_status(task_id):
-    """Checks the status of the 2D image generation task and updates the UI."""
+def track_2d_generation_progress(task_id):
+    """Tracks the status of the 2D image generation task and yields updates."""
     if not task_id:
-        return "Waiting for task to start...", [], None
+        yield "Waiting for task to start...", [], None
+        return
     
-    task = generate_2d_image_task.AsyncResult(task_id)
-    
-    if task.state == 'PENDING':
-        return "Task is pending...", [], None
-    elif task.state == 'PROGRESS':
-        status = task.info.get('status', 'Processing...')
-        results = task.info.get('result', [])
-        return status, results, None
-    elif task.state == 'SUCCESS':
-        status = task.info.get('status', "Task complete!")
-        results = task.info.get('result', [])
-        html_output = f"<h3>Generated Images:</h3>"
-        for url in results:
-            html_output += f"<a href='{url}' target='_blank'>Download Image</a><br>"
-        return status, results, html_output
-    elif task.state == 'FAILURE':
-        error_msg = task.info.get('error', "An error occurred.")
-        return f"Error: {error_msg}", [], None
-    else:
-        return f"Task state: {task.state}", [], None
+    while True:
+        task = generate_2d_image_task.AsyncResult(task_id)
+        
+        if task.state == 'PENDING':
+            yield "Task is pending...", [], None
+        elif task.state == 'PROGRESS':
+            status = task.info.get('status', 'Processing...')
+            results = task.info.get('result', [])
+            yield status, results, None
+        elif task.state == 'SUCCESS':
+            status = task.info.get('status', "Task complete!")
+            results = task.info.get('result', [])
+            html_output = f"<h3>Generated Images:</h3>"
+            for url in results:
+                html_output += f"<a href='{url}' target='_blank'>Download Image</a><br>"
+            yield status, results, html_output
+            return
+        elif task.state == 'FAILURE':
+            error_msg = task.info.get('error', "An error occurred.")
+            yield f"Error: {error_msg}", [], None
+            return
+        else:
+            yield f"Task state: {task.state}", [], None
+        
+        time.sleep(2) # Poll every 2 seconds
 
 def launch_grid_generation(grid_data_str, width, height, num_images, s3_bucket_name, base_filename):
     """Starts the grid visualization task and returns the task ID."""
     task = generate_image_from_grid_task.delay(grid_data_str, width, height, num_images, s3_bucket_name, base_filename)
     return task.id
 
-def check_grid_generation_status(task_id):
-    """Checks the status of the grid generation task and updates the UI."""
+def track_grid_generation_progress(task_id):
+    """Tracks the status of the grid generation task and yields updates."""
     if not task_id:
-        return "Waiting for task to start...", None
-    
-    task = generate_image_from_grid_task.AsyncResult(task_id)
-    
-    if task.state == 'PENDING':
-        return "Task is pending...", None
-    elif task.state == 'PROGRESS':
-        status = task.info.get('status', 'Processing...')
-        results = task.info.get('result', [])
+        yield "Waiting for task to start...", None
+        return
         
-        # Convert URLs to images for display in Gradio gallery
-        images = []
-        for url in results:
-            images.append(url)
+    while True:
+        task = generate_image_from_grid_task.AsyncResult(task_id)
         
-        return status, images
-    elif task.state == 'SUCCESS':
-        status = task.info.get('status', "Task complete!")
-        results = task.info.get('result', [])
-        
-        # Convert URLs to images
-        images = []
-        for url in results:
-            images.append(url)
-            
-        return status, images
-    elif task.state == 'FAILURE':
-        error_msg = task.info.get('error', "An error occurred.")
-        return f"Error: {error_msg}", None
-    else:
-        return f"Task state: {task.state}", None
+        if task.state == 'PENDING':
+            yield "Task is pending...", None
+        elif task.state == 'PROGRESS':
+            status = task.info.get('status', 'Processing...')
+            results = task.info.get('result', [])
+            images = [url for url in results]
+            yield status, images
+        elif task.state == 'SUCCESS':
+            status = task.info.get('status', "Task complete!")
+            results = task.info.get('result', [])
+            images = [url for url in results]
+            yield status, images
+            return
+        elif task.state == 'FAILURE':
+            error_msg = task.info.get('error', "An error occurred.")
+            yield f"Error: {error_msg}", None
+            return
+        else:
+            yield f"Task state: {task.state}", None
+
+        time.sleep(2)
 
 def launch_3d_generation(image_2d_input, s3_bucket_name, base_filename):
     """Starts the 3D model generation task."""
@@ -104,27 +107,33 @@ def launch_3d_generation(image_2d_input, s3_bucket_name, base_filename):
     task = generate_3d_from_2d_task.delay(image_bytes.getvalue(), s3_bucket_name, base_filename)
     return task.id
 
-def check_3d_generation_status(task_id):
-    """Checks the status of the 3D model generation task."""
+def track_3d_generation_progress(task_id):
+    """Tracks the status of the 3D model generation task and yields updates."""
     if not task_id:
-        return "Waiting for task to start...", None
-    
-    task = generate_3d_from_2d_task.AsyncResult(task_id)
-    
-    if task.state == 'PENDING':
-        return "Task is pending...", None
-    elif task.state == 'PROGRESS':
-        status = task.info.get('status', 'Processing...')
-        return status, None
-    elif task.state == 'SUCCESS':
-        status = task.info.get('status', "Task complete!")
-        url = task.info.get('result', None)
-        return status, gr.HTML(f"<a href='{url}' target='_blank'>Download 3D Model</a>")
-    elif task.state == 'FAILURE':
-        error_msg = task.info.get('error', "An error occurred.")
-        return f"Error: {error_msg}", None
-    else:
-        return f"Task state: {task.state}", None
+        yield "Waiting for task to start...", None
+        return
+        
+    while True:
+        task = generate_3d_from_2d_task.AsyncResult(task_id)
+        
+        if task.state == 'PENDING':
+            yield "Task is pending...", None
+        elif task.state == 'PROGRESS':
+            status = task.info.get('status', 'Processing...')
+            yield status, None
+        elif task.state == 'SUCCESS':
+            status = task.info.get('status', "Task complete!")
+            url = task.info.get('result', None)
+            yield status, gr.HTML(f"<a href='{url}' target='_blank'>Download 3D Model</a>")
+            return
+        elif task.state == 'FAILURE':
+            error_msg = task.info.get('error', "An error occurred.")
+            yield f"Error: {error_msg}", None
+            return
+        else:
+            yield f"Task state: {task.state}", None
+
+        time.sleep(2)
         
 def launch_decimation_task(input_3d_file, s3_bucket_name, base_filename):
     """Starts the 3D decimation task."""
@@ -137,27 +146,33 @@ def launch_decimation_task(input_3d_file, s3_bucket_name, base_filename):
     task = decimate_3d_task.delay(file_bytes, s3_bucket_name, base_filename)
     return task.id
 
-def check_decimation_status(task_id):
-    """Checks the status of the 3D decimation task."""
+def track_decimation_progress(task_id):
+    """Tracks the status of the 3D decimation task and yields updates."""
     if not task_id:
-        return "Waiting for task to start...", None
-        
-    task = decimate_3d_task.AsyncResult(task_id)
+        yield "Waiting for task to start...", None
+        return
 
-    if task.state == 'PENDING':
-        return "Task is pending...", None
-    elif task.state == 'PROGRESS':
-        status = task.info.get('status', 'Processing...')
-        return status, None
-    elif task.state == 'SUCCESS':
-        status = task.info.get('status', "Task complete!")
-        url = task.info.get('result', None)
-        return status, gr.HTML(f"<a href='{url}' target='_blank'>Download Decimated 3D Model</a>")
-    elif task.state == 'FAILURE':
-        error_msg = task.info.get('error', "An error occurred.")
-        return f"Error: {error_msg}", None
-    else:
-        return f"Task state: {task.state}", None
+    while True:
+        task = decimate_3d_task.AsyncResult(task_id)
+
+        if task.state == 'PENDING':
+            yield "Task is pending...", None
+        elif task.state == 'PROGRESS':
+            status = task.info.get('status', 'Processing...')
+            yield status, None
+        elif task.state == 'SUCCESS':
+            status = task.info.get('status', "Task complete!")
+            url = task.info.get('result', None)
+            yield status, gr.HTML(f"<a href='{url}' target='_blank'>Download Decimated 3D Model</a>")
+            return
+        elif task.state == 'FAILURE':
+            error_msg = task.info.get('error', "An error occurred.")
+            yield f"Error: {error_msg}", None
+            return
+        else:
+            yield f"Task state: {task.state}", None
+            
+        time.sleep(2)
 
 with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
     gr.Markdown("# AI-Powered 3D Asset Generator")
@@ -207,10 +222,9 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
                 inputs=[text_to_image_prompt, width_slider_txt2img, height_slider_txt2img, num_images_slider_txt2img, s3_bucket_input_global, base_filename_txt2img],
                 outputs=[task_id_state]
             ).then(
-                fn=check_2d_generation_status,
+                fn=track_2d_generation_progress,
                 inputs=[task_id_state],
-                outputs=[image_generation_status, image_generation_output, image_generation_link],
-                every=2 # Check status every 2 seconds
+                outputs=[image_generation_status, image_generation_output, image_generation_link]
             )
         
         with gr.TabItem("Grid to Image"):
@@ -264,10 +278,9 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
                 inputs=[grid_data_input, width_slider_grid2img, height_slider_grid2img, num_images_slider_grid2img, s3_bucket_input_global, base_filename_grid2img],
                 outputs=[task_id_state]
             ).then(
-                fn=check_grid_generation_status,
+                fn=track_grid_generation_progress,
                 inputs=[task_id_state],
-                outputs=[grid_generation_status, grid_visualization_output],
-                every=2 # Check status every 2 seconds
+                outputs=[grid_generation_status, grid_visualization_output]
             )
 
         with gr.TabItem("3D Generation"):
@@ -286,10 +299,9 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
                 inputs=[input_2d_image_for_3d, s3_bucket_input_global, base_filename_3d_gen],
                 outputs=[task_id_state]
             ).then(
-                fn=check_3d_generation_status,
+                fn=track_3d_generation_progress,
                 inputs=[task_id_state],
-                outputs=[status_3d_gen, output_3d_model_link],
-                every=2 # Check status every 2 seconds
+                outputs=[status_3d_gen, output_3d_model_link]
             )
 
         with gr.TabItem("Decimated 3D"):
@@ -308,10 +320,9 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
                 inputs=[input_3d_file_decimate, s3_bucket_input_global, base_filename_decimate],
                 outputs=[task_id_state]
             ).then(
-                fn=check_decimation_status,
+                fn=track_decimation_progress,
                 inputs=[task_id_state],
-                outputs=[status_decimate, output_decimated_model_link],
-                every=2 # Check status every 2 seconds
+                outputs=[status_decimate, output_decimated_model_link]
             )
 
 demo.launch(server_name="0.0.0.0", server_port=7860)
