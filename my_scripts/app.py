@@ -76,7 +76,7 @@ def get_hunyuan_pipeline():
             global_hunyuan_pipe = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
                 hunyuan_model_id,
                 subfolder=hunyuan_subfolder,
-                use_safetensors=True,
+                use_safesensors=True,
                 torch_dtype=torch.float16,
                 device_map="auto"
             )
@@ -101,7 +101,7 @@ def generate_2d_image_task(biome_name, theme_prompt, width, height, num_images, 
     """
     Generates a 2D image, stores the image path in a new MongoDB document, and returns the document ID.
     """
-    if not mongo_db:
+    if mongo_db is None:
         return {"status": "error", "message": "MongoDB connection failed."}
 
     try:
@@ -172,7 +172,7 @@ def generate_3d_from_2d_task(document_id, s3_bucket_name, base_filename):
     """
     Generates a 3D asset from a 2D image, updates the MongoDB document, and returns the document ID.
     """
-    if not mongo_db:
+    if mongo_db is None:
         return {"status": "error", "message": "MongoDB connection failed."}
 
     try:
@@ -286,4 +286,5 @@ def generate_image_from_grid_task(grid_data_str, width, height, num_images, s3_b
     except Exception as e:
         print(f"An error occurred during grid visualization: {e}")
         return {"status": "error", "message": str(e)}
+
 
