@@ -1,0 +1,12 @@
+boto3
+celery
+diffusers
+Pillow
+numpy
+trimesh
+scikit-image
+torch
+hy3dgen
+pymongo
+bson
+gradio
