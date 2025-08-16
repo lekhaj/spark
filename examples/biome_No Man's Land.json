@@ -1,0 +1,174 @@
+{
+  "biome_name": "No Man's Land",
+  "theme_prompt": "A battlefield with trenches and debris with solders and battle assets",
+  "possible_structures": {
+    "geology": {
+      "trench": {
+        "type": "trench",
+        "description": "A long, narrow ditch dug into the earth, showing signs of heavy shelling and erosion.  The walls are uneven, scarred with blast marks and pockmarked with shell holes.  Made of earth and compacted mud, showing varying degrees of collapse.  Sections may be partially filled with debris.",
+        "attributes": {
+          "hp": 100,
+          "size": "variable",
+          "material": "earth, mud, debris"
+        }
+      },
+      "crater": {
+        "type": "crater",
+        "description": "A large, irregular hole in the ground caused by an explosion.  The edges are jagged and uneven, with scattered chunks of earth and rock.  The bottom of the crater may be filled with water or debris.",
+        "attributes": {
+          "hp": 50,
+          "size": "variable",
+          "material": "earth, rock, debris"
+        }
+      }
+    },
+    "battle_assets": {
+      "destroyed_tank": {
+        "type": "tank",
+        "description": "The rusted remains of a tank, its turret twisted and its hull riddled with bullet holes and shrapnel scars. Tracks are broken and scattered, with various pieces of metal strewn around it.  Parts of the tank are charred and blackened from fire.",
+        "attributes": {
+          "hp": 20,
+          "size": "large",
+          "material": "metal, rust"
+        }
+      },
+      "barbed_wire": {
+        "type": "obstacle",
+        "description": "Tangled sections of barbed wire, partially buried in the mud and debris.  The wire is rusty and broken in places, but still presents a significant obstacle.",
+        "attributes": {
+          "hp": 10,
+          "size": "variable",
+          "material": "metal, wire"
+        }
+      }
+    }
+  },
+  "possible_grids": [
+    {
+      "grid_id": "main_layout",
+      "layout": [
+        [
+          0,
+          0,
+          0,
+          1,
+          1,
+          1,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          1,
+          1,
+          1,
+          1,
+          1,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          0,
+          0
+        ],
+        [
+          1,
+          1,
+          1,
+          1,
+          0,
+          1,
+          1,
+          1,
+          1,
+          0
+        ],
+        [
+          1,
+          1,
+          0,
+          2,
+          2,
+          2,
+          0,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          1,
+          0,
+          2,
+          2,
+          2,
+          0,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          1,
+          1,
+          1,
+          0,
+          1,
+          1,
+          1,
+          1,
+          0
+        ],
+        [
+          0,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          1,
+          1,
+          1,
+          1,
+          1,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          1,
+          1,
+          1,
+          0,
+          0,
+          0,
+          0
+        ]
+      ]
+    }
+  ],
+  "_id": "c421bb18-745f-47c6-a92c-62f08455161f"
+}

@@ -1,0 +1,190 @@
+{
+  "biome_name": "The Sunken Temple of Xibalba",
+  "theme_prompt": "An Ancient temple ruin deep within a jungle with lots of shrubs and trees.",
+  "possible_structures": {
+    "buildings": {
+      "central_temple": {
+        "type": "temple",
+        "description": "A large, moss-covered stone temple, partially collapsed.  Sections of intricately carved walls remain, depicting scenes of ancient rituals.  Giant, gnarled roots snake around the crumbling structure, weaving through the ruins. The temple's entrance is a massive, eroded archway, partially obscured by vegetation.",
+        "attributes": {
+          "hp": 1000,
+          "size": "large",
+          "material": "stone",
+          "function": "temple"
+        }
+      },
+      "collapsed_shrine": {
+        "type": "shrine",
+        "description": "A smaller, secondary shrine, almost completely swallowed by the jungle. Only fragments of its walls and a single, weathered statue remain, half-buried in the earth and surrounded by thick, vibrant foliage.",
+        "attributes": {
+          "hp": 500,
+          "size": "medium",
+          "material": "stone",
+          "function": "shrine"
+        }
+      }
+    },
+    "flora": {
+      "giant_tree": {
+        "type": "tree",
+        "description": "A massive, ancient tree, its roots spreading wide and deep, partially supporting the crumbling temple structures. The tree's thick trunk is covered in vines and moss, and its canopy spreads far above.",
+        "attributes": {
+          "hp": 200,
+          "size": "large",
+          "material": "wood",
+          "function": "flora"
+        }
+      },
+      "dense_shrubbery": {
+        "type": "shrub",
+        "description": "Thick, dense shrubbery filling the spaces between larger trees and temple structures.  The shrubs are a mix of species, with vibrant green leaves and colorful flowers interspersed.",
+        "attributes": {
+          "hp": 50,
+          "size": "small",
+          "material": "plant",
+          "function": "flora"
+        }
+      }
+    },
+    "geology": {
+      "ancient_stone_path": {
+        "type": "path",
+        "description": "Sections of an ancient stone path, partially overgrown and eroded, wind their way through the jungle, leading towards the main temple structure.  The stones are worn smooth by time and weather.",
+        "attributes": {
+          "hp": 100,
+          "size": "medium",
+          "material": "stone",
+          "function": "path"
+        }
+      }
+    }
+  },
+  "possible_grids": [
+    {
+      "grid_id": "main_layout",
+      "layout": [
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          1,
+          1,
+          1,
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          2,
+          1,
+          1,
+          1,
+          1,
+          2,
+          0
+        ],
+        [
+          0,
+          0,
+          2,
+          1,
+          1,
+          1,
+          1,
+          1,
+          2,
+          0
+        ],
+        [
+          0,
+          0,
+          2,
+          1,
+          1,
+          1,
+          1,
+          1,
+          2,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          2,
+          1,
+          1,
+          1,
+          1,
+          2,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          1,
+          1,
+          1,
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      ]
+    }
+  ],
+  "_id": "81b70a71-8d62-4c15-a9d1-f33a8a7f4d28"
+}
