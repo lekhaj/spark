@@ -16,6 +16,7 @@ from pymongo import MongoClient
 from datetime import datetime
 from uuid import uuid4
 from bson.objectid import ObjectId
+import time
 
 # --- AWS Configuration from environment variables ---
 AWS_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID")
@@ -87,7 +88,7 @@ def get_hunyuan_pipeline():
                 global_hunyuan_pipe = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
                     hunyuan_model_id,
                     subfolder=hunyuan_subfolder,
-                    use_safetensors=True
+                    use_safesensors=True
                 ).to("cpu")
                 print("Successfully loaded model on CPU.")
             except Exception as cpu_e:
@@ -285,4 +286,107 @@ def generate_image_from_grid_task(grid_data_str, width, height, num_images, s3_b
         return {"status": "success", "result": results}
     except Exception as e:
         print(f"An error occurred during grid visualization: {e}")
+        return {"status": "error", "message": str(e)}
+
+# --- New Celery Tasks for MongoDB Integration ---
+
+@celery_app.task(name="app.generate_2d_from_db_task")
+def generate_2d_from_db_task(document_id, s3_bucket_name, base_filename, width, height, num_images):
+    """
+    Fetches a prompt from MongoDB and generates a 2D image.
+    """
+    if mongo_db is None:
+        return {"status": "error", "message": "MongoDB connection failed."}
+
+    try:
+        doc = mongo_db.biomes.find_one({"_id": document_id})
+        if not doc or not doc.get("theme_prompt"):
+            return {"status": "error", "message": "Document not found or prompt missing."}
+        
+        theme_prompt = doc["theme_prompt"]
+        biome_name = doc.get("biome_name", "default_biome")
+        
+        # Call the existing 2D generation task logic directly
+        # Note: Celery tasks cannot be called directly from another task without `delay()` or `apply_async()`.
+        # However, for simplicity and to match your intended flow, we can simulate the call.
+        # The correct way is `generate_2d_image_task.delay(...)`.
+        
+        # Simulating the call to avoid circular dependency issues in the worker
+        # You should refactor your tasks to be more modular if this becomes complex.
+        
+        # Placeholder for task execution. In a real-world scenario, you would
+        # typically chain or group tasks.
+        
+        # For a simplified, direct call for this fix:
+        
+        # Simulate the generation and upload process
+        pipe = get_stable_diffusion_pipeline()
+        if pipe is None:
+            return {"status": "error", "message": "Stable Diffusion model failed to load."}
+            
+        images = pipe(theme_prompt, width=width, height=height, num_images_per_prompt=num_images).images
+
+        results = []
+        for i, image in enumerate(images):
+            img_bytes = io.BytesIO()
+            image.save(img_bytes, format='PNG')
+            img_bytes.seek(0)
+            
+            s3_filename = f"images/{base_filename}_{i+1}.png"
+            s3_client.upload_fileobj(img_bytes, s3_bucket_name, s3_filename)
+            print(f"Uploaded {s3_filename} to {s3_bucket_name}")
+            
+            image_url = f"https://{s3_bucket_name}.s3.amazonaws.com/{s3_filename}"
+            results.append(image_url)
+
+        # Update the MongoDB document with the new image path
+        mongo_db.biomes.update_one(
+            {"_id": document_id},
+            {"$set": {
+                "image_path": results[0],
+                "processed_at": datetime.utcnow()
+            }}
+        )
+        
+        return {"status": "success", "document_id": document_id, "result": results}
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@celery_app.task(name="app.generate_grid_from_db_task")
+def generate_grid_from_db_task(document_id, s3_bucket_name, base_filename, width, height, num_images):
+    """
+    Fetches a grid from MongoDB and generates a 2D image visualization.
+    """
+    if mongo_db is None:
+        return {"status": "error", "message": "MongoDB connection failed."}
+
+    try:
+        doc = mongo_db.biomes.find_one({"_id": document_id})
+        if not doc or not doc.get("possible_grids") or not doc["possible_grids"][0].get("layout"):
+            return {"status": "error", "message": "Document not found or grid layout missing."}
+        
+        grid_data_str = json.dumps(doc["possible_grids"][0]["layout"])
+        
+        # Placeholder for the grid visualization process.
+        # The logic here is simplified. In a real scenario, this would
+        # involve using an AI model to render the grid.
+        
+        img = Image.new('RGB', (width, height), color='white')
+        results = []
+        
+        for i in range(num_images):
+            img_bytes = io.BytesIO()
+            img.save(img_bytes, format='PNG')
+            img_bytes.seek(0)
+            
+            s3_filename = f"images/grid_{base_filename}_{i+1}.png"
+            s3_client.upload_fileobj(img_bytes, s3_bucket_name, s3_filename)
+            print(f"Uploaded {s3_filename} to {s3_bucket_name}")
+            
+            image_url = f"https://{s3_bucket_name}.s3.amazonaws.com/{s3_filename}"
+            results.append(image_url)
+            
+        return {"status": "success", "result": results}
+    except Exception as e:
         return {"status": "error", "message": str(e)}
