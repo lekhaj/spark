@@ -256,11 +256,13 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
     gr.Markdown("# AI-Powered 3D Asset Generator")
     gr.Markdown("This application uses Celery to run generation tasks in the background, keeping the Gradio app responsive. The generated assets are uploaded to S3.")
 
-    s3_bucket_input_global = gr.Textbox(label="S3 Bucket Name", value="sparkassets", interactive=True)
-    
-    # State variables to store task IDs
+    # State variable to store the task ID
     task_id_state = gr.State(None)
-
+    # A global textbox to be updated by the state change listener
+    global_task_id_display = gr.Textbox(label="Current Task ID", interactive=False)
+    # This listener will update the global textbox whenever the state changes
+    task_id_state.change(fn=lambda x: x, inputs=task_id_state, outputs=global_task_id_display)
+    
     with gr.Tabs():
         with gr.TabItem("Text to Image"):
             gr.Markdown("## Text-to-Image Generation")
@@ -297,7 +299,7 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
             
             generate_image_button.click(
                 fn=launch_2d_generation,
-                inputs=[text_to_image_prompt, width_slider_txt2img, height_slider_txt2img, num_images_slider_txt2img, s3_bucket_input_global, base_filename_txt2img],
+                inputs=[text_to_image_prompt, width_slider_txt2img, height_slider_txt2img, num_images_slider_txt2img, gr.Textbox(value="sparkassets", visible=False), base_filename_txt2img],
                 outputs=[task_id_state]
             ).then(
                 fn=track_2d_generation_progress,
@@ -323,7 +325,7 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
             """)
             
             grid_data_input = gr.Textbox(label="Grid Data (JSON array of arrays)", lines=10, 
-                                         placeholder="Example: [[0,0,1,1],[0,1,1,0]]")
+                                          placeholder="Example: [[0,0,1,1],[0,1,1,0]]")
             load_sample_grid_button = gr.Button("Load Sample Grid")
             
             base_filename_grid2img = gr.Textbox(label="Base Filename for Visualization", placeholder="e.g., my_grid_map")
@@ -353,7 +355,7 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
 
             generate_grid_image_button.click(
                 fn=launch_grid_generation,
-                inputs=[grid_data_input, width_slider_grid2img, height_slider_grid2img, num_images_slider_grid2img, s3_bucket_input_global, base_filename_grid2img],
+                inputs=[grid_data_input, width_slider_grid2img, height_slider_grid2img, num_images_slider_grid2img, gr.Textbox(value="sparkassets", visible=False), base_filename_grid2img],
                 outputs=[task_id_state]
             ).then(
                 fn=track_grid_generation_progress,
@@ -374,7 +376,7 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
 
             generate_3d_button.click(
                 fn=launch_3d_generation,
-                inputs=[input_2d_image_for_3d, s3_bucket_input_global, base_filename_3d_gen],
+                inputs=[input_2d_image_for_3d, gr.Textbox(value="sparkassets", visible=False), base_filename_3d_gen],
                 outputs=[task_id_state]
             ).then(
                 fn=track_3d_generation_progress,
@@ -395,7 +397,7 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
 
             decimate_button.click(
                 fn=launch_decimation_task,
-                inputs=[input_3d_file_decimate, s3_bucket_input_global, base_filename_decimate],
+                inputs=[input_3d_file_decimate, gr.Textbox(value="sparkassets", visible=False), base_filename_decimate],
                 outputs=[task_id_state]
             ).then(
                 fn=track_decimation_progress,
@@ -408,9 +410,9 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
             gr.Markdown("## Current Task Status")
             gr.Markdown("This section shows the ID of the current background task.")
             
+            # This is now just a mirror of the global display
             task_id_display = gr.Textbox(label="Current Task ID", interactive=False)
             task_id_state.change(fn=lambda x: x, inputs=task_id_state, outputs=task_id_display)
-
             gr.Markdown("---")
             gr.Markdown("## Stored Files (Simulated Database)")
             gr.Markdown("This table shows a history of all successfully completed tasks.")
@@ -427,6 +429,4 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
             
             refresh_button.click(fn=get_stored_files, outputs=stored_files_output)
 
-
 demo.launch(server_name="0.0.0.0", server_port=7860)
-
