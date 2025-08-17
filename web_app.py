@@ -1,142 +1,432 @@
+# web_app.py
 import gradio as gr
-import pymongo
-from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
-import uuid
+from app import generate_2d_image_task, generate_image_from_grid_task, generate_3d_from_2d_task, decimate_3d_task
+import json
 import time
-import os
-import random
+import io
+from PIL import Image
+from datetime import datetime
 
-# --- MongoDB Connection and Operations ---
-# It's a good practice to use environment variables for sensitive data like connection strings.
-# For this example, we'll use a placeholder.
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
-DB_NAME = "gradio_app_db"
-COLLECTION_NAME = "generation_tasks"
+# A mock in-memory database to simulate file storage and task tracking.
+# In a real application, this would be a database like MongoDB, PostgreSQL, etc.
+# Each entry will be a dictionary containing details about a completed task.
+mock_database = []
 
-# Function to check MongoDB connection and return a status
-def get_mongo_status():
-    """Checks the MongoDB connection and returns a status message."""
-    try:
-        # Use a client with a timeout to prevent the app from hanging
-        client = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-        client.admin.command('ping')
-        return "✅ Connected to MongoDB"
-    except (ConnectionFailure, ServerSelectionTimeoutError) as e:
-        return f"❌ Connection to MongoDB failed: {e}"
-    except Exception as e:
-        return f"❌ An error occurred: {e}"
-
-def insert_task(task_id, task_type, file_path):
+def load_sample_grid():
+    """Loads a predefined sample grid as a string."""
+    sample_grid = """
+[[0,0,1,1,0,0,2,2,0,0],
+[0,1,1,1,1,0,2,2,2,0],
+[1,1,1,1,1,1,0,2,2,2],
+[1,1,1,1,1,1,0,0,2,2],
+[0,1,1,1,0,0,0,0,0,0],
+[0,0,0,0,0,0,0,0,0,0],
+[3,3,3,3,3,3,3,3,3,3],
+[3,3,3,3,3,3,3,3,3,3],
+[4,4,4,4,0,0,0,0,0,0],
+[4,4,4,4,0,0,0,0,0,0]]
     """
-    Inserts a new task document into the MongoDB collection.
+    return sample_grid.strip()
+
+def launch_2d_generation(text_prompt, width, height, num_images, s3_bucket_name, base_filename):
+    """Starts the 2D image generation task and returns the task ID."""
+    task = generate_2d_image_task.delay(text_prompt, width, height, num_images, s3_bucket_name, base_filename)
+    return task.id
+
+def track_2d_generation_progress(task_id, task_id_state):
+    """Tracks the status of the 2D image generation task and yields updates."""
+    if not task_id:
+        yield "Waiting for task to start...", [], None, None
+        return
     
-    Args:
-        task_id (str): The unique ID for the task.
-        task_type (str): The type of generation task (e.g., '2D', '3D').
-        file_path (str): The path to the generated file.
-    """
-    try:
-        client = pymongo.MongoClient(MONGO_URI)
-        db = client[DB_NAME]
-        collection = db[COLLECTION_NAME]
+    while True:
+        task = generate_2d_image_task.AsyncResult(task_id)
         
-        task_data = {
-            "task_id": task_id,
-            "task_type": task_type,
-            "file_path": file_path,
-            "status": "completed",
-            "timestamp": time.time()
-        }
-        collection.insert_one(task_data)
-    except Exception as e:
-        # In a real app, you might log this error instead of printing
-        print(f"Failed to insert task into MongoDB: {e}")
+        if task.state == 'PENDING':
+            yield "Task is pending...", [], None, task_id
+        elif task.state == 'PROGRESS':
+            status = task.info.get('status', 'Processing...')
+            results = task.info.get('result', [])
+            yield status, results, None, task_id
+        elif task.state == 'SUCCESS':
+            status = task.info.get('status', "Task complete!")
+            results = task.info.get('result', [])
+            html_output = f"<h3>Generated Images:</h3>"
+            
+            # Add to the mock database on success
+            global mock_database
+            mock_database.append({
+                "task_id": task_id,
+                "type": "2D Image",
+                "status": "SUCCESS",
+                "description": f"Text-to-Image for prompt: '{task.info.get('prompt', 'N/A')}'",
+                "files": results,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            })
 
-# --- Core Generation Function (Mock) ---
-def generate_file(generation_type):
-    """
-    A mock function to simulate a file generation task.
-    In a real app, this would trigger your actual generation process.
-    """
-    # Simulate a long-running process
-    time.sleep(random.uniform(2, 5))
-    
-    # Generate a unique task ID
-    task_id = str(uuid.uuid4())
-    
-    # Create a dummy file path
-    file_name = f"{task_id}_{generation_type}_output.txt"
-    file_path = os.path.join("generated_files", file_name)
-    os.makedirs(os.path.dirname(file_path), exist_ok=True)
-    
-    with open(file_path, "w") as f:
-        f.write(f"This is a generated file for task ID: {task_id}\n")
-        f.write(f"Type: {generation_type}\n")
-    
-    # Insert task into MongoDB
-    insert_task(task_id, generation_type, file_path)
-    
-    # Return the task ID and a success message
-    return f"Task completed successfully! Your Task ID is:", task_id
+            # Format the output for the Gradio gallery and HTML link
+            for url in results:
+                html_output += f"<a href='{url}' target='_blank'>Download Image</a><br>"
+            yield status, results, html_output, None
+            return
+        elif task.state == 'FAILURE':
+            error_msg = task.info.get('error', "An error occurred.")
+            yield f"Error: {error_msg}", [], None, None
+            return
+        else:
+            yield f"Task state: {task.state}", [], None, task_id
+            
+        time.sleep(2) # Poll every 2 seconds
 
-# --- Gradio UI Layout with gr.Blocks ---
-with gr.Blocks(title="Generative Application") as demo:
-    # Header Section
-    gr.Markdown(
-        """
-        # 🤖 Generative Art & Model App
-        Welcome! Use the options below to generate a new file and track your tasks.
-        """
-    )
+def launch_grid_generation(grid_data_str, width, height, num_images, s3_bucket_name, base_filename):
+    """Starts the grid visualization task and returns the task ID."""
+    task = generate_image_from_grid_task.delay(grid_data_str, width, height, num_images, s3_bucket_name, base_filename)
+    return task.id
 
-    # MongoDB Status and Generation Section
-    with gr.Row():
-        with gr.Column(scale=1):
-            gr.Markdown("### MongoDB Status")
-            # This Markdown component will be updated with the connection status
-            mongo_status_text = gr.Markdown(get_mongo_status())
-            gr.Markdown("---")
-            gr.Markdown("### Generation Options")
-            generation_type = gr.Radio(
-                ["2D", "3D", "Decimated"],
-                label="Select Generation Type",
-                value="2D"
+def track_grid_generation_progress(task_id, task_id_state):
+    """Tracks the status of the grid generation task and yields updates."""
+    if not task_id:
+        yield "Waiting for task to start...", None, None
+        return
+        
+    while True:
+        task = generate_image_from_grid_task.AsyncResult(task_id)
+        
+        if task.state == 'PENDING':
+            yield "Task is pending...", None, task_id
+        elif task.state == 'PROGRESS':
+            status = task.info.get('status', 'Processing...')
+            results = task.info.get('result', [])
+            images = [url for url in results]
+            yield status, images, task_id
+        elif task.state == 'SUCCESS':
+            status = task.info.get('status', "Task complete!")
+            results = task.info.get('result', [])
+            images = [url for url in results]
+            
+            # Add to the mock database on success
+            global mock_database
+            mock_database.append({
+                "task_id": task_id,
+                "type": "Grid Visualization",
+                "status": "SUCCESS",
+                "description": "Image generated from grid data",
+                "files": results,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            })
+
+            yield status, images, None
+            return
+        elif task.state == 'FAILURE':
+            error_msg = task.info.get('error', "An error occurred.")
+            yield f"Error: {error_msg}", None, None
+            return
+        else:
+            yield f"Task state: {task.state}", None, task_id
+
+        time.sleep(2)
+
+def launch_3d_generation(image_2d_input, s3_bucket_name, base_filename):
+    """Starts the 3D model generation task."""
+    if image_2d_input is None:
+        return None
+    
+    image_bytes = io.BytesIO()
+    image_2d_input.save(image_bytes, format='PNG')
+    image_bytes.seek(0)
+    
+    task = generate_3d_from_2d_task.delay(image_bytes.getvalue(), s3_bucket_name, base_filename)
+    return task.id
+
+def track_3d_generation_progress(task_id, task_id_state):
+    """Tracks the status of the 3D model generation task and yields updates."""
+    if not task_id:
+        yield "Waiting for task to start...", None, None
+        return
+        
+    while True:
+        task = generate_3d_from_2d_task.AsyncResult(task_id)
+        
+        if task.state == 'PENDING':
+            yield "Task is pending...", None, task_id
+        elif task.state == 'PROGRESS':
+            status = task.info.get('status', 'Processing...')
+            yield status, None, task_id
+        elif task.state == 'SUCCESS':
+            status = task.info.get('status', "Task complete!")
+            url = task.info.get('result', None)
+            
+            # Add to the mock database on success
+            global mock_database
+            mock_database.append({
+                "task_id": task_id,
+                "type": "3D Model",
+                "status": "SUCCESS",
+                "description": "3D model generated from 2D image",
+                "files": [url] if url else [],
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            })
+
+            yield status, gr.HTML(f"<a href='{url}' target='_blank'>Download 3D Model</a>"), None
+            return
+        elif task.state == 'FAILURE':
+            error_msg = task.info.get('error', "An error occurred.")
+            yield f"Error: {error_msg}", None, None
+            return
+        else:
+            yield f"Task state: {task.state}", None, task_id
+
+        time.sleep(2)
+        
+def launch_decimation_task(input_3d_file, s3_bucket_name, base_filename):
+    """Starts the 3D decimation task."""
+    if input_3d_file is None:
+        return None
+    
+    with open(input_3d_file.name, 'rb') as f:
+        file_bytes = f.read()
+
+    task = decimate_3d_task.delay(file_bytes, s3_bucket_name, base_filename)
+    return task.id
+
+def track_decimation_progress(task_id, task_id_state):
+    """Tracks the status of the 3D decimation task and yields updates."""
+    if not task_id:
+        yield "Waiting for task to start...", None, None
+        return
+
+    while True:
+        task = decimate_3d_task.AsyncResult(task_id)
+
+        if task.state == 'PENDING':
+            yield "Task is pending...", None, task_id
+        elif task.state == 'PROGRESS':
+            status = task.info.get('status', 'Processing...')
+            yield status, None, task_id
+        elif task.state == 'SUCCESS':
+            status = task.info.get('status', "Task complete!")
+            url = task.info.get('result', None)
+
+            # Add to the mock database on success
+            global mock_database
+            mock_database.append({
+                "task_id": task_id,
+                "type": "3D Decimation",
+                "status": "SUCCESS",
+                "description": "3D model polygon count reduced",
+                "files": [url] if url else [],
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            })
+
+            yield status, gr.HTML(f"<a href='{url}' target='_blank'>Download Decimated 3D Model</a>"), None
+            return
+        elif task.state == 'FAILURE':
+            error_msg = task.info.get('error', "An error occurred.")
+            yield f"Error: {error_msg}", None, None
+            return
+        else:
+            yield f"Task state: {task.state}", None, task_id
+            
+        time.sleep(2)
+
+def get_stored_files():
+    """Retrieves and formats the stored file data for display."""
+    headers = ["Task ID", "Type", "Description", "Status", "Timestamp", "Download Link"]
+    data = []
+    
+    for item in mock_database:
+        link_html = ""
+        if item.get("files"):
+            for url in item["files"]:
+                link_html += f"<a href='{url}' target='_blank'>Download</a> "
+        
+        row = [
+            item.get("task_id", "N/A"),
+            item.get("type", "N/A"),
+            item.get("description", "N/A"),
+            item.get("status", "N/A"),
+            item.get("timestamp", "N/A"),
+            link_html
+        ]
+        data.append(row)
+    
+    return gr.Dataframe(headers=headers, data=data)
+
+with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
+    gr.Markdown("# AI-Powered 3D Asset Generator")
+    gr.Markdown("This application uses Celery to run generation tasks in the background, keeping the Gradio app responsive. The generated assets are uploaded to S3.")
+
+    s3_bucket_input_global = gr.Textbox(label="S3 Bucket Name", value="sparkassets", interactive=True)
+    
+    # State variables to store task IDs
+    task_id_state = gr.State(None)
+
+    with gr.Tabs():
+        with gr.TabItem("Text to Image"):
+            gr.Markdown("## Text-to-Image Generation")
+            gr.Markdown("Generate images from text descriptions. **All prompts are automatically optimized for 3D asset generation**.")
+            
+            with gr.Row():
+                gr.Markdown("### 🎯 3D Generation Optimization")
+                gr.Checkbox(label="Enabled", value=True, interactive=False) 
+
+            text_to_image_prompt = gr.Textbox(
+                label="Text Prompt", 
+                placeholder="💡 Tip: Describe objects clearly for best 3D generation results.",
+                lines=3
             )
-            generate_btn = gr.Button("Generate File", variant="primary")
+            base_filename_txt2img = gr.Textbox(label="Base Filename for Image(s)", placeholder="e.g., my_2d_image")
 
-        with gr.Column(scale=2):
-            gr.Markdown("### Task Output & Status")
-            with gr.Column():
-                # A place to display the loading spinner and messages
-                status_message_md = gr.Markdown("Ready to generate...", label="Status")
-                
-                # These components will display the task ID after completion
-                task_id_label = gr.Markdown(visible=False)
-                task_id_output = gr.Textbox(
-                    label="Generated Task ID",
-                    interactive=False,
-                    visible=False
+            with gr.Row():
+                width_slider_txt2img = gr.Slider(minimum=256, maximum=1024, value=512, step=64, label="Width")
+                height_slider_txt2img = gr.Slider(minimum=256, maximum=1024, value=512, step=64, label="Height")
+            
+            with gr.Row():
+                num_images_slider_txt2img = gr.Slider(minimum=1, maximum=4, value=1, step=1, label="Number of Images")
+                model_dropdown_txt2img = gr.Dropdown(
+                    label="Model", 
+                    choices=["SDXL Turbo: High-quality local GPU image generation optimized for 3D"], 
+                    value="SDXL Turbo: High-quality local GPU image generation optimized for 3D",
+                    interactive=False
                 )
-
-    # Event Handlers
-    @generate_btn.click(
-        fn=generate_file,
-        inputs=generation_type,
-        outputs=[task_id_label, task_id_output]
-    )
-    def update_ui(generation_type):
-        """
-        Wrapper function to handle UI updates before and after the main function.
-        """
-        # Show loading message
-        yield gr.Markdown.update(value="Generating file, please wait...", visible=True), gr.Markdown.update(visible=False), gr.Textbox.update(visible=False)
+            
+            generate_image_button = gr.Button("🚀 Generate Image from Text")
+            image_generation_status = gr.Textbox(label="Image Generation Status", lines=1)
+            image_generation_output = gr.Gallery(label="Generated Images", columns=2, height='auto')
+            image_generation_link = gr.HTML(label="Download Links")
+            
+            generate_image_button.click(
+                fn=launch_2d_generation,
+                inputs=[text_to_image_prompt, width_slider_txt2img, height_slider_txt2img, num_images_slider_txt2img, s3_bucket_input_global, base_filename_txt2img],
+                outputs=[task_id_state]
+            ).then(
+                fn=track_2d_generation_progress,
+                inputs=[task_id_state, task_id_state], # Pass task_id_state as input and output to keep it updated
+                outputs=[image_generation_status, image_generation_output, image_generation_link, task_id_state]
+            )
         
-        # Run the generation function
-        message, task_id = generate_file(generation_type)
-        
-        # Update UI with the final output
-        yield gr.Markdown.update(value=message, visible=True), gr.Markdown.update(value="Your Task ID is:", visible=True), gr.Textbox.update(value=task_id, visible=True)
+        with gr.TabItem("Grid to Image"):
+            gr.Markdown("## Grid to Image Visualization")
+            gr.Markdown("""
+            **Grid Format**
+            Use numbers to represent different terrain types:
+            * **0**: Plain
+            * **1**: Forest
+            * **2**: Mountain
+            * **3**: Water
+            * **4**: Desert
+            * **5**: Snow
+            * **6**: Swamp
+            * **7**: Hills
+            * **8**: Urban
+            * **9**: Ruins
+            """)
+            
+            grid_data_input = gr.Textbox(label="Grid Data (JSON array of arrays)", lines=10, 
+                                         placeholder="Example: [[0,0,1,1],[0,1,1,0]]")
+            load_sample_grid_button = gr.Button("Load Sample Grid")
+            
+            base_filename_grid2img = gr.Textbox(label="Base Filename for Visualization", placeholder="e.g., my_grid_map")
 
-# Launch the app
-if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+            with gr.Row():
+                width_slider_grid2img = gr.Slider(minimum=256, maximum=1024, value=512, step=64, label="Width")
+                height_slider_grid2img = gr.Slider(minimum=256, maximum=1024, value=512, step=64, label="Height")
+            
+            with gr.Row():
+                num_images_slider_grid2img = gr.Slider(minimum=1, maximum=4, value=1, step=1, label="Number of Images")
+                model_dropdown_grid2img = gr.Dropdown(
+                    label="Model", 
+                    choices=["SDXL Turbo: High-quality local GPU image generation optimized for 3D"], 
+                    value="SDXL Turbo: High-quality local GPU image generation optimized for 3D",
+                    interactive=False
+                )
+            
+            generate_grid_image_button = gr.Button("Generate Image from Grid")
+            grid_generation_status = gr.Textbox(label="Status", lines=1)
+            grid_visualization_output = gr.Gallery(label="Grid Visualization", columns=2, height='auto')
+            
+            load_sample_grid_button.click(
+                fn=load_sample_grid,
+                inputs=[],
+                outputs=[grid_data_input]
+            )
+
+            generate_grid_image_button.click(
+                fn=launch_grid_generation,
+                inputs=[grid_data_input, width_slider_grid2img, height_slider_grid2img, num_images_slider_grid2img, s3_bucket_input_global, base_filename_grid2img],
+                outputs=[task_id_state]
+            ).then(
+                fn=track_grid_generation_progress,
+                inputs=[task_id_state, task_id_state],
+                outputs=[grid_generation_status, grid_visualization_output, task_id_state]
+            )
+
+        with gr.TabItem("3D Generation"):
+            gr.Markdown("## 3D Model Generation from 2D Image")
+            gr.Markdown("Upload a 2D image to generate a 3D GLB model.")
+            
+            input_2d_image_for_3d = gr.Image(label="Upload 2D Image", type="pil")
+            base_filename_3d_gen = gr.Textbox(label="Base Filename for 3D Model (e.g., my_3d_asset)")
+            
+            generate_3d_button = gr.Button("Generate 3D Model")
+            status_3d_gen = gr.Textbox(label="3D Generation Status", lines=1)
+            output_3d_model_link = gr.HTML(label="Generated 3D Model Link")
+
+            generate_3d_button.click(
+                fn=launch_3d_generation,
+                inputs=[input_2d_image_for_3d, s3_bucket_input_global, base_filename_3d_gen],
+                outputs=[task_id_state]
+            ).then(
+                fn=track_3d_generation_progress,
+                inputs=[task_id_state, task_id_state],
+                outputs=[status_3d_gen, output_3d_model_link, task_id_state]
+            )
+
+        with gr.TabItem("Decimated 3D"):
+            gr.Markdown("## Decimate 3D Model")
+            gr.Markdown("Upload an existing 3D GLB/OBJ/STL model to reduce its polygon count.")
+            
+            input_3d_file_decimate = gr.File(label="Upload 3D Model (GLB, OBJ, STL)", type="filepath")
+            base_filename_decimate = gr.Textbox(label="Base Filename for Decimated Model (e.g., my_decimated_asset)")
+            
+            decimate_button = gr.Button("Decimate 3D Model")
+            status_decimate = gr.Textbox(label="Decimation Status", lines=1)
+            output_decimated_model_link = gr.HTML(label="Decimated 3D Model Link")
+
+            decimate_button.click(
+                fn=launch_decimation_task,
+                inputs=[input_3d_file_decimate, s3_bucket_input_global, base_filename_decimate],
+                outputs=[task_id_state]
+            ).then(
+                fn=track_decimation_progress,
+                inputs=[task_id_state, task_id_state],
+                outputs=[status_decimate, output_decimated_model_link, task_id_state]
+            )
+        
+        # New Tab for Task Management and Storage
+        with gr.TabItem("Task Management & Storage"):
+            gr.Markdown("## Current Task Status")
+            gr.Markdown("This section shows the ID of the current background task.")
+            
+            task_id_display = gr.Textbox(label="Current Task ID", interactive=False)
+            task_id_state.change(fn=lambda x: x, inputs=task_id_state, outputs=task_id_display)
+
+            gr.Markdown("---")
+            gr.Markdown("## Stored Files (Simulated Database)")
+            gr.Markdown("This table shows a history of all successfully completed tasks.")
+            
+            refresh_button = gr.Button("Refresh Stored Files")
+            
+            # The Dataframe to display the mock database entries
+            stored_files_output = gr.Dataframe(
+                headers=["Task ID", "Type", "Description", "Status", "Timestamp", "Download Link"],
+                row_count=10,
+                col_count=(6, "fixed"),
+                interactive=False
+            )
+            
+            refresh_button.click(fn=get_stored_files, outputs=stored_files_output)
+
+
+demo.launch(server_name="0.0.0.0", server_port=7860)
+
