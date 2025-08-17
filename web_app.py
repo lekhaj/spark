@@ -176,9 +176,6 @@ def track_decimation_progress(task_id):
 
 def fetch_prompts_from_db(db_name, collection_name):
     """Fetches text prompts from MongoDB."""
-    # This is a placeholder. You would implement the actual MongoDB connection and fetch logic here.
-    # For now, it will return a sample list.
-    print(f"Fetching prompts from database: {db_name}, collection: {collection_name}")
     try:
         from pymongo import MongoClient
         client = MongoClient("mongodb://localhost:27017/")
@@ -187,16 +184,17 @@ def fetch_prompts_from_db(db_name, collection_name):
         
         # Fetch all documents and get the 'prompt' field
         prompts = [doc.get('prompt') for doc in collection.find({}) if doc.get('prompt')]
-        return prompts
+        if not prompts:
+            return gr.Dropdown.update(choices=["No prompts found"], value="No prompts found")
+        return gr.Dropdown.update(choices=prompts, value=prompts[0] if prompts else None)
+    except ImportError:
+        return gr.Dropdown.update(choices=["pymongo not installed. Please run pip install pymongo"], value="pymongo not installed. Please run pip install pymongo")
     except Exception as e:
         print(f"Error fetching prompts: {e}")
-        return gr.Dropdown.update(choices=["Error fetching prompts"], value="Error fetching prompts")
+        return gr.Dropdown.update(choices=[f"Error fetching prompts: {e}"], value=f"Error fetching prompts: {e}")
 
 def fetch_grids_from_db(db_name, collection_name):
     """Fetches grids from MongoDB."""
-    # This is a placeholder. You would implement the actual MongoDB connection and fetch logic here.
-    # For now, it will return a sample list.
-    print(f"Fetching grids from database: {db_name}, collection: {collection_name}")
     try:
         from pymongo import MongoClient
         client = MongoClient("mongodb://localhost:27017/")
@@ -205,15 +203,21 @@ def fetch_grids_from_db(db_name, collection_name):
         
         # Fetch all documents and get the 'grid' field
         grids = [json.dumps(doc.get('grid')) for doc in collection.find({}) if doc.get('grid')]
-        return grids
+        if not grids:
+            return gr.Dropdown.update(choices=["No grids found"], value="No grids found")
+        return gr.Dropdown.update(choices=grids, value=grids[0] if grids else None)
+    except ImportError:
+        return gr.Dropdown.update(choices=["pymongo not installed. Please run pip install pymongo"], value="pymongo not installed. Please run pip install pymongo")
     except Exception as e:
         print(f"Error fetching grids: {e}")
-        return gr.Dropdown.update(choices=["Error fetching grids"], value="Error fetching grids")
+        return gr.Dropdown.update(choices=[f"Error fetching grids: {e}"], value=f"Error fetching grids: {e}")
 
 def launch_2d_db_generation(prompt, width, height, num_images, s3_bucket_name, base_filename):
     """Starts 2D image generation from a database prompt."""
     if not prompt:
         return None, "Please select a prompt.", None
+    if "Error" in prompt or "No prompts found" in prompt:
+        return None, "Invalid prompt selection.", None
     task = generate_2d_from_db_task.delay(prompt, width, height, num_images, s3_bucket_name, base_filename)
     return task.id, "Task started...", None
 
@@ -221,6 +225,8 @@ def launch_grid_db_generation(grid_data_str, width, height, num_images, s3_bucke
     """Starts grid image generation from a database grid."""
     if not grid_data_str:
         return None, "Please select a grid.", None
+    if "Error" in grid_data_str or "No grids found" in grid_data_str:
+        return None, "Invalid grid selection.", None
     task = generate_grid_from_db_task.delay(grid_data_str, width, height, num_images, s3_bucket_name, base_filename)
     return task.id, "Task started...", None
 
@@ -231,7 +237,6 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
     s3_bucket_input_global = gr.Textbox(label="S3 Bucket Name", value="sparkassets", interactive=True)
     
     # State variables to store task IDs
-    task_id_state = gr.State(None)
     task_id_states = {
         "txt2img": gr.State(None),
         "grid2img": gr.State(None),
@@ -512,4 +517,3 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
                     task_id_states["db_grid2img"].change(fn=lambda x: x, inputs=task_id_states["db_grid2img"], outputs=task_id_display_db_grid2img)
 
     demo.launch(server_name="0.0.0.0", server_port=7860)
-
