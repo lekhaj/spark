@@ -499,7 +499,7 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
                     generate_db_image_button = gr.Button("🚀 Generate with SDXL Turbo")
                     
                     db_image_status = gr.Textbox(label="Status")
-                    db_image_output = gr..Gallery(label="Generated Image (SDXL Turbo Output)")
+                    db_image_output = gr.Gallery(label="Generated Image (SDXL Turbo Output)")
                     db_image_gen_status = gr.Textbox(label="Generation Status")
                     document_id_output_db = gr.Textbox(label="Generated Document ID", interactive=False)
 
