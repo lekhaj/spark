@@ -13,7 +13,6 @@ import time
 import io
 from PIL import Image
 
-# Import pymongo here at the top level to ensure it's available
 try:
     from pymongo import MongoClient
     mongo_client_available = True
@@ -192,15 +191,14 @@ def fetch_prompts_from_db(db_name, collection_name):
     
     try:
         client = MongoClient("mongodb://sagar:KrSiDnSI9m8RgcHE@ec2-15-206-99-66.ap-south-1.compute.amazonaws.com:27017/World_builder?authSource=admin", serverSelectionTimeoutMS=5000)
-        client.admin.command('ping') # The ping command is cheap and does not require auth.
+        client.admin.command('ping') 
         db = client[db_name]
         collection = db[collection_name]
         
-        # Fetch all documents and get the 'biome_name' and 'theme_prompt' fields
         prompts = [doc.get('theme_prompt') for doc in collection.find({}) if doc.get('theme_prompt')]
         
         if not prompts:
-            return gr.Dropdown.update(choices=["No prompts found"], value="No prompts found")
+            return gr.Dropdown.update(choices=["No prompts found in this collection"], value="No prompts found in this collection")
         
         return gr.Dropdown.update(choices=prompts, value=prompts[0] if prompts else None)
 
@@ -219,11 +217,10 @@ def fetch_grids_from_db(db_name, collection_name):
         db = client[db_name]
         collection = db[collection_name]
         
-        # Fetch all documents and get the 'possible_grids' field
         grids = [json.dumps(doc.get('possible_grids')[0].get('layout')) for doc in collection.find({}) if doc.get('possible_grids') and doc['possible_grids'][0].get('layout')]
         
         if not grids:
-            return gr.Dropdown.update(choices=["No grids found"], value="No grids found")
+            return gr.Dropdown.update(choices=["No grids found in this collection"], value="No grids found in this collection")
             
         return gr.Dropdown.update(choices=grids, value=grids[0] if grids else None)
 
@@ -281,7 +278,6 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
 
     s3_bucket_input_global = gr.Textbox(label="S3 Bucket Name", value="sparkassets", interactive=True)
     
-    # State variables to store task IDs
     task_id_states = {
         "txt2img": gr.State(None),
         "grid2img": gr.State(None),
@@ -291,7 +287,6 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
         "db_grid2img": gr.State(None)
     }
 
-    # State variables to store document IDs
     doc_id_states = {
         "txt2img": gr.State(None),
         "grid2img": gr.State(None),
@@ -474,8 +469,8 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
                     """)
                     
                     with gr.Row():
-                        db_name_prompts = gr.Textbox(label="Database Name", value="World_builder", interactive=False)
-                        collection_name_prompts = gr.Textbox(label="Collection Name", value="biomes", interactive=False)
+                        db_name_prompts = gr.Textbox(label="Database Name", value="gradio_app_db", interactive=True)
+                        collection_name_prompts = gr.Textbox(label="Collection Name", value="generation_tasks", interactive=True)
                         fetch_prompts_button = gr.Button("Fetch Prompts")
 
                     with gr.Accordion("🎯 SDXL Turbo Features:", open=False):
@@ -504,7 +499,7 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
                     generate_db_image_button = gr.Button("🚀 Generate with SDXL Turbo")
                     
                     db_image_status = gr.Textbox(label="Status")
-                    db_image_output = gr.Gallery(label="Generated Image (SDXL Turbo Output)")
+                    db_image_output = gr..Gallery(label="Generated Image (SDXL Turbo Output)")
                     db_image_gen_status = gr.Textbox(label="Generation Status")
                     document_id_output_db = gr.Textbox(label="Generated Document ID", interactive=False)
 
@@ -534,8 +529,8 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
                     gr.Markdown("## Grid Data")
                     
                     with gr.Row():
-                        db_name_grids = gr.Textbox(label="Database Name", value="World_builder", interactive=False)
-                        collection_name_grids = gr.Textbox(label="Collection Name", value="biomes", interactive=False)
+                        db_name_grids = gr.Textbox(label="Database Name", value="World_builder", interactive=True)
+                        collection_name_grids = gr.Textbox(label="Collection Name", value="biomes", interactive=True)
                         fetch_grids_button = gr.Button("Fetch Grids")
 
                     with gr.Row():
