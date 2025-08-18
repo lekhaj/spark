@@ -13,6 +13,14 @@ import time
 import io
 from PIL import Image
 
+# Import pymongo here at the top level to ensure it's available
+try:
+    from pymongo import MongoClient
+    mongo_client_available = True
+except ImportError:
+    mongo_client_available = False
+    print("Warning: pymongo not found. MongoDB functionality will be disabled.")
+
 def load_sample_grid():
     """Loads a predefined sample grid as a string."""
     sample_grid = """
@@ -179,38 +187,46 @@ def track_decimation_progress(task_id):
 
 def fetch_prompts_from_db(db_name, collection_name):
     """Fetches text prompts from MongoDB."""
+    if not mongo_client_available:
+        return gr.Dropdown.update(choices=["pymongo not installed. Please run pip install pymongo"], value="pymongo not installed. Please run pip install pymongo")
+    
     try:
-        from pymongo import MongoClient
-        client = MongoClient("mongodb://sagar:KrSiDnSI9m8RgcHE@ec2-15-206-99-66.ap-south-1.compute.amazonaws.com:27017/World_builder?authSource=admin")
+        client = MongoClient("mongodb://sagar:KrSiDnSI9m8RgcHE@ec2-15-206-99-66.ap-south-1.compute.amazonaws.com:27017/World_builder?authSource=admin", serverSelectionTimeoutMS=5000)
+        client.admin.command('ping') # The ping command is cheap and does not require auth.
         db = client[db_name]
         collection = db[collection_name]
         
         # Fetch all documents and get the 'biome_name' and 'theme_prompt' fields
         prompts = [doc.get('theme_prompt') for doc in collection.find({}) if doc.get('theme_prompt')]
+        
         if not prompts:
             return gr.Dropdown.update(choices=["No prompts found"], value="No prompts found")
+        
         return gr.Dropdown.update(choices=prompts, value=prompts[0] if prompts else None)
-    except ImportError:
-        return gr.Dropdown.update(choices=["pymongo not installed. Please run pip install pymongo"], value="pymongo not installed. Please run pip install pymongo")
+
     except Exception as e:
         print(f"Error fetching prompts: {e}")
         return gr.Dropdown.update(choices=[f"Error fetching prompts: {e}"], value=f"Error fetching prompts: {e}")
 
 def fetch_grids_from_db(db_name, collection_name):
     """Fetches grids from MongoDB."""
+    if not mongo_client_available:
+        return gr.Dropdown.update(choices=["pymongo not installed. Please run pip install pymongo"], value="pymongo not installed. Please run pip install pymongo")
+
     try:
-        from pymongo import MongoClient
-        client = MongoClient("mongodb://sagar:KrSiDnSI9m8RgcHE@ec2-15-206-99-66.ap-south-1.compute.amazonaws.com:27017/World_builder?authSource=admin")
+        client = MongoClient("mongodb://sagar:KrSiDnSI9m8RgcHE@ec2-15-206-99-66.ap-south-1.compute.amazonaws.com:27017/World_builder?authSource=admin", serverSelectionTimeoutMS=5000)
+        client.admin.command('ping')
         db = client[db_name]
         collection = db[collection_name]
         
         # Fetch all documents and get the 'possible_grids' field
         grids = [json.dumps(doc.get('possible_grids')[0].get('layout')) for doc in collection.find({}) if doc.get('possible_grids') and doc['possible_grids'][0].get('layout')]
+        
         if not grids:
             return gr.Dropdown.update(choices=["No grids found"], value="No grids found")
+            
         return gr.Dropdown.update(choices=grids, value=grids[0] if grids else None)
-    except ImportError:
-        return gr.Dropdown.update(choices=["pymongo not installed. Please run pip install pymongo"], value="pymongo not installed. Please run pip install pymongo")
+
     except Exception as e:
         print(f"Error fetching grids: {e}")
         return gr.Dropdown.update(choices=[f"Error fetching grids: {e}"], value=f"Error fetching grids: {e}")
@@ -231,9 +247,11 @@ def launch_grid_db_generation(document_id, width, height, num_images, s3_bucket_
     
 def get_doc_id_from_prompt(prompt, db_name, collection_name):
     """Returns the document ID for a given prompt."""
+    if not mongo_client_available:
+        return None
+
     try:
-        from pymongo import MongoClient
-        client = MongoClient("mongodb://sagar:KrSiDnSI9m8RgcHE@ec2-15-206-99-66.ap-south-1.compute.amazonaws.com:27017/World_builder?authSource=admin")
+        client = MongoClient("mongodb://sagar:KrSiDnSI9m8RgcHE@ec2-15-206-99-66.ap-south-1.compute.amazonaws.com:27017/World_builder?authSource=admin", serverSelectionTimeoutMS=5000)
         db = client[db_name]
         collection = db[collection_name]
         doc = collection.find_one({"theme_prompt": prompt})
@@ -244,9 +262,11 @@ def get_doc_id_from_prompt(prompt, db_name, collection_name):
 
 def get_doc_id_from_grid(grid, db_name, collection_name):
     """Returns the document ID for a given grid."""
+    if not mongo_client_available:
+        return None
+
     try:
-        from pymongo import MongoClient
-        client = MongoClient("mongodb://sagar:KrSiDnSI9m8RgcHE@ec2-15-206-99-66.ap-south-1.compute.amazonaws.com:27017/World_builder?authSource=admin")
+        client = MongoClient("mongodb://sagar:KrSiDnSI9m8RgcHE@ec2-15-206-99-66.ap-south-1.compute.amazonaws.com:27017/World_builder?authSource=admin", serverSelectionTimeoutMS=5000)
         db = client[db_name]
         collection = db[collection_name]
         doc = collection.find_one({"possible_grids.layout": json.loads(grid)})
