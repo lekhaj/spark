@@ -187,7 +187,7 @@ def track_decimation_progress(task_id):
 def fetch_prompts_from_db(db_name, collection_name):
     """Fetches text prompts from MongoDB."""
     if not mongo_client_available:
-        return gr.Dropdown.update(choices=["pymongo not installed. Please run pip install pymongo"], value="pymongo not installed. Please run pip install pymongo")
+        return gr.Dropdown(choices=["pymongo not installed. Please run pip install pymongo"], value="pymongo not installed. Please run pip install pymongo")
     
     try:
         client = MongoClient("mongodb://sagar:KrSiDnSI9m8RgcHE@ec2-15-206-99-66.ap-south-1.compute.amazonaws.com:27017/World_builder?authSource=admin", serverSelectionTimeoutMS=5000)
@@ -198,18 +198,18 @@ def fetch_prompts_from_db(db_name, collection_name):
         prompts = [doc.get('theme_prompt') for doc in collection.find({}) if doc.get('theme_prompt')]
         
         if not prompts:
-            return gr.Dropdown.update(choices=["No prompts found in this collection"], value="No prompts found in this collection")
+            return gr.Dropdown(choices=["No prompts found in this collection"], value="No prompts found in this collection")
         
-        return gr.Dropdown.update(choices=prompts, value=prompts[0] if prompts else None)
+        return gr.Dropdown(choices=prompts, value=prompts[0] if prompts else None)
 
     except Exception as e:
         print(f"Error fetching prompts: {e}")
-        return gr.Dropdown.update(choices=[f"Error fetching prompts: {e}"], value=f"Error fetching prompts: {e}")
+        return gr.Dropdown(choices=[f"Error fetching prompts: {e}"], value=f"Error fetching prompts: {e}")
 
 def fetch_grids_from_db(db_name, collection_name):
     """Fetches grids from MongoDB."""
     if not mongo_client_available:
-        return gr.Dropdown.update(choices=["pymongo not installed. Please run pip install pymongo"], value="pymongo not installed. Please run pip install pymongo")
+        return gr.Dropdown(choices=["pymongo not installed. Please run pip install pymongo"], value="pymongo not installed. Please run pip install pymongo")
 
     try:
         client = MongoClient("mongodb://sagar:KrSiDnSI9m8RgcHE@ec2-15-206-99-66.ap-south-1.compute.amazonaws.com:27017/World_builder?authSource=admin", serverSelectionTimeoutMS=5000)
@@ -220,13 +220,13 @@ def fetch_grids_from_db(db_name, collection_name):
         grids = [json.dumps(doc.get('possible_grids')[0].get('layout')) for doc in collection.find({}) if doc.get('possible_grids') and doc['possible_grids'][0].get('layout')]
         
         if not grids:
-            return gr.Dropdown.update(choices=["No grids found in this collection"], value="No grids found in this collection")
+            return gr.Dropdown(choices=["No grids found in this collection"], value="No grids found in this collection")
             
-        return gr.Dropdown.update(choices=grids, value=grids[0] if grids else None)
+        return gr.Dropdown(choices=grids, value=grids[0] if grids else None)
 
     except Exception as e:
         print(f"Error fetching grids: {e}")
-        return gr.Dropdown.update(choices=[f"Error fetching grids: {e}"], value=f"Error fetching grids: {e}")
+        return gr.Dropdown(choices=[f"Error fetching grids: {e}"], value=f"Error fetching grids: {e}")
 
 def launch_2d_db_generation(document_id, width, height, num_images, s3_bucket_name, base_filename):
     """Starts 2D image generation from a database prompt."""
