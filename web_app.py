@@ -14,130 +14,143 @@ import gradio as gr
 import json
 import time
 from bson.objectid import ObjectId
+from pymongo import MongoClient
+from pymongo.errors import ConnectionFailure, OperationFailure
 
-# This block of code simulates a MongoDB connection and data.
-# In your actual application, you would replace this with your
-# PyMongo client and database operations.
-try:
-    from pymongo import MongoClient
-    from pymongo.errors import ConnectionFailure
-    # Try to connect to a mock MongoDB client to check for installation
-    _ = MongoClient("mongodb://localhost:27017/", serverSelectionTimeoutMS=1)
-    mongo_client_available = True
-except ImportError:
-    print("Warning: pymongo is not installed. Using mock database instead.")
-    mongo_client_available = False
-except ConnectionFailure:
-    print("Warning: Could not connect to a local MongoDB instance. Using mock database instead.")
-    mongo_client_available = False
+# MongoDB Connection String and details provided by the user.
+CONNECTION_STRING = "mongodb://sagar:KrSiDnSI9m8RgcHE@ec2-15-206-99-66.ap-south-1.compute.amazonaws.com:27017/World_builder?authSource=admin"
 
-# --- MOCK DATABASE AND FUNCTIONS ---
-# This dictionary simulates a MongoDB collection. Each key is the document's
-# unique ObjectId, and the value is the document itself.
-# This structure is necessary to correctly model the user's request for tracking
-# assets by their unique ID.
-MOCK_BIOMES_COLLECTION = {
-    # Biome 1: Partially completed pipeline
-    str(ObjectId()): {
-        "biome_name": "Forest Glade",
-        "description": "A tranquil glade with ancient trees and a small pond.",
-        "image_generation_details": {
-            "status": "COMPLETED",
-            "prompt": "high-resolution photo of a dense, sun-dappled forest glade, tranquil, fantasy art style",
-            "model_used": "Stable Diffusion XL",
-            "generated_images": [
-                "https://placehold.co/400x400/000000/FFFFFF?text=Forest+Image+1",
-                "https://placehold.co/400x400/000000/FFFFFF?text=Forest+Image+2"
-            ],
-            "timestamp": time.time()
-        },
-        "3d_generation_details": {
-            "status": "NOT_STARTED"
-        }
-    },
-    # Biome 2: Fully completed pipeline
-    str(ObjectId()): {
-        "biome_name": "Crystal Cave",
-        "description": "A glowing cave filled with bioluminescent crystals.",
-        "image_generation_details": {
-            "status": "COMPLETED",
-            "prompt": "cinematic shot of a massive, glowing crystal cave, bioluminescence, surreal, deep colors",
-            "model_used": "Midjourney 6",
-            "generated_images": [
-                "https://placehold.co/400x400/000000/FFFFFF?text=Cave+Image+1",
-                "https://placehold.co/400x400/000000/FFFFFF?text=Cave+Image+2"
-            ],
-            "timestamp": time.time()
-        },
-        "3d_generation_details": {
-            "status": "COMPLETED",
-            "input_images_count": 2,
-            "model_url": "https://placehold.co/400x200/50C878/000000?text=3D+Model+Link",
-            "timestamp": time.time()
-        }
-    },
-    # Biome 3: New biome, not started
-    str(ObjectId()): {
-        "biome_name": "Desert Oasis",
-        "description": "A verdant oasis surrounded by endless sand dunes.",
-        "image_generation_details": {
-            "status": "NOT_STARTED"
-        },
-        "3d_generation_details": {
-            "status": "NOT_STARTED"
-        }
-    }
-}
+# Global variables to hold the active database and collection.
+# These will be set by the UI.
+db_client = None
+active_db = None
+active_collection = None
 
-def get_biome_choices():
+# --- DATABASE INTERACTION FUNCTIONS ---
+
+def get_db_client():
+    """Establishes and returns a MongoDB client connection."""
+    global db_client
+    if db_client is None:
+        try:
+            db_client = MongoClient(CONNECTION_STRING, serverSelectionTimeoutMS=5000)
+            db_client.admin.command('ping')  # Test the connection
+            print("Successfully connected to MongoDB.")
+        except ConnectionFailure as e:
+            print(f"Could not connect to MongoDB: {e}")
+            return None
+    return db_client
+
+def get_database_names():
+    """Lists all database names from the connected client."""
+    client = get_db_client()
+    if not client:
+        return []
+    try:
+        return client.list_database_names()
+    except OperationFailure as e:
+        print(f"Failed to list databases: {e}")
+        return []
+
+def get_collection_names(database_name):
+    """Lists all collection names in a given database."""
+    client = get_db_client()
+    if not client:
+        return []
+    try:
+        db = client[database_name]
+        return db.list_collection_names()
+    except OperationFailure as e:
+        print(f"Failed to list collections in database '{database_name}': {e}")
+        return []
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+        return []
+
+def get_biome_choices_live(database_name, collection_name):
     """
-    Simulates fetching all biome names and their IDs from a MongoDB collection.
+    Fetches all biome names and their IDs from a live MongoDB collection.
     Returns a list of tuples: [(biome_name, doc_id), ...].
     """
-    choices = [(doc["biome_name"], doc_id) 
-               for doc_id, doc in MOCK_BIOMES_COLLECTION.items() 
-               if "biome_name" in doc]
-    return choices
+    client = get_db_client()
+    if not client or not database_name or not collection_name:
+        return []
+    try:
+        db = client[database_name]
+        collection = db[collection_name]
+        documents = list(collection.find({}, {"biome_name": 1}))
+        choices = [(doc.get("biome_name", "Unknown Biome"), str(doc["_id"])) for doc in documents]
+        return choices
+    except OperationFailure as e:
+        print(f"Failed to fetch biomes from collection '{collection_name}': {e}")
+        return []
 
-def get_biome_id_by_name(biome_name):
+def fetch_live_biome_details(database_name, collection_name, doc_id):
     """
-    Simulates looking up a biome's document ID by its name.
+    Fetches a single document from the live database by its ID.
     """
-    for doc_id, doc in MOCK_BIOMES_COLLECTION.items():
-        if doc.get("biome_name") == biome_name:
-            return doc_id
-    return None
+    client = get_db_client()
+    if not client:
+        return None
+    try:
+        db = client[database_name]
+        collection = db[collection_name]
+        # Use ObjectId to query by the document's unique ID
+        return collection.find_one({"_id": ObjectId(doc_id)})
+    except Exception as e:
+        print(f"Failed to fetch biome details for ID {doc_id}: {e}")
+        return None
 
-def fetch_biome_details(doc_id):
+def update_live_biome_details(database_name, collection_name, doc_id, section, new_data):
     """
-    Simulates fetching a single document from the database by its ID.
-    Returns the document or None if not found.
+    Updates a specific section of a document in the live database.
     """
-    return MOCK_BIOMES_COLLECTION.get(doc_id, None)
+    client = get_db_client()
+    if not client:
+        return False
+    try:
+        db = client[database_name]
+        collection = db[collection_name]
+        # Use update_one to modify the specific field
+        result = collection.update_one({"_id": ObjectId(doc_id)}, {"$set": {section: new_data}})
+        return result.modified_count > 0
+    except Exception as e:
+        print(f"Failed to update document for ID {doc_id}: {e}")
+        return False
 
-def update_biome_details(doc_id, section, new_data):
-    """
-    Simulates updating a specific section of a document in the database.
-    This is a critical function for our pipeline logic.
-    """
-    if doc_id in MOCK_BIOMES_COLLECTION:
-        MOCK_BIOMES_COLLECTION[doc_id][section] = new_data
-        return True
-    return False
+# --- UI LOGIC FUNCTIONS ---
 
-# --- GRADIO UI FUNCTIONS ---
+def update_collections_dropdown(database_name):
+    """Updates the collections dropdown based on the selected database."""
+    collections = get_collection_names(database_name)
+    return gr.Dropdown.update(choices=collections, value=collections[0] if collections else None)
 
-def load_biome_pipeline(biome_name):
+def update_biomes_dropdown(database_name, collection_name):
+    """Updates the biomes dropdown based on the selected collection."""
+    biome_choices = get_biome_choices_live(database_name, collection_name)
+    biome_names = [name for name, _ in biome_choices]
+    return (
+        gr.Dropdown.update(choices=biome_names, value=biome_names[0] if biome_names else None),
+        gr.State(biome_choices)
+    )
+
+def load_biome_pipeline_live(biome_name, biome_choices, database_name, collection_name):
     """
-    This function is triggered when a biome is selected from the dropdown.
-    It fetches the biome's details and populates the UI.
+    Loads the pipeline status for the selected biome from the live database.
     """
-    doc_id = get_biome_id_by_name(biome_name)
+    doc_id = None
+    for name, _id in biome_choices:
+        if name == biome_name:
+            doc_id = _id
+            break
+
     if not doc_id:
-        return (None, "Biome not found.", "", [], "Biome not found.", "", "")
+        return (gr.State(None), "Biome not found.", {}, [], "Biome not found.", {}, "")
 
-    biome_doc = fetch_biome_details(doc_id)
-    
+    biome_doc = fetch_live_biome_details(database_name, collection_name, doc_id)
+    if not biome_doc:
+        return (gr.State(None), "Failed to load details.", {}, [], "Failed to load details.", {}, "")
+
     # Initialize outputs for the 2D section
     status_2d_text = "Not Started"
     json_2d_text = "{}"
@@ -163,9 +176,8 @@ def load_biome_pipeline(biome_name):
         if "model_url" in details_3d:
             model_link = f"<a href='{details_3d['model_url']}' target='_blank'>Download 3D Model</a>"
 
-    # Return all the new values to update the UI
     return (
-        doc_id,
+        gr.State(doc_id),
         status_2d_text,
         json_2d_text,
         images_2d_list,
@@ -174,10 +186,9 @@ def load_biome_pipeline(biome_name):
         model_link
     )
 
-def run_2d_generation(doc_id):
+def run_2d_generation_live(doc_id, database_name, collection_name):
     """
     Simulates running the 2D image generation task for a given biome.
-    This function would contain your actual API calls.
     """
     if not doc_id:
         return "Please select a biome first.", {}, []
@@ -187,8 +198,7 @@ def run_2d_generation(doc_id):
     # Simulate a brief delay for the task
     time.sleep(2)
     
-    # Get the current biome details
-    biome_doc = fetch_biome_details(doc_id)
+    biome_doc = fetch_live_biome_details(database_name, collection_name, doc_id)
     biome_name = biome_doc.get("biome_name", "Unknown Biome")
     
     # Generate new mock data for the completed step
@@ -204,16 +214,14 @@ def run_2d_generation(doc_id):
         "timestamp": time.time()
     }
 
-    # Update the mock database
-    update_biome_details(doc_id, "image_generation_details", new_data)
+    # Update the live database
+    update_live_biome_details(database_name, collection_name, doc_id, "image_generation_details", new_data)
     
-    # Return the updated data to the UI
     return "COMPLETED", json.dumps(new_data, indent=2), new_images
 
-def run_3d_generation(doc_id):
+def run_3d_generation_live(doc_id, database_name, collection_name):
     """
     Simulates running the 3D model generation task.
-    This function would contain your actual API calls for 3D generation.
     """
     if not doc_id:
         return "Please select a biome first.", {}, ""
@@ -223,13 +231,9 @@ def run_3d_generation(doc_id):
     # Simulate a brief delay
     time.sleep(3)
     
-    # Get the current biome details
-    biome_doc = fetch_biome_details(doc_id)
-    
-    # Get the number of images generated in the previous step
+    biome_doc = fetch_live_biome_details(database_name, collection_name, doc_id)
     images_count = len(biome_doc.get("image_generation_details", {}).get("generated_images", []))
 
-    # Generate new mock data for the completed step
     new_data = {
         "status": "COMPLETED",
         "input_images_count": images_count,
@@ -237,10 +241,8 @@ def run_3d_generation(doc_id):
         "timestamp": time.time()
     }
     
-    # Update the mock database
-    update_biome_details(doc_id, "3d_generation_details", new_data)
+    update_live_biome_details(database_name, collection_name, doc_id, "3d_generation_details", new_data)
 
-    # Return the updated data to the UI
     model_link = f"<a href='{new_data['model_url']}' target='_blank'>Download 3D Model</a>"
     return "COMPLETED", json.dumps(new_data, indent=2), model_link
 
@@ -248,27 +250,37 @@ def run_3d_generation(doc_id):
 
 with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
     gr.Markdown("# 🌎 AI World Builder")
-
-    # This is a hidden state that will hold the unique ID of the selected biome.
-    # We use this ID to query the database, not the biome name, as IDs are unique.
+    
+    # Hidden states to manage the live connection
     current_biome_id = gr.State(None)
+    biome_choices_list = gr.State([])
 
-    # Use a TabItem for the new "Asset Pipeline" page.
+    with gr.TabItem("Database Settings"):
+        gr.Markdown("## ⚙️ MongoDB Connection")
+        gr.Markdown("First, select your database and collection. Then, click 'Refresh Biomes' to populate the dropdown on the 'Asset Pipeline' tab.")
+        
+        database_dropdown = gr.Dropdown(
+            label="Select Database", 
+            choices=get_database_names(), 
+            interactive=True
+        )
+        collection_dropdown = gr.Dropdown(
+            label="Select Collection", 
+            choices=[], 
+            interactive=True
+        )
+        refresh_button = gr.Button("Refresh Biomes")
+
     with gr.TabItem("Asset Pipeline"):
         gr.Markdown("## 📦 Asset Generation Pipeline")
         gr.Markdown("Select a biome to view and manage its asset generation status.")
         
-        with gr.Row():
-            biome_names = [name for name, _ in get_biome_choices()]
-            biome_dropdown = gr.Dropdown(
-                label="Select Biome", 
-                choices=biome_names, 
-                value=biome_names[0] if biome_names else None,
-                interactive=True
-            )
-            
-        # The outputs from `load_biome_pipeline` will be connected here.
-        # It's important to set up the output components before the function call.
+        biome_dropdown = gr.Dropdown(
+            label="Select Biome", 
+            choices=[],  # Initially empty
+            interactive=True
+        )
+        
         status_2d_output = gr.Textbox(label="2D Status", show_label=False)
         json_2d_output = gr.Json(label="2D Generation Details")
         images_2d_gallery = gr.Gallery(label="Generated 2D Images", columns=2)
@@ -277,56 +289,59 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
         json_3d_output = gr.Json(label="3D Generation Details")
         model_link_output = gr.HTML(label="3D Model Link")
         
-        # This button is used to re-trigger the 2D generation task.
         generate_2d_button = gr.Button("Generate 2D Images")
 
-        # Use collapsible accordions to make the page cleaner.
         with gr.Accordion("2D Image Generation", open=True):
             gr.Markdown("### Status")
-            # The component is already defined and will render automatically.
+            # We no longer need to call .render() here, Gradio handles it automatically
             gr.Markdown("### Details (JSON)")
-            # The component is already defined and will render automatically.
+            # We no longer need to call .render() here, Gradio handles it automatically
             
-        # This button is used to re-trigger the 3D generation task.
         generate_3d_button = gr.Button("Generate 3D Model")
 
         with gr.Accordion("3D Model Generation", open=False):
             gr.Markdown("### Status")
-            # The component is already defined and will render automatically.
+            # We no longer need to call .render() here, Gradio handles it automatically
             gr.Markdown("### Details (JSON)")
-            # The component is already defined and will render automatically.
+            # We no longer need to call .render() here, Gradio handles it automatically
             
-        # Now, connect the functions to the UI events.
-        # This call runs once to load the initial biome on page load.
-        demo.load(
-            fn=load_biome_pipeline,
-            inputs=[biome_dropdown],
-            outputs=[current_biome_id, status_2d_output, json_2d_output, images_2d_gallery,
-                     status_3d_output, json_3d_output, model_link_output]
-        )
+    # Event listeners
+    database_dropdown.change(
+        fn=update_collections_dropdown,
+        inputs=[database_dropdown],
+        outputs=[collection_dropdown]
+    )
 
-        # This event triggers every time the user selects a new biome from the dropdown.
-        biome_dropdown.change(
-            fn=load_biome_pipeline,
-            inputs=[biome_dropdown],
-            outputs=[current_biome_id, status_2d_output, json_2d_output, images_2d_gallery,
-                     status_3d_output, json_3d_output, model_link_output]
-        )
-
-        # This event triggers when the "Generate 2D" button is clicked.
-        # We use `gr.Button.click` and pass the hidden `current_biome_id` as input.
-        generate_2d_button.click(
-            fn=run_2d_generation,
-            inputs=[current_biome_id],
-            outputs=[status_2d_output, json_2d_output, images_2d_gallery]
-        )
-        
-        # This event triggers when the "Generate 3D" button is clicked.
-        generate_3d_button.click(
-            fn=run_3d_generation,
-            inputs=[current_biome_id],
-            outputs=[status_3d_output, json_3d_output, model_link_output]
-        )
+    refresh_button.click(
+        fn=update_biomes_dropdown,
+        inputs=[database_dropdown, collection_dropdown],
+        outputs=[biome_dropdown, biome_choices_list]
+    )
+    
+    # Update the biome pipeline when a biome is selected.
+    # Pass the database and collection names to the function.
+    biome_dropdown.change(
+        fn=load_biome_pipeline_live,
+        inputs=[biome_dropdown, biome_choices_list, database_dropdown, collection_dropdown],
+        outputs=[current_biome_id, status_2d_output, json_2d_output, images_2d_gallery,
+                 status_3d_output, json_3d_output, model_link_output]
+    )
+    
+    # Update the 2D generation button click event.
+    # Pass the database and collection names.
+    generate_2d_button.click(
+        fn=run_2d_generation_live,
+        inputs=[current_biome_id, database_dropdown, collection_dropdown],
+        outputs=[status_2d_output, json_2d_output, images_2d_gallery]
+    )
+    
+    # Update the 3D generation button click event.
+    # Pass the database and collection names.
+    generate_3d_button.click(
+        fn=run_3d_generation_live,
+        inputs=[current_biome_id, database_dropdown, collection_dropdown],
+        outputs=[status_3d_output, json_3d_output, model_link_output]
+    )
 
     # You can add your other existing tabs here.
     with gr.TabItem("Your Existing Tabs"):
@@ -335,6 +350,7 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
 
 # Launch the Gradio application
 demo.launch(server_name="0.0.0.0", server_port=7860)
+
 
 
 
