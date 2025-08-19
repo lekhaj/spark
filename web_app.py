@@ -126,14 +126,14 @@ def update_live_biome_details(database_name, collection_name, doc_id, section, n
 def update_collections_dropdown(database_name):
     """Updates the collections dropdown based on the selected database."""
     collections = get_collection_names(database_name)
-    return gr.Dropdown.update(choices=collections, value=collections[0] if collections else None)
+    return gr.Dropdown(choices=collections, value=collections[0] if collections else None)
 
 def update_biomes_dropdown(database_name, collection_name):
     """Updates the biomes dropdown based on the selected collection."""
     biome_choices = get_biome_choices_live(database_name, collection_name)
     biome_names = [name for name, _ in biome_choices]
     return (
-        gr.Dropdown.update(choices=biome_names, value=biome_names[0] if biome_names else None),
+        gr.Dropdown(choices=biome_names, value=biome_names[0] if biome_names else None),
         gr.State(biome_choices)
     )
 
@@ -353,6 +353,7 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
 
 # Launch the Gradio application
 demo.launch(server_name="0.0.0.0", server_port=7860)
+
 
 
 
