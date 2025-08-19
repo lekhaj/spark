@@ -1,586 +1,342 @@
-# web_app.py
+# The Asset Pipeline Tracker is a Gradio application that allows users to
+# monitor and manage the status of AI-generated 3D assets. It connects
+# to a mock database to display a list of biomes and their progress
+# through a 2D image generation and 3D model generation pipeline.
+
+# The app features:
+# - A main "Asset Pipeline" tab.
+# - Dynamic retrieval and display of biomes from a mock MongoDB collection.
+# - A detailed view of each biome's pipeline status, including JSON details.
+# - The ability to re-trigger incomplete pipeline steps.
+# - A real-time update of the UI upon task completion.
+
 import gradio as gr
-from app import (
-    generate_2d_image_task,
-    generate_image_from_grid_task,
-    generate_3d_from_2d_task,
-    decimate_3d_task,
-    generate_2d_from_db_task,
-    generate_grid_from_db_task,
-)
 import json
 import time
-import io
-from PIL import Image
+from bson.objectid import ObjectId
 
+# This block of code simulates a MongoDB connection and data.
+# In your actual application, you would replace this with your
+# PyMongo client and database operations.
 try:
     from pymongo import MongoClient
+    from pymongo.errors import ConnectionFailure
+    # Try to connect to a mock MongoDB client to check for installation
+    _ = MongoClient("mongodb://localhost:27017/", serverSelectionTimeoutMS=1)
     mongo_client_available = True
 except ImportError:
+    print("Warning: pymongo is not installed. Using mock database instead.")
     mongo_client_available = False
-    print("Warning: pymongo not found. MongoDB functionality will be disabled.")
+except ConnectionFailure:
+    print("Warning: Could not connect to a local MongoDB instance. Using mock database instead.")
+    mongo_client_available = False
 
-def load_sample_grid():
-    """Loads a predefined sample grid as a string."""
-    sample_grid = """
-[[0,0,1,1,0,0,2,2,0,0],
-[0,1,1,1,1,0,2,2,2,0],
-[1,1,1,1,1,1,0,2,2,2],
-[1,1,1,1,1,1,0,0,2,2],
-[0,1,1,1,0,0,0,0,0,0],
-[0,0,0,0,0,0,0,0,0,0],
-[3,3,3,3,3,3,3,3,3,3],
-[3,3,3,3,3,3,3,3,3,3],
-[4,4,4,4,0,0,0,0,0,0],
-[4,4,4,4,0,0,0,0,0,0]]
+# --- MOCK DATABASE AND FUNCTIONS ---
+# This dictionary simulates a MongoDB collection. Each key is the document's
+# unique ObjectId, and the value is the document itself.
+# This structure is necessary to correctly model the user's request for tracking
+# assets by their unique ID.
+MOCK_BIOMES_COLLECTION = {
+    # Biome 1: Partially completed pipeline
+    str(ObjectId()): {
+        "biome_name": "Forest Glade",
+        "description": "A tranquil glade with ancient trees and a small pond.",
+        "image_generation_details": {
+            "status": "COMPLETED",
+            "prompt": "high-resolution photo of a dense, sun-dappled forest glade, tranquil, fantasy art style",
+            "model_used": "Stable Diffusion XL",
+            "generated_images": [
+                "https://placehold.co/400x400/000000/FFFFFF?text=Forest+Image+1",
+                "https://placehold.co/400x400/000000/FFFFFF?text=Forest+Image+2"
+            ],
+            "timestamp": time.time()
+        },
+        "3d_generation_details": {
+            "status": "NOT_STARTED"
+        }
+    },
+    # Biome 2: Fully completed pipeline
+    str(ObjectId()): {
+        "biome_name": "Crystal Cave",
+        "description": "A glowing cave filled with bioluminescent crystals.",
+        "image_generation_details": {
+            "status": "COMPLETED",
+            "prompt": "cinematic shot of a massive, glowing crystal cave, bioluminescence, surreal, deep colors",
+            "model_used": "Midjourney 6",
+            "generated_images": [
+                "https://placehold.co/400x400/000000/FFFFFF?text=Cave+Image+1",
+                "https://placehold.co/400x400/000000/FFFFFF?text=Cave+Image+2"
+            ],
+            "timestamp": time.time()
+        },
+        "3d_generation_details": {
+            "status": "COMPLETED",
+            "input_images_count": 2,
+            "model_url": "https://placehold.co/400x200/50C878/000000?text=3D+Model+Link",
+            "timestamp": time.time()
+        }
+    },
+    # Biome 3: New biome, not started
+    str(ObjectId()): {
+        "biome_name": "Desert Oasis",
+        "description": "A verdant oasis surrounded by endless sand dunes.",
+        "image_generation_details": {
+            "status": "NOT_STARTED"
+        },
+        "3d_generation_details": {
+            "status": "NOT_STARTED"
+        }
+    }
+}
+
+def get_biome_choices():
     """
-    return sample_grid.strip()
+    Simulates fetching all biome names and their IDs from a MongoDB collection.
+    Returns a list of tuples: [(biome_name, doc_id), ...].
+    """
+    choices = [(doc["biome_name"], doc_id) 
+               for doc_id, doc in MOCK_BIOMES_COLLECTION.items() 
+               if "biome_name" in doc]
+    return choices
 
-def launch_2d_generation(biome_name, theme_prompt, width, height, num_images, s3_bucket_name, base_filename):
-    """Starts the 2D image generation task and returns the task ID."""
-    task = generate_2d_image_task.delay(biome_name, theme_prompt, width, height, num_images, s3_bucket_name, base_filename)
-    return task.id
+def get_biome_id_by_name(biome_name):
+    """
+    Simulates looking up a biome's document ID by its name.
+    """
+    for doc_id, doc in MOCK_BIOMES_COLLECTION.items():
+        if doc.get("biome_name") == biome_name:
+            return doc_id
+    return None
 
-def track_2d_generation_progress(task_id):
-    """Tracks the status of the 2D image generation task and yields updates."""
-    if not task_id:
-        yield "Waiting for task to start...", [], None, "No Task ID"
-        return
+def fetch_biome_details(doc_id):
+    """
+    Simulates fetching a single document from the database by its ID.
+    Returns the document or None if not found.
+    """
+    return MOCK_BIOMES_COLLECTION.get(doc_id, None)
 
-    while True:
-        task = generate_2d_image_task.AsyncResult(task_id)
+def update_biome_details(doc_id, section, new_data):
+    """
+    Simulates updating a specific section of a document in the database.
+    This is a critical function for our pipeline logic.
+    """
+    if doc_id in MOCK_BIOMES_COLLECTION:
+        MOCK_BIOMES_COLLECTION[doc_id][section] = new_data
+        return True
+    return False
 
-        if task.state == 'PENDING':
-            yield "Task is pending...", [], None, task_id
-        elif task.state == 'PROGRESS':
-            status = task.info.get('status', 'Processing...')
-            results = task.info.get('result', [])
-            yield status, results, None, task_id
-        elif task.state == 'SUCCESS':
-            status = task.info.get('status', "Task complete!")
-            results = task.info.get('result', [])
-            document_id = task.info.get('document_id', 'N/A')
-            html_output = f"<h3>Generated Images:</h3>"
-            for url in results:
-                html_output += f"<a href='{url}' target='_blank'>Download Image</a><br>"
-            yield status, results, html_output, task_id
-            return
-        elif task.state == 'FAILURE':
-            error_msg = task.info.get('message', "An error occurred.")
-            yield f"Error: {error_msg}", [], None, task_id
-            return
-        else:
-            yield f"Task state: {task.state}", [], None, task_id
+# --- GRADIO UI FUNCTIONS ---
 
-        time.sleep(2)
+def load_biome_pipeline(biome_name):
+    """
+    This function is triggered when a biome is selected from the dropdown.
+    It fetches the biome's details and populates the UI.
+    """
+    doc_id = get_biome_id_by_name(biome_name)
+    if not doc_id:
+        return (None, "Biome not found.", "", [], "Biome not found.", "", "")
 
-def launch_grid_generation(grid_data_str, width, height, num_images, s3_bucket_name, base_filename):
-    """Starts the grid visualization task and returns the task ID."""
-    task = generate_image_from_grid_task.delay(grid_data_str, width, height, num_images, s3_bucket_name, base_filename)
-    return task.id
-
-def track_grid_generation_progress(task_id):
-    """Tracks the status of the grid generation task and yields updates."""
-    if not task_id:
-        yield "Waiting for task to start...", None, "No Task ID"
-        return
-
-    while True:
-        task = generate_image_from_grid_task.AsyncResult(task_id)
-
-        if task.state == 'PENDING':
-            yield "Task is pending...", None, task_id
-        elif task.state == 'PROGRESS':
-            status = task.info.get('status', 'Processing...')
-            results = task.info.get('result', [])
-            images = [url for url in results]
-            yield status, images, task_id
-        elif task.state == 'SUCCESS':
-            status = task.info.get('status', "Task complete!")
-            results = task.info.get('result', [])
-            images = [url for url in results]
-            yield status, images, task_id
-            return
-        elif task.state == 'FAILURE':
-            error_msg = task.info.get('message', "An error occurred.")
-            yield f"Error: {error_msg}", None, task_id
-            return
-        else:
-            yield f"Task state: {task.state}", None, task_id
-
-        time.sleep(2)
-
-def launch_3d_generation(document_id, s3_bucket_name, base_filename):
-    """Starts the 3D model generation task."""
-    if not document_id:
-        return None, "No document ID provided.", None
-    task = generate_3d_from_2d_task.delay(document_id, s3_bucket_name, base_filename)
-    return task.id, "Task started...", None
-
-def track_3d_generation_progress(task_id):
-    """Tracks the status of the 3D model generation task and yields updates."""
-    if not task_id:
-        yield "Waiting for task to start...", None, "No Task ID"
-        return
-
-    while True:
-        task = generate_3d_from_2d_task.AsyncResult(task_id)
-
-        if task.state == 'PENDING':
-            yield "Task is pending...", None, task_id
-        elif task.state == 'PROGRESS':
-            status = task.info.get('status', 'Processing...')
-            yield status, None, task_id
-        elif task.state == 'SUCCESS':
-            status = task.info.get('status', "Task complete!")
-            url = task.info.get('result', None)
-            yield status, gr.HTML(f"<a href='{url}' target='_blank'>Download 3D Model</a>"), task_id
-            return
-        elif task.state == 'FAILURE':
-            error_msg = task.info.get('message', "An error occurred.")
-            yield f"Error: {error_msg}", None, task_id
-            return
-        else:
-            yield f"Task state: {task.state}", None, task_id
-
-        time.sleep(2)
-
-def launch_decimation_task(input_3d_file, s3_bucket_name, base_filename):
-    """Starts the 3D decimation task."""
-    if input_3d_file is None:
-        return None, "No file uploaded.", None
-
-    with open(input_3d_file.name, 'rb') as f:
-        file_bytes = f.read()
-
-    task = decimate_3d_task.delay(file_bytes, s3_bucket_name, base_filename)
-    return task.id, "Task started...", None
-
-def track_decimation_progress(task_id):
-    """Tracks the status of the 3D decimation task and yields updates."""
-    if not task_id:
-        yield "Waiting for task to start...", None, "No Task ID"
-        return
-
-    while True:
-        task = decimate_3d_task.AsyncResult(task_id)
-
-        if task.state == 'PENDING':
-            yield "Task is pending...", None, task_id
-        elif task.state == 'PROGRESS':
-            status = task.info.get('status', 'Processing...')
-            yield status, None, task_id
-        elif task.state == 'SUCCESS':
-            status = task.info.get('status', "Task complete!")
-            url = task.info.get('result', None)
-            yield status, gr.HTML(f"<a href='{url}' target='_blank'>Download Decimated 3D Model</a>"), task_id
-            return
-        elif task.state == 'FAILURE':
-            error_msg = task.info.get('message', "An error occurred.")
-            yield f"Error: {error_msg}", None, task_id
-            return
-        else:
-            yield f"Task state: {task.state}", None, task_id
-
-        time.sleep(2)
-
-def fetch_prompts_from_db(db_name, collection_name):
-    """Fetches text prompts from MongoDB."""
-    if not mongo_client_available:
-        return gr.Dropdown(choices=["pymongo not installed. Please run pip install pymongo"], value="pymongo not installed. Please run pip install pymongo")
+    biome_doc = fetch_biome_details(doc_id)
     
-    try:
-        client = MongoClient("mongodb://sagar:KrSiDnSI9m8RgcHE@ec2-15-206-99-66.ap-south-1.compute.amazonaws.com:27017/World_builder?authSource=admin", serverSelectionTimeoutMS=5000)
-        client.admin.command('ping') 
-        db = client[db_name]
-        collection = db[collection_name]
-        
-        prompts = [doc.get('theme_prompt') for doc in collection.find({}) if doc.get('theme_prompt')]
-        
-        if not prompts:
-            return gr.Dropdown(choices=["No prompts found in this collection"], value="No prompts found in this collection")
-        
-        return gr.Dropdown(choices=prompts, value=prompts[0] if prompts else None)
-
-    except Exception as e:
-        print(f"Error fetching prompts: {e}")
-        return gr.Dropdown(choices=[f"Error fetching prompts: {e}"], value=f"Error fetching prompts: {e}")
-
-def fetch_grids_from_db(db_name, collection_name):
-    """Fetches grids from MongoDB."""
-    if not mongo_client_available:
-        return gr.Dropdown(choices=["pymongo not installed. Please run pip install pymongo"], value="pymongo not installed. Please run pip install pymongo")
-
-    try:
-        client = MongoClient("mongodb://sagar:KrSiDnSI9m8RgcHE@ec2-15-206-99-66.ap-south-1.compute.amazonaws.com:27017/World_builder?authSource=admin", serverSelectionTimeoutMS=5000)
-        client.admin.command('ping')
-        db = client[db_name]
-        collection = db[collection_name]
-        
-        grids = [json.dumps(doc.get('possible_grids')[0].get('layout')) for doc in collection.find({}) if doc.get('possible_grids') and doc['possible_grids'][0].get('layout')]
-        
-        if not grids:
-            return gr.Dropdown(choices=["No grids found in this collection"], value="No grids found in this collection")
-            
-        return gr.Dropdown(choices=grids, value=grids[0] if grids else None)
-
-    except Exception as e:
-        print(f"Error fetching grids: {e}")
-        return gr.Dropdown(choices=[f"Error fetching grids: {e}"], value=f"Error fetching grids: {e}")
-
-def launch_2d_db_generation(document_id, width, height, num_images, s3_bucket_name, base_filename):
-    """Starts 2D image generation from a database prompt."""
-    if not document_id:
-        return None, "Please select a prompt.", None
-    task = generate_2d_from_db_task.delay(document_id, s3_bucket_name, base_filename, width, height, num_images)
-    return task.id, "Task started...", None
-
-def launch_grid_db_generation(document_id, width, height, num_images, s3_bucket_name, base_filename):
-    """Starts grid image generation from a database grid."""
-    if not document_id:
-        return None, "Please select a grid.", None
-    task = generate_grid_from_db_task.delay(document_id, s3_bucket_name, base_filename, width, height, num_images)
-    return task.id, "Task started...", None
+    # Initialize outputs for the 2D section
+    status_2d_text = "Not Started"
+    json_2d_text = "{}"
+    images_2d_list = []
     
-def get_doc_id_from_prompt(prompt, db_name, collection_name):
-    """Returns the document ID for a given prompt."""
-    if not mongo_client_available:
-        return None
+    # Check if 2D details exist and update outputs
+    if "image_generation_details" in biome_doc:
+        details_2d = biome_doc["image_generation_details"]
+        status_2d_text = details_2d.get("status", "NOT_STARTED")
+        json_2d_text = json.dumps(details_2d, indent=2)
+        images_2d_list = details_2d.get("generated_images", [])
 
-    try:
-        client = MongoClient("mongodb://sagar:KrSiDnSI9m8RgcHE@ec2-15-206-99-66.ap-south-1.compute.amazonaws.com:27017/World_builder?authSource=admin", serverSelectionTimeoutMS=5000)
-        db = client[db_name]
-        collection = db[collection_name]
-        doc = collection.find_one({"theme_prompt": prompt})
-        return doc["_id"] if doc else None
-    except Exception as e:
-        print(f"Error fetching document ID: {e}")
-        return None
+    # Initialize outputs for the 3D section
+    status_3d_text = "Not Started"
+    json_3d_text = "{}"
+    model_link = ""
 
-def get_doc_id_from_grid(grid, db_name, collection_name):
-    """Returns the document ID for a given grid."""
-    if not mongo_client_available:
-        return None
+    # Check if 3D details exist and update outputs
+    if "3d_generation_details" in biome_doc:
+        details_3d = biome_doc["3d_generation_details"]
+        status_3d_text = details_3d.get("status", "NOT_STARTED")
+        json_3d_text = json.dumps(details_3d, indent=2)
+        if "model_url" in details_3d:
+            model_link = f"<a href='{details_3d['model_url']}' target='_blank'>Download 3D Model</a>"
 
-    try:
-        client = MongoClient("mongodb://sagar:KrSiDnSI9m8RgcHE@ec2-15-206-99-66.ap-south-1.compute.amazonaws.com:27017/World_builder?authSource=admin", serverSelectionTimeoutMS=5000)
-        db = client[db_name]
-        collection = db[collection_name]
-        doc = collection.find_one({"possible_grids.layout": json.loads(grid)})
-        return doc["_id"] if doc else None
-    except Exception as e:
-        print(f"Error fetching document ID: {e}")
-        return None
+    # Return all the new values to update the UI
+    return (
+        doc_id,
+        status_2d_text,
+        json_2d_text,
+        images_2d_list,
+        status_3d_text,
+        json_3d_text,
+        model_link
+    )
+
+def run_2d_generation(doc_id):
+    """
+    Simulates running the 2D image generation task for a given biome.
+    This function would contain your actual API calls.
+    """
+    if not doc_id:
+        return "Please select a biome first.", {}, []
+    
+    print(f"Starting 2D generation for document ID: {doc_id}")
+    
+    # Simulate a brief delay for the task
+    time.sleep(2)
+    
+    # Get the current biome details
+    biome_doc = fetch_biome_details(doc_id)
+    biome_name = biome_doc.get("biome_name", "Unknown Biome")
+    
+    # Generate new mock data for the completed step
+    new_images = [
+        f"https://placehold.co/400x400/222222/EEEEEE?text={biome_name}+Image+1",
+        f"https://placehold.co/400x400/222222/EEEEEE?text={biome_name}+Image+2",
+    ]
+    new_data = {
+        "status": "COMPLETED",
+        "prompt": "high-resolution photo of a {} environment".format(biome_name),
+        "model_used": "Simulated AI Model",
+        "generated_images": new_images,
+        "timestamp": time.time()
+    }
+
+    # Update the mock database
+    update_biome_details(doc_id, "image_generation_details", new_data)
+    
+    # Return the updated data to the UI
+    return "COMPLETED", json.dumps(new_data, indent=2), new_images
+
+def run_3d_generation(doc_id):
+    """
+    Simulates running the 3D model generation task.
+    This function would contain your actual API calls for 3D generation.
+    """
+    if not doc_id:
+        return "Please select a biome first.", {}, ""
+
+    print(f"Starting 3D generation for document ID: {doc_id}")
+    
+    # Simulate a brief delay
+    time.sleep(3)
+    
+    # Get the current biome details
+    biome_doc = fetch_biome_details(doc_id)
+    
+    # Get the number of images generated in the previous step
+    images_count = len(biome_doc.get("image_generation_details", {}).get("generated_images", []))
+
+    # Generate new mock data for the completed step
+    new_data = {
+        "status": "COMPLETED",
+        "input_images_count": images_count,
+        "model_url": "https://placehold.co/400x200/50C878/000000?text=New+3D+Model",
+        "timestamp": time.time()
+    }
+    
+    # Update the mock database
+    update_biome_details(doc_id, "3d_generation_details", new_data)
+
+    # Return the updated data to the UI
+    model_link = f"<a href='{new_data['model_url']}' target='_blank'>Download 3D Model</a>"
+    return "COMPLETED", json.dumps(new_data, indent=2), model_link
+
+# --- GRADIO INTERFACE LAYOUT ---
 
 with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
-    gr.Markdown("# AI-Powered 3D Asset Generator")
-    gr.Markdown("This application uses Celery to run generation tasks in the background, keeping the Gradio app responsive. The generated assets are uploaded to S3.")
+    gr.Markdown("# 🌎 AI World Builder")
 
-    s3_bucket_input_global = gr.Textbox(label="S3 Bucket Name", value="sparkassets", interactive=True)
-    
-    task_id_states = {
-        "txt2img": gr.State(None),
-        "grid2img": gr.State(None),
-        "3dgen": gr.State(None),
-        "decimate": gr.State(None),
-        "db_txt2img": gr.State(None),
-        "db_grid2img": gr.State(None)
-    }
+    # This is a hidden state that will hold the unique ID of the selected biome.
+    # We use this ID to query the database, not the biome name, as IDs are unique.
+    current_biome_id = gr.State(None)
 
-    doc_id_states = {
-        "txt2img": gr.State(None),
-        "grid2img": gr.State(None),
-        "db_txt2img": gr.State(None),
-        "db_grid2img": gr.State(None)
-    }
-
-    with gr.Tabs():
-        with gr.TabItem("Text to Image"):
-            with gr.Tabs():
-                with gr.TabItem("Generator"):
-                    gr.Markdown("## Text-to-Image Generation")
-                    gr.Markdown("Generate images from text descriptions. **All prompts are automatically optimized for 3D asset generation**.")
-                    
-                    with gr.Row():
-                        gr.Markdown("### 🎯 3D Generation Optimization")
-                        gr.Checkbox(label="Enabled", value=True, interactive=False) 
-
-                    biome_name_input = gr.Textbox(label="Biome Name", placeholder="e.g., forest")
-                    theme_prompt_input = gr.Textbox(
-                        label="Theme Prompt", 
-                        placeholder="💡 Tip: Describe objects clearly for best 3D generation results.",
-                        lines=3
-                    )
-                    base_filename_txt2img = gr.Textbox(label="Base Filename for Image(s)", placeholder="e.g., my_2d_image")
-
-                    with gr.Row():
-                        width_slider_txt2img = gr.Slider(minimum=256, maximum=1024, value=512, step=64, label="Width")
-                        height_slider_txt2img = gr.Slider(minimum=256, maximum=1024, value=512, step=64, label="Height")
-                    
-                    with gr.Row():
-                        num_images_slider_txt2img = gr.Slider(minimum=1, maximum=4, value=1, step=1, label="Number of Images")
-                        model_dropdown_txt2img = gr.Dropdown(
-                            label="Model", 
-                            choices=["SDXL Turbo: High-quality local GPU image generation optimized for 3D"], 
-                            value="SDXL Turbo: High-quality local GPU image generation optimized for 3D",
-                            interactive=False
-                        )
-                    
-                    generate_image_button = gr.Button("🚀 Generate Image from Text")
-                    image_generation_status = gr.Textbox(label="Image Generation Status", lines=1)
-                    image_generation_output = gr.Gallery(label="Generated Images", columns=2, height='auto')
-                    image_generation_link = gr.HTML(label="Download Links")
-                    document_id_output = gr.Textbox(label="Generated Document ID", interactive=False)
-                    
-                    generate_image_button.click(
-                        fn=launch_2d_generation,
-                        inputs=[biome_name_input, theme_prompt_input, width_slider_txt2img, height_slider_txt2img, num_images_slider_txt2img, s3_bucket_input_global, base_filename_txt2img],
-                        outputs=[task_id_states["txt2img"]]
-                    ).then(
-                        fn=track_2d_generation_progress,
-                        inputs=[task_id_states["txt2img"]],
-                        outputs=[image_generation_status, image_generation_output, image_generation_link, gr.State(None)]
-                    )
-
-                with gr.TabItem("Task Status"):
-                    task_id_display_txt2img = gr.Textbox(label="Submitted Task ID", interactive=False)
-                    task_id_states["txt2img"].change(fn=lambda x: x, inputs=task_id_states["txt2img"], outputs=task_id_display_txt2img)
-
-        with gr.TabItem("Grid to Image"):
-            with gr.Tabs():
-                with gr.TabItem("Generator"):
-                    gr.Markdown("## Grid to Image Visualization")
-                    gr.Markdown("""
-                    **Grid Format**
-                    Use numbers to represent different terrain types:
-                    * **0**: Plain
-                    * **1**: Forest
-                    * **2**: Mountain
-                    * **3**: Water
-                    * **4**: Desert
-                    * **5**: Snow
-                    * **6**: Swamp
-                    * **7**: Hills
-                    * **8**: Urban
-                    * **9**: Ruins
-                    """)
-                    
-                    grid_data_input = gr.Textbox(label="Grid Data (JSON array of arrays)", lines=10, 
-                                                placeholder="Example: [[0,0,1,1],[0,1,1,0]]")
-                    load_sample_grid_button = gr.Button("Load Sample Grid")
-                    
-                    base_filename_grid2img = gr.Textbox(label="Base Filename for Visualization", placeholder="e.g., my_grid_map")
-
-                    with gr.Row():
-                        width_slider_grid2img = gr.Slider(minimum=256, maximum=1024, value=512, step=64, label="Width")
-                        height_slider_grid2img = gr.Slider(minimum=256, maximum=1024, value=512, step=64, label="Height")
-                    
-                    with gr.Row():
-                        num_images_slider_grid2img = gr.Slider(minimum=1, maximum=4, value=1, step=1, label="Number of Images")
-                        model_dropdown_grid2img = gr.Dropdown(
-                            label="Model", 
-                            choices=["SDXL Turbo: High-quality local GPU image generation optimized for 3D"], 
-                            value="SDXL Turbo: High-quality local GPU image generation optimized for 3D",
-                            interactive=False
-                        )
-                    
-                    generate_grid_image_button = gr.Button("Generate Image from Grid")
-                    grid_generation_status = gr.Textbox(label="Status", lines=1)
-                    grid_visualization_output = gr.Gallery(label="Grid Visualization", columns=2, height='auto')
-                    
-                    load_sample_grid_button.click(
-                        fn=load_sample_grid,
-                        inputs=[],
-                        outputs=[grid_data_input]
-                    )
-
-                    generate_grid_image_button.click(
-                        fn=launch_grid_generation,
-                        inputs=[grid_data_input, width_slider_grid2img, height_slider_grid2img, num_images_slider_grid2img, s3_bucket_input_global, base_filename_grid2img],
-                        outputs=[task_id_states["grid2img"]]
-                    ).then(
-                        fn=track_grid_generation_progress,
-                        inputs=[task_id_states["grid2img"]],
-                        outputs=[grid_generation_status, grid_visualization_output, gr.State(None)]
-                    )
-                with gr.TabItem("Task Status"):
-                    task_id_display_grid2img = gr.Textbox(label="Submitted Task ID", interactive=False)
-                    task_id_states["grid2img"].change(fn=lambda x: x, inputs=task_id_states["grid2img"], outputs=task_id_display_grid2img)
-
-        with gr.TabItem("3D Generation"):
-            with gr.Tabs():
-                with gr.TabItem("Generator"):
-                    gr.Markdown("## 3D Model Generation from 2D Image")
-                    gr.Markdown("Provide a document ID of a previously generated 2D image to generate a 3D GLB model.")
-                    
-                    input_doc_id_for_3d = gr.Textbox(label="Document ID of 2D Image", placeholder="Paste a document ID here...")
-                    base_filename_3d_gen = gr.Textbox(label="Base Filename for 3D Model (e.g., my_3d_asset)")
-                    
-                    generate_3d_button = gr.Button("Generate 3D Model")
-                    status_3d_gen = gr.Textbox(label="3D Generation Status", lines=1)
-                    output_3d_model_link = gr.HTML(label="Generated 3D Model Link")
-
-                    generate_3d_button.click(
-                        fn=launch_3d_generation,
-                        inputs=[input_doc_id_for_3d, s3_bucket_input_global, base_filename_3d_gen],
-                        outputs=[task_id_states["3dgen"], status_3d_gen, output_3d_model_link]
-                    ).then(
-                        fn=track_3d_generation_progress,
-                        inputs=[task_id_states["3dgen"]],
-                        outputs=[status_3d_gen, output_3d_model_link, gr.State(None)]
-                    )
-                with gr.TabItem("Task Status"):
-                    task_id_display_3dgen = gr.Textbox(label="Submitted Task ID", interactive=False)
-                    task_id_states["3dgen"].change(fn=lambda x: x, inputs=task_id_states["3dgen"], outputs=task_id_display_3dgen)
-
-        with gr.TabItem("Decimated 3D"):
-            with gr.Tabs():
-                with gr.TabItem("Decimator"):
-                    gr.Markdown("## Decimate 3D Model")
-                    gr.Markdown("Upload an existing 3D GLB/OBJ/STL model to reduce its polygon count.")
-                    
-                    input_3d_file_decimate = gr.File(label="Upload 3D Model (GLB, OBJ, STL)", type="filepath")
-                    base_filename_decimate = gr.Textbox(label="Base Filename for Decimated Model (e.g., my_decimated_asset)")
-                    
-                    decimate_button = gr.Button("Decimate 3D Model")
-                    status_decimate = gr.Textbox(label="Decimation Status", lines=1)
-                    output_decimated_model_link = gr.HTML(label="Decimated 3D Model Link")
-
-                    decimate_button.click(
-                        fn=launch_decimation_task,
-                        inputs=[input_3d_file_decimate, s3_bucket_input_global, base_filename_decimate],
-                        outputs=[task_id_states["decimate"], status_decimate, output_decimated_model_link]
-                    ).then(
-                        fn=track_decimation_progress,
-                        inputs=[task_id_states["decimate"]],
-                        outputs=[status_decimate, output_decimated_model_link, gr.State(None)]
-                    )
-                with gr.TabItem("Task Status"):
-                    task_id_display_decimate = gr.Textbox(label="Submitted Task ID", interactive=False)
-                    task_id_states["decimate"].change(fn=lambda x: x, inputs=task_id_states["decimate"], outputs=task_id_display_decimate)
+    # Use a TabItem for the new "Asset Pipeline" page.
+    with gr.TabItem("Asset Pipeline"):
+        gr.Markdown("## 📦 Asset Generation Pipeline")
+        gr.Markdown("Select a biome to view and manage its asset generation status.")
         
-        with gr.TabItem("MongoDB"):
-            with gr.Tabs():
-                with gr.TabItem("Text Prompts"):
-                    gr.Markdown("## Generate Images from MongoDB Prompts with SDXL Turbo")
-                    gr.Markdown("""
-                    🚀 **SDXL Turbo Integration**: Ultra-fast, high-quality local image generation optimized for 3D assets!
-                    🎯 **All prompts are automatically enhanced for 3D asset generation** - perfect for creating images that will work well with the 3D Generation tab!
-                    """)
-                    
-                    with gr.Row():
-                        db_name_prompts = gr.Textbox(label="Database Name", value="gradio_app_db", interactive=True)
-                        collection_name_prompts = gr.Textbox(label="Collection Name", value="generation_tasks", interactive=True)
-                        fetch_prompts_button = gr.Button("Fetch Prompts")
+        with gr.Row():
+            biome_names = [name for name, _ in get_biome_choices()]
+            biome_dropdown = gr.Dropdown(
+                label="Select Biome", 
+                choices=biome_names, 
+                value=biome_names[0] if biome_names else None,
+                interactive=True
+            )
+            
+        # The outputs from `load_biome_pipeline` will be connected here.
+        # It's important to set up the output components before the function call.
+        status_2d_output = gr.Textbox(label="2D Status", show_label=False)
+        json_2d_output = gr.Json(label="2D Generation Details")
+        images_2d_gallery = gr.Gallery(label="Generated 2D Images", columns=2)
+        
+        status_3d_output = gr.Textbox(label="3D Status", show_label=False)
+        json_3d_output = gr.Json(label="3D Generation Details")
+        model_link_output = gr.HTML(label="3D Model Link")
+        
+        # This button is used to re-trigger the 2D generation task.
+        generate_2d_button = gr.Button("Generate 2D Images")
 
-                    with gr.Accordion("🎯 SDXL Turbo Features:", open=False):
-                        gr.Markdown("""
-                        - ⚡ **Ultra-fast**: 2-4 inference steps vs 20-50 for other models
-                        - 🏠 **Local processing**: No API costs, completely private
-                        - 🎨 **3D-optimized**: Clean backgrounds, perfect lighting for 3D generation
-                        """)
+        # Use collapsible accordions to make the page cleaner.
+        with gr.Accordion("2D Image Generation", open=True):
+            gr.Markdown("### Status")
+            status_2d_output.render() # Display the status textbox
+            gr.Markdown("### Details (JSON)")
+            json_2d_output.render()
+            images_2d_gallery.render()
+            generate_2d_button.render()
 
-                    with gr.Row():
-                        width_slider_db_txt2img = gr.Slider(minimum=256, maximum=1024, value=512, step=64, label="Width")
-                        height_slider_db_txt2img = gr.Slider(minimum=256, maximum=1024, value=512, step=64, label="Height")
+        # This button is used to re-trigger the 3D generation task.
+        generate_3d_button = gr.Button("Generate 3D Model")
 
-                    with gr.Row():
-                        num_images_slider_db_txt2img = gr.Slider(minimum=1, maximum=4, value=1, step=1, label="Number of Images")
-                        model_dropdown_db_txt2img = gr.Dropdown(
-                            label="Model",
-                            choices=["SDXL Turbo (Local GPU-accelerated generation)"],
-                            value="SDXL Turbo (Local GPU-accelerated generation)",
-                            interactive=False
-                        )
-                    
-                    prompt_dropdown = gr.Dropdown(label="Select a Prompt", choices=[], interactive=True)
-                    doc_id_for_prompt = gr.State(None)
-                    
-                    generate_db_image_button = gr.Button("🚀 Generate with SDXL Turbo")
-                    
-                    db_image_status = gr.Textbox(label="Status")
-                    db_image_output = gr.Gallery(label="Generated Image (SDXL Turbo Output)")
-                    db_image_gen_status = gr.Textbox(label="Generation Status")
-                    document_id_output_db = gr.Textbox(label="Generated Document ID", interactive=False)
+        with gr.Accordion("3D Model Generation", open=False):
+            gr.Markdown("### Status")
+            status_3d_output.render()
+            gr.Markdown("### Details (JSON)")
+            json_3d_output.render()
+            model_link_output.render()
+            generate_3d_button.render()
+        
+        # Now, connect the functions to the UI events.
+        # This call runs once to load the initial biome on page load.
+        demo.load(
+            fn=load_biome_pipeline,
+            inputs=[biome_dropdown],
+            outputs=[current_biome_id, status_2d_output, json_2d_output, images_2d_gallery,
+                     status_3d_output, json_3d_output, model_link_output]
+        )
 
-                    fetch_prompts_button.click(
-                        fn=fetch_prompts_from_db,
-                        inputs=[db_name_prompts, collection_name_prompts],
-                        outputs=[prompt_dropdown]
-                    )
+        # This event triggers every time the user selects a new biome from the dropdown.
+        biome_dropdown.change(
+            fn=load_biome_pipeline,
+            inputs=[biome_dropdown],
+            outputs=[current_biome_id, status_2d_output, json_2d_output, images_2d_gallery,
+                     status_3d_output, json_3d_output, model_link_output]
+        )
 
-                    prompt_dropdown.change(
-                        fn=get_doc_id_from_prompt,
-                        inputs=[prompt_dropdown, db_name_prompts, collection_name_prompts],
-                        outputs=[doc_id_for_prompt]
-                    )
+        # This event triggers when the "Generate 2D" button is clicked.
+        # We use `gr.Button.click` and pass the hidden `current_biome_id` as input.
+        generate_2d_button.click(
+            fn=run_2d_generation,
+            inputs=[current_biome_id],
+            outputs=[status_2d_output, json_2d_output, images_2d_gallery]
+        )
+        
+        # This event triggers when the "Generate 3D" button is clicked.
+        generate_3d_button.click(
+            fn=run_3d_generation,
+            inputs=[current_biome_id],
+            outputs=[status_3d_output, json_3d_output, model_link_output]
+        )
 
-                    generate_db_image_button.click(
-                        fn=launch_2d_db_generation,
-                        inputs=[doc_id_for_prompt, width_slider_db_txt2img, height_slider_db_txt2img, num_images_slider_db_txt2img, s3_bucket_input_global, gr.Textbox(value="db_2d_image", visible=False)],
-                        outputs=[task_id_states["db_txt2img"], db_image_status, db_image_output]
-                    ).then(
-                        fn=track_2d_generation_progress,
-                        inputs=[task_id_states["db_txt2img"]],
-                        outputs=[db_image_gen_status, db_image_output, gr.State(None)]
-                    )
+    # You can add your other existing tabs here.
+    with gr.TabItem("Your Existing Tabs"):
+        gr.Markdown("### Your Existing Gradio UI will go here.")
+        gr.Markdown("This shows how the new Asset Pipeline tab fits into your existing app.")
 
-                with gr.TabItem("Grid Data"):
-                    gr.Markdown("## Grid Data")
-                    
-                    with gr.Row():
-                        db_name_grids = gr.Textbox(label="Database Name", value="World_builder", interactive=True)
-                        collection_name_grids = gr.Textbox(label="Collection Name", value="biomes", interactive=True)
-                        fetch_grids_button = gr.Button("Fetch Grids")
+# Launch the Gradio application
+demo.launch(server_name="0.0.0.0", server_port=7860)
 
-                    with gr.Row():
-                        width_slider_db_grid2img = gr.Slider(minimum=256, maximum=1024, value=512, step=64, label="Width")
-                        height_slider_db_grid2img = gr.Slider(minimum=256, maximum=1024, value=512, step=64, label="Height")
-
-                    with gr.Row():
-                        num_images_slider_db_grid2img = gr.Slider(minimum=1, maximum=4, value=1, step=1, label="Number of Images")
-                        model_dropdown_db_grid2img = gr.Dropdown(
-                            label="Model",
-                            choices=["SDXL Turbo (Optimized for grid-based generation)"],
-                            value="SDXL Turbo (Optimized for grid-based generation)",
-                            interactive=False
-                        )
-                    
-                    grid_dropdown = gr.Dropdown(label="Select a Grid", choices=[], interactive=True)
-                    doc_id_for_grid = gr.State(None)
-                    
-                    generate_db_grid_button = gr.Button("🚀 Generate with SDXL Turbo")
-
-                    db_grid_status = gr.Textbox(label="Status")
-                    db_grid_output = gr.Gallery(label="Generated Image (SDXL Turbo Output)")
-                    db_grid_gen_status = gr.Textbox(label="Generation Status")
-
-                    fetch_grids_button.click(
-                        fn=fetch_grids_from_db,
-                        inputs=[db_name_grids, collection_name_grids],
-                        outputs=[grid_dropdown]
-                    )
-
-                    grid_dropdown.change(
-                        fn=get_doc_id_from_grid,
-                        inputs=[grid_dropdown, db_name_grids, collection_name_grids],
-                        outputs=[doc_id_for_grid]
-                    )
-
-                    generate_db_grid_button.click(
-                        fn=launch_grid_db_generation,
-                        inputs=[doc_id_for_grid, width_slider_db_grid2img, height_slider_db_grid2img, num_images_slider_db_grid2img, s3_bucket_input_global, gr.Textbox(value="db_grid_image", visible=False)],
-                        outputs=[task_id_states["db_grid2img"], db_grid_status, db_grid_output]
-                    ).then(
-                        fn=track_grid_generation_progress,
-                        inputs=[task_id_states["db_grid2img"]],
-                        outputs=[db_grid_gen_status, db_grid_output, gr.State(None)]
-                    )
-                
-                with gr.TabItem("Task Status"):
-                    task_id_display_db_txt2img = gr.Textbox(label="Text Prompts Task ID", interactive=False)
-                    task_id_display_db_grid2img = gr.Textbox(label="Grid Data Task ID", interactive=False)
-                    task_id_states["db_txt2img"].change(fn=lambda x: x, inputs=task_id_states["db_txt2img"], outputs=task_id_display_db_txt2img)
-                    task_id_states["db_grid2img"].change(fn=lambda x: x, inputs=task_id_states["db_grid2img"], outputs=task_id_display_db_grid2img)
-
-    demo.launch(server_name="0.0.0.0", server_port=7860)
