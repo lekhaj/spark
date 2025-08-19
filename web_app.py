@@ -283,27 +283,19 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
         # Use collapsible accordions to make the page cleaner.
         with gr.Accordion("2D Image Generation", open=True):
             gr.Markdown("### Status")
-            # We no longer need to call .render() here
-            gr.Textbox.render(status_2d_output)
+            # The component is already defined and will render automatically.
             gr.Markdown("### Details (JSON)")
-            # We no longer need to call .render() here
-            gr.Json.render(json_2d_output)
-            gr.Gallery.render(images_2d_gallery)
-            gr.Button.render(generate_2d_button)
-
+            # The component is already defined and will render automatically.
+            
         # This button is used to re-trigger the 3D generation task.
         generate_3d_button = gr.Button("Generate 3D Model")
 
         with gr.Accordion("3D Model Generation", open=False):
             gr.Markdown("### Status")
-            # We no longer need to call .render() here
-            gr.Textbox.render(status_3d_output)
+            # The component is already defined and will render automatically.
             gr.Markdown("### Details (JSON)")
-            # We no longer need to call .render() here
-            gr.Json.render(json_3d_output)
-            gr.HTML.render(model_link_output)
-            gr.Button.render(generate_3d_button)
-        
+            # The component is already defined and will render automatically.
+            
         # Now, connect the functions to the UI events.
         # This call runs once to load the initial biome on page load.
         demo.load(
@@ -343,5 +335,6 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
 
 # Launch the Gradio application
 demo.launch(server_name="0.0.0.0", server_port=7860)
+
 
 
