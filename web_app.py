@@ -53,7 +53,10 @@ def get_database_names():
         return []
 
 def get_collection_names(database_name):
-    """Lists all collection names in a given database."""
+    """
+    Lists all collection names in a given database.
+    Added a try-except block to handle potential authentication errors.
+    """
     client = get_db_client()
     if not client:
         return []
@@ -61,7 +64,7 @@ def get_collection_names(database_name):
         db = client[database_name]
         return db.list_collection_names()
     except OperationFailure as e:
-        print(f"Failed to list collections in database '{database_name}': {e}")
+        print(f"Failed to list collections in database '{database_name}': {e}. Check user permissions.")
         return []
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
@@ -244,7 +247,7 @@ def run_3d_generation_live(doc_id, database_name, collection_name):
     update_live_biome_details(database_name, collection_name, doc_id, "3d_generation_details", new_data)
 
     model_link = f"<a href='{new_data['model_url']}' target='_blank'>Download 3D Model</a>"
-    return "COMPLETED", json.dumps(new_data, indent=2), model_link
+    return "COMPLETED", json.dumps(new_data, indent=2), new_images
 
 # --- GRADIO INTERFACE LAYOUT ---
 
@@ -350,6 +353,7 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
 
 # Launch the Gradio application
 demo.launch(server_name="0.0.0.0", server_port=7860)
+
 
 
 
