@@ -155,6 +155,7 @@ def update_biomes_dropdown(database_name, collection_name):
 def load_biome_pipeline_live(biome_name, biome_choices, database_name, collection_name):
     """
     Loads the pipeline status for the selected biome from the live database.
+    This version includes more robust checks for JSON and data format to prevent errors.
     """
     doc_id = None
     for name, _id in biome_choices:
@@ -163,43 +164,48 @@ def load_biome_pipeline_live(biome_name, biome_choices, database_name, collectio
             break
 
     if not doc_id:
-        return (gr.State(None), "Biome not found.", {}, [], "Biome not found.", {}, "")
+        # Return default, empty states if no biome is selected
+        return (gr.State(None), "Not Started", "{}", [], "Not Started", "{}", "")
 
     biome_doc = fetch_live_biome_details(database_name, collection_name, doc_id)
     if not biome_doc:
-        return (gr.State(None), "Failed to load details.", {}, [], "Failed to load details.", {}, "")
+        # Return default, empty states if biome details cannot be fetched
+        return (gr.State(None), "Failed to load details.", "{}", [], "Failed to load details.", "{}", "")
 
     # Initialize outputs for the 2D section
     status_2d_text = "Not Started"
     json_2d_text = "{}"
     images_2d_list = []
     
-    if "image_generation_details" in biome_doc:
-        details_2d = biome_doc["image_generation_details"]
+    # Check if the 'image_generation_details' field exists and is a dictionary
+    details_2d = biome_doc.get("image_generation_details", {})
+    if isinstance(details_2d, dict):
         status_2d_text = details_2d.get("status", "NOT_STARTED")
         json_2d_text = json.dumps(details_2d, indent=2)
         
-        # Display image from mock S3 or placeholder based on status
-        if status_2d_text == "COMPLETED":
-            images_2d_list = details_2d.get("generated_images", [])
-        elif status_2d_text == "PENDING":
-             images_2d_list = []
+        # Check if 'generated_images' field exists and is a list
+        generated_images = details_2d.get("generated_images", [])
+        if isinstance(generated_images, list):
+            images_2d_list = generated_images
         else:
-             images_2d_list = []
+            images_2d_list = [] # Reset to empty list if format is incorrect
 
     # Initialize outputs for the 3D section
     status_3d_text = "Not Started"
     json_3d_text = "{}"
     model_link = ""
 
-    if "3d_generation_details" in biome_doc:
-        details_3d = biome_doc["3d_generation_details"]
+    # Check if the '3d_generation_details' field exists and is a dictionary
+    details_3d = biome_doc.get("3d_generation_details", {})
+    if isinstance(details_3d, dict):
         status_3d_text = details_3d.get("status", "NOT_STARTED")
         json_3d_text = json.dumps(details_3d, indent=2)
+        
         if status_3d_text == "COMPLETED" and "model_url" in details_3d:
             model_url = details_3d.get("model_url")
-            model_link = f"<a href='{model_url}' target='_blank'>Download 3D Model</a>"
-        
+            if model_url:
+                model_link = f"<a href='{model_url}' target='_blank'>Download 3D Model</a>"
+    
     return (
         gr.State(doc_id),
         status_2d_text,
@@ -678,6 +684,7 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
 
 # Launch the Gradio application
 demo.launch(server_name="0.0.0.0", server_port=7860)
+
 
 
 
