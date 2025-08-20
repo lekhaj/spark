@@ -1,18 +1,7 @@
-# The Asset Pipeline Tracker is a Gradio application that allows users to
-# monitor and manage the status of AI-generated 3D assets. It connects
-# to a mock database to display a list of biomes and their progress
-# through a 2D image generation and 3D model generation pipeline.
-
-# The app features:
-# - A main "Asset Pipeline" tab.
-# - Dynamic retrieval and display of biomes from a mock MongoDB collection.
-# - A detailed view of each biome's pipeline status, including JSON details.
-# - The ability to re-trigger incomplete pipeline steps.
-# - A real-time update of the UI upon task completion.
-
 import gradio as gr
 import json
 import time
+import random
 from bson.objectid import ObjectId
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure, OperationFailure
@@ -21,7 +10,6 @@ from pymongo.errors import ConnectionFailure, OperationFailure
 CONNECTION_STRING = "mongodb://sagar:KrSiDnSI9m8RgcHE@ec2-15-206-99-66.ap-south-1.compute.amazonaws.com:27017/World_builder?authSource=admin"
 
 # Global variables to hold the active database and collection.
-# These will be set by the UI.
 db_client = None
 active_db = None
 active_collection = None
@@ -131,7 +119,6 @@ def create_new_biome(database_name, collection_name, biome_name):
     try:
         db = client[database_name]
         collection = db[collection_name]
-        # Check if a biome with this name already exists
         if collection.find_one({"biome_name": biome_name}):
             return (None, f"Biome '{biome_name}' already exists.")
             
@@ -187,26 +174,32 @@ def load_biome_pipeline_live(biome_name, biome_choices, database_name, collectio
     json_2d_text = "{}"
     images_2d_list = []
     
-    # Check if 2D details exist and update outputs
     if "image_generation_details" in biome_doc:
         details_2d = biome_doc["image_generation_details"]
         status_2d_text = details_2d.get("status", "NOT_STARTED")
         json_2d_text = json.dumps(details_2d, indent=2)
-        images_2d_list = details_2d.get("generated_images", [])
+        
+        # Display image from mock S3 or placeholder based on status
+        if status_2d_text == "COMPLETED":
+            images_2d_list = details_2d.get("generated_images", [])
+        elif status_2d_text == "PENDING":
+             images_2d_list = []
+        else:
+             images_2d_list = []
 
     # Initialize outputs for the 3D section
     status_3d_text = "Not Started"
     json_3d_text = "{}"
     model_link = ""
 
-    # Check if 3D details exist and update outputs
     if "3d_generation_details" in biome_doc:
         details_3d = biome_doc["3d_generation_details"]
         status_3d_text = details_3d.get("status", "NOT_STARTED")
         json_3d_text = json.dumps(details_3d, indent=2)
-        if "model_url" in details_3d:
-            model_link = f"<a href='{details_3d['model_url']}' target='_blank'>Download 3D Model</a>"
-
+        if status_3d_text == "COMPLETED" and "model_url" in details_3d:
+            model_url = details_3d.get("model_url")
+            model_link = f"<a href='{model_url}' target='_blank'>Download 3D Model</a>"
+        
     return (
         gr.State(doc_id),
         status_2d_text,
@@ -217,160 +210,243 @@ def load_biome_pipeline_live(biome_name, biome_choices, database_name, collectio
         model_link
     )
 
-# --- NEW GENERATION FUNCTIONS ---
-def run_2d_generation(database_name, collection_name, biome_action_type, new_biome_name, selected_biome_name, prompt):
-    """Handles 2D generation for a new or existing biome."""
-    doc_id = None
+def get_or_create_biome_doc(biome_action_type, new_biome_name, selected_biome_name, database_name, collection_name):
+    """
+    Helper function to get the document ID for a new or existing biome.
+    Returns (doc_id, error_message)
+    """
     if biome_action_type == "Create New Biome":
         doc_id, msg = create_new_biome(database_name, collection_name, new_biome_name)
         if not doc_id:
-            return (None, msg, {}, [], "")
+            return None, msg
         print(msg)
-    elif biome_action_type == "Select Existing Biome":
+    else:  # Select Existing Biome
         biome_choices = get_biome_choices_live(database_name, collection_name)
+        doc_id = None
         for name, _id in biome_choices:
             if name == selected_biome_name:
                 doc_id = _id
                 break
         if not doc_id:
-            return (None, "Selected biome not found.", {}, [], "")
+            return None, "Selected biome not found."
+    return doc_id, None
 
-    print(f"Starting 2D generation for document ID: {doc_id}")
+def _start_2d_task(database_name, collection_name, biome_action_type, new_biome_name, selected_biome_name, prompt):
+    """Simulates starting a 2D generation task."""
+    doc_id, msg = get_or_create_biome_doc(biome_action_type, new_biome_name, selected_biome_name, database_name, collection_name)
+    if not doc_id:
+        return (None, msg)
+
     task_id = f"task-2d-{doc_id}-{int(time.time())}"
     
-    # Simulate Celery task start
+    # Immediately update the database with a PENDING status
+    initial_data = {
+        "status": "PENDING",
+        "prompt": prompt,
+        "model_used": "Simulated AI Model",
+        "generated_images": [],
+        "timestamp": time.time()
+    }
+    update_live_biome_details(database_name, collection_name, doc_id, "image_generation_details", initial_data)
+    
+    print(f"Task {task_id} for 2D generation submitted. Status: PENDING")
+    
+    return (task_id, "PENDING")
+
+def _start_grid_task(database_name, collection_name, biome_action_type, new_biome_name, selected_biome_name, grid_data_str):
+    """Simulates starting a Grid to Image generation task."""
+    doc_id, msg = get_or_create_biome_doc(biome_action_type, new_biome_name, selected_biome_name, database_name, collection_name)
+    if not doc_id:
+        return (None, msg)
+        
+    task_id = f"task-grid-{doc_id}-{int(time.time())}"
+
+    initial_data = {
+        "status": "PENDING",
+        "grid_data": json.loads(grid_data_str),
+        "model_used": "Simulated Grid Model",
+        "generated_images": [],
+        "timestamp": time.time()
+    }
+    update_live_biome_details(database_name, collection_name, doc_id, "grid_generation_details", initial_data)
+    
+    print(f"Task {task_id} for Grid generation submitted. Status: PENDING")
+    
+    return (task_id, "PENDING")
+
+def _start_3d_task(database_name, collection_name, biome_action_type, new_biome_name, selected_biome_name, input_2d_image):
+    """Simulates starting a 3D generation task."""
+    doc_id, msg = get_or_create_biome_doc(biome_action_type, new_biome_name, selected_biome_name, database_name, collection_name)
+    if not doc_id:
+        return (None, msg)
+        
+    if input_2d_image is None:
+        return (None, "Please upload a 2D image.")
+    
+    task_id = f"task-3d-{doc_id}-{int(time.time())}"
+
+    initial_data = {
+        "status": "PENDING",
+        "input_images_count": 1,
+        "model_url": "",
+        "timestamp": time.time()
+    }
+    update_live_biome_details(database_name, collection_name, doc_id, "3d_generation_details", initial_data)
+
+    print(f"Task {task_id} for 3D generation submitted. Status: PENDING")
+
+    return (task_id, "PENDING")
+
+def _start_decimation_task(database_name, collection_name, biome_action_type, new_biome_name, selected_biome_name, input_3d_file):
+    """Simulates starting a 3D decimation task."""
+    doc_id, msg = get_or_create_biome_doc(biome_action_type, new_biome_name, selected_biome_name, database_name, collection_name)
+    if not doc_id:
+        return (None, msg)
+
+    if input_3d_file is None:
+        return (None, "Please upload a 3D model.")
+    
+    task_id = f"task-decimate-{doc_id}-{int(time.time())}"
+    
+    initial_data = {
+        "status": "PENDING",
+        "input_file": input_3d_file.name,
+        "model_url": "",
+        "timestamp": time.time()
+    }
+    update_live_biome_details(database_name, collection_name, doc_id, "decimation_details", initial_data)
+
+    print(f"Task {task_id} for decimation submitted. Status: PENDING")
+    
+    return (task_id, "PENDING")
+
+def run_2d_generation(task_id_input, database_name, collection_name, selected_biome_name, biome_choices_list):
+    """Simulates the completion of a 2D task."""
+    if not task_id_input:
+        return (gr.Json({}), gr.Gallery([]),) + load_biome_pipeline_live(selected_biome_name, biome_choices_list, database_name, collection_name)[1:]
+
+    doc_id = task_id_input.split('-')[2]
+    
+    # Simulate work being done
+    time.sleep(2)
+
+    # Generate mock S3 URLs
+    biome_name = selected_biome_name if selected_biome_name else "New Biome"
     new_images = [
-        f"https://placehold.co/400x400/222222/EEEEEE?text={selected_biome_name}+Image+1",
-        f"https://placehold.co/400x400/222222/EEEEEE?text={selected_biome_name}+Image+2",
+        f"s3://sparkassets/images/{biome_name}/image-1-{random.randint(100, 999)}.png",
+        f"s3://sparkassets/images/{biome_name}/image-2-{random.randint(100, 999)}.png",
     ]
     new_data = {
         "status": "COMPLETED",
-        "prompt": prompt,
-        "model_used": "Simulated AI Model",
         "generated_images": new_images,
         "timestamp": time.time()
     }
     update_live_biome_details(database_name, collection_name, doc_id, "image_generation_details", new_data)
 
-    return (task_id, "COMPLETED", json.dumps(new_data, indent=2), new_images, new_images)
+    print(f"Task {task_id_input} completed.")
 
-def run_grid_generation(database_name, collection_name, biome_action_type, new_biome_name, selected_biome_name, grid_data_str):
-    """Handles Grid to Image generation for a new or existing biome."""
-    doc_id = None
-    if biome_action_type == "Create New Biome":
-        doc_id, msg = create_new_biome(database_name, collection_name, new_biome_name)
-        if not doc_id:
-            return (None, msg, {}, [], "")
-        print(msg)
-    elif biome_action_type == "Select Existing Biome":
-        biome_choices = get_biome_choices_live(database_name, collection_name)
-        for name, _id in biome_choices:
-            if name == selected_biome_name:
-                doc_id = _id
-                break
-        if not doc_id:
-            return (None, "Selected biome not found.", {}, [], "")
-            
-    print(f"Starting Grid to Image generation for document ID: {doc_id}")
-    task_id = f"task-grid-{doc_id}-{int(time.time())}"
-    
-    # Simulate Celery task start
+    # Return updated outputs for both the generation tab and the main pipeline tab
+    pipeline_outputs = load_biome_pipeline_live(selected_biome_name, biome_choices_list, database_name, collection_name)
+    return (gr.Json(new_data), gr.Gallery(new_images),) + pipeline_outputs[1:]
+
+
+def run_grid_generation(task_id_input, database_name, collection_name, selected_biome_name, biome_choices_list):
+    """Simulates the completion of a Grid task."""
+    if not task_id_input:
+        return (gr.Json({}), gr.Gallery([]),) + load_biome_pipeline_live(selected_biome_name, biome_choices_list, database_name, collection_name)[1:]
+
+    doc_id = task_id_input.split('-')[2]
+
+    # Simulate work being done
+    time.sleep(2)
+
+    biome_name = selected_biome_name if selected_biome_name else "New Biome"
     new_images = [
-        f"https://placehold.co/400x400/222222/EEEEEE?text={selected_biome_name}+Grid+1",
-        f"https://placehold.co/400x400/222222/EEEEEE?text={selected_biome_name}+Grid+2",
+        f"s3://sparkassets/images/{biome_name}/grid-image-1-{random.randint(100, 999)}.png",
+        f"s3://sparkassets/images/{biome_name}/grid-image-2-{random.randint(100, 999)}.png",
     ]
     new_data = {
         "status": "COMPLETED",
-        "grid_data": json.loads(grid_data_str),
-        "model_used": "Simulated Grid Model",
         "generated_images": new_images,
         "timestamp": time.time()
     }
-    update_live_biome_details(database_name, collection_name, doc_id, "grid_generation_details", new_data)
+    update_live_biome_details(database_name, collection_name, doc_id, "image_generation_details", new_data)
     
-    return (task_id, "COMPLETED", json.dumps(new_data, indent=2), new_images, new_images)
+    print(f"Task {task_id_input} completed.")
 
-def run_3d_generation(database_name, collection_name, biome_action_type, new_biome_name, selected_biome_name, image_2d_input):
-    """Handles 3D generation for a new or existing biome."""
-    doc_id = None
-    if biome_action_type == "Create New Biome":
-        doc_id, msg = create_new_biome(database_name, collection_name, new_biome_name)
-        if not doc_id:
-            return (None, msg, {}, "")
-        print(msg)
-    elif biome_action_type == "Select Existing Biome":
-        biome_choices = get_biome_choices_live(database_name, collection_name)
-        for name, _id in biome_choices:
-            if name == selected_biome_name:
-                doc_id = _id
-                break
-        if not doc_id:
-            return (None, "Selected biome not found.", {}, "")
-            
-    if image_2d_input is None:
-        return (None, "Please upload a 2D image.", {}, "")
-    
-    print(f"Starting 3D generation for document ID: {doc_id}")
-    task_id = f"task-3d-{doc_id}-{int(time.time())}"
-    
-    # Simulate Celery task start
+    pipeline_outputs = load_biome_pipeline_live(selected_biome_name, biome_choices_list, database_name, collection_name)
+    return (gr.Json(new_data), gr.Gallery(new_images),) + pipeline_outputs[1:]
+
+
+def run_3d_generation(task_id_input, database_name, collection_name, selected_biome_name, biome_choices_list):
+    """Simulates the completion of a 3D task."""
+    if not task_id_input:
+        return (gr.HTML(""),) + load_biome_pipeline_live(selected_biome_name, biome_choices_list, database_name, collection_name)[1:]
+
+    doc_id = task_id_input.split('-')[2]
+
+    # Simulate work being done
+    time.sleep(2)
+
+    biome_name = selected_biome_name if selected_biome_name else "New Biome"
+    new_model_url = f"s3://sparkassets/3d_assets/{biome_name}/model-{random.randint(100, 999)}.glb"
     new_data = {
         "status": "COMPLETED",
-        "input_images_count": 1,
-        "model_url": f"https://placehold.co/400x200/50C878/000000?text={selected_biome_name}+3D+Model",
+        "model_url": new_model_url,
         "timestamp": time.time()
     }
     update_live_biome_details(database_name, collection_name, doc_id, "3d_generation_details", new_data)
 
-    model_link = f"<a href='{new_data['model_url']}' target='_blank'>Download 3D Model</a>"
-    return (task_id, "COMPLETED", json.dumps(new_data, indent=2), model_link)
-
-def run_decimation(database_name, collection_name, biome_action_type, new_biome_name, selected_biome_name, input_3d_file):
-    """Handles 3D decimation for a new or existing biome."""
-    doc_id = None
-    if biome_action_type == "Create New Biome":
-        doc_id, msg = create_new_biome(database_name, collection_name, new_biome_name)
-        if not doc_id:
-            return (None, msg, {}, "")
-        print(msg)
-    elif biome_action_type == "Select Existing Biome":
-        biome_choices = get_biome_choices_live(database_name, collection_name)
-        for name, _id in biome_choices:
-            if name == selected_biome_name:
-                doc_id = _id
-                break
-        if not doc_id:
-            return (None, "Selected biome not found.", {}, "")
-
-    if input_3d_file is None:
-        return (None, "Please upload a 3D model.", {}, "")
+    model_link = f"<a href='{new_model_url}' target='_blank'>Download 3D Model</a>"
     
-    print(f"Starting 3D decimation for document ID: {doc_id}")
-    task_id = f"task-decimate-{doc_id}-{int(time.time())}"
-    
-    # Simulate Celery task start
+    print(f"Task {task_id_input} completed.")
+
+    pipeline_outputs = load_biome_pipeline_live(selected_biome_name, biome_choices_list, database_name, collection_name)
+    return (gr.HTML(model_link),) + pipeline_outputs[1:]
+
+
+def run_decimation(task_id_input, database_name, collection_name, selected_biome_name, biome_choices_list):
+    """Simulates the completion of a decimation task."""
+    if not task_id_input:
+        return (gr.HTML(""),) + load_biome_pipeline_live(selected_biome_name, biome_choices_list, database_name, collection_name)[1:]
+
+    doc_id = task_id_input.split('-')[2]
+
+    # Simulate work being done
+    time.sleep(2)
+
+    biome_name = selected_biome_name if selected_biome_name else "New Biome"
+    new_model_url = f"s3://sparkassets/processed/{biome_name}/decimated-model-{random.randint(100, 999)}.glb"
     new_data = {
         "status": "COMPLETED",
-        "input_file": input_3d_file.name,
-        "model_url": f"https://placehold.co/400x200/FF0000/FFFFFF?text={selected_biome_name}+Decimated+Model",
+        "model_url": new_model_url,
         "timestamp": time.time()
     }
     update_live_biome_details(database_name, collection_name, doc_id, "decimation_details", new_data)
     
-    model_link = f"<a href='{new_data['model_url']}' target='_blank'>Download Decimated 3D Model</a>"
-    return (task_id, "COMPLETED", json.dumps(new_data, indent=2), model_link)
+    model_link = f"<a href='{new_model_url}' target='_blank'>Download Decimated 3D Model</a>"
+    
+    print(f"Task {task_id_input} completed.")
+
+    pipeline_outputs = load_biome_pipeline_live(selected_biome_name, biome_choices_list, database_name, collection_name)
+    return (gr.HTML(model_link),) + pipeline_outputs[1:]
+
 
 # --- GRADIO INTERFACE LAYOUT ---
 
 with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
     gr.Markdown("# 🌎 AI World Builder")
     
-    # Hidden states to manage the live connection
+    # Hidden states to manage the live connection and task IDs
     current_biome_id = gr.State(None)
     biome_choices_list = gr.State([])
+    current_task_id_2d = gr.State(None)
+    current_task_id_grid = gr.State(None)
+    current_task_id_3d = gr.State(None)
+    current_task_id_decimate = gr.State(None)
 
-    with gr.Tabs():
-        # Asset Pipeline Tab (Unchanged)
+    with gr.Tabs() as tabs:
+        # Asset Pipeline Tab
         with gr.TabItem("Asset Pipeline"):
             gr.Markdown("## ⚙️ MongoDB Connection")
             gr.Markdown("First, select your database and collection. Then, click 'Refresh Biomes' to populate the dropdown below.")
@@ -393,7 +469,7 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
             
             biome_dropdown = gr.Dropdown(
                 label="Select Biome", 
-                choices=[],  # Initially empty
+                choices=[],
                 interactive=True
             )
             
@@ -412,6 +488,16 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
                 json_3d_output = gr.Json(label="3D Generation Details")
                 gr.Markdown("### 3D Model Link")
                 model_link_output = gr.HTML(label="3D Model Link")
+            
+            database_dropdown.change(fn=update_collections_dropdown, inputs=[database_dropdown], outputs=[collection_dropdown])
+            collection_dropdown.change(fn=update_biomes_dropdown, inputs=[database_dropdown, collection_dropdown], outputs=[biome_dropdown, biome_choices_list])
+            refresh_button.click(fn=update_biomes_dropdown, inputs=[database_dropdown, collection_dropdown], outputs=[biome_dropdown, biome_choices_list])
+            
+            biome_dropdown.change(
+                fn=load_biome_pipeline_live,
+                inputs=[biome_dropdown, biome_choices_list, database_dropdown, collection_dropdown],
+                outputs=[current_biome_id, status_2d_output, json_2d_output, images_2d_gallery, status_3d_output, json_3d_output, model_link_output]
+            )
 
         # Text to Image Tab
         with gr.TabItem("Text to Image"):
@@ -431,12 +517,12 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
             with gr.Column(visible=False) as existing_biome_col_txt2img:
                 existing_biome_dropdown_txt2img = gr.Dropdown(label="Select Biome", choices=[], interactive=True)
                 
-            task_id_txt2img = gr.Textbox(label="Submitted Task ID", interactive=False)
+            task_status_2d = gr.Textbox(label="Task Status", interactive=False)
+            task_id_2d = gr.Textbox(label="Submitted Task ID", interactive=False)
             
             text_to_image_prompt = gr.Textbox(label="Text Prompt", placeholder="Describe the biome, e.g., 'a serene crystal cave with luminous flora'")
             generate_image_button = gr.Button("🚀 Generate Image from Text")
-            image_generation_status = gr.Textbox(label="Image Generation Status", lines=1)
-            image_generation_output = gr.Gallery(label="Generated Images", columns=2, height='auto')
+            check_2d_status_button = gr.Button("Refresh Status")
             
             # Event listeners
             text_to_image_db.change(fn=update_collections_dropdown, inputs=[text_to_image_db], outputs=[text_to_image_collection])
@@ -447,9 +533,14 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
                 outputs=[new_biome_col_txt2img, existing_biome_col_txt2img]
             )
             generate_image_button.click(
-                fn=run_2d_generation,
+                fn=_start_2d_task,
                 inputs=[text_to_image_db, text_to_image_collection, biome_action_type_txt2img, new_biome_name_txt2img, existing_biome_dropdown_txt2img, text_to_image_prompt],
-                outputs=[task_id_txt2img, image_generation_status, gr.Json(), image_generation_output, images_2d_gallery]
+                outputs=[task_id_2d, task_status_2d]
+            )
+            check_2d_status_button.click(
+                fn=run_2d_generation,
+                inputs=[task_id_2d, text_to_image_db, text_to_image_collection, existing_biome_dropdown_txt2img, biome_choices_list],
+                outputs=[json_2d_output, images_2d_gallery, status_2d_output, json_2d_output, images_2d_gallery, status_3d_output, json_3d_output, model_link_output]
             )
 
         # Grid to Image Tab
@@ -469,13 +560,13 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
 
             with gr.Column(visible=False) as existing_biome_col_grid2img:
                 existing_biome_dropdown_grid2img = gr.Dropdown(label="Select Biome", choices=[], interactive=True)
-            
-            task_id_grid2img = gr.Textbox(label="Submitted Task ID", interactive=False)
+                
+            task_status_grid = gr.Textbox(label="Task Status", interactive=False)
+            task_id_grid = gr.Textbox(label="Submitted Task ID", interactive=False)
 
             grid_data_input = gr.Textbox(label="Grid Data (JSON array of arrays)", lines=10, placeholder="Example: [[0,0,1,1],[0,1,1,0]]")
             generate_grid_image_button = gr.Button("Generate Image from Grid")
-            grid_generation_status = gr.Textbox(label="Status", lines=1)
-            grid_visualization_output = gr.Gallery(label="Grid Visualization", columns=2, height='auto')
+            check_grid_status_button = gr.Button("Refresh Status")
 
             # Event listeners
             grid_to_image_db.change(fn=update_collections_dropdown, inputs=[grid_to_image_db], outputs=[grid_to_image_collection])
@@ -486,9 +577,14 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
                 outputs=[new_biome_col_grid2img, existing_biome_col_grid2img]
             )
             generate_grid_image_button.click(
-                fn=run_grid_generation,
+                fn=_start_grid_task,
                 inputs=[grid_to_image_db, grid_to_image_collection, biome_action_type_grid2img, new_biome_name_grid2img, existing_biome_dropdown_grid2img, grid_data_input],
-                outputs=[task_id_grid2img, grid_generation_status, gr.Json(), grid_visualization_output, images_2d_gallery]
+                outputs=[task_id_grid, task_status_grid]
+            )
+            check_grid_status_button.click(
+                fn=run_grid_generation,
+                inputs=[task_id_grid, grid_to_image_db, grid_to_image_collection, existing_biome_dropdown_grid2img, biome_choices_list],
+                outputs=[json_2d_output, images_2d_gallery, status_2d_output, json_2d_output, images_2d_gallery, status_3d_output, json_3d_output, model_link_output]
             )
 
         # 3D Generation Tab
@@ -508,14 +604,14 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
 
             with gr.Column(visible=False) as existing_biome_col_3d:
                 existing_biome_dropdown_3d = gr.Dropdown(label="Select Biome", choices=[], interactive=True)
-            
-            task_id_3d_gen = gr.Textbox(label="Submitted Task ID", interactive=False)
+                
+            task_status_3d = gr.Textbox(label="Task Status", interactive=False)
+            task_id_3d = gr.Textbox(label="Submitted Task ID", interactive=False)
 
             input_2d_image_for_3d = gr.Image(label="Upload 2D Image", type="pil")
             generate_3d_button = gr.Button("Generate 3D Model")
-            status_3d_gen = gr.Textbox(label="3D Generation Status", lines=1)
-            output_3d_model_link = gr.HTML(label="Generated 3D Model Link")
-
+            check_3d_status_button = gr.Button("Refresh Status")
+            
             # Event listeners
             _3d_gen_db.change(fn=update_collections_dropdown, inputs=[_3d_gen_db], outputs=[_3d_gen_collection])
             _3d_gen_collection.change(fn=update_biomes_dropdown, inputs=[_3d_gen_db, _3d_gen_collection], outputs=[existing_biome_dropdown_3d, biome_choices_list])
@@ -525,10 +621,16 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
                 outputs=[new_biome_col_3d, existing_biome_col_3d]
             )
             generate_3d_button.click(
-                fn=run_3d_generation,
+                fn=_start_3d_task,
                 inputs=[_3d_gen_db, _3d_gen_collection, biome_action_type_3d, new_biome_name_3d, existing_biome_dropdown_3d, input_2d_image_for_3d],
-                outputs=[task_id_3d_gen, status_3d_gen, gr.Json(), output_3d_model_link]
+                outputs=[task_id_3d, task_status_3d]
             )
+            check_3d_status_button.click(
+                fn=run_3d_generation,
+                inputs=[task_id_3d, _3d_gen_db, _3d_gen_collection, existing_biome_dropdown_3d, biome_choices_list],
+                outputs=[model_link_output, status_2d_output, json_2d_output, images_2d_gallery, status_3d_output, json_3d_output, model_link_output]
+            )
+
 
         # Decimated 3D Tab
         with gr.TabItem("Decimated 3D"):
@@ -548,12 +650,12 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
             with gr.Column(visible=False) as existing_biome_col_decimate:
                 existing_biome_dropdown_decimate = gr.Dropdown(label="Select Biome", choices=[], interactive=True)
 
+            task_status_decimate = gr.Textbox(label="Task Status", interactive=False)
             task_id_decimate = gr.Textbox(label="Submitted Task ID", interactive=False)
             
             input_3d_file_decimate = gr.File(label="Upload 3D Model (GLB, OBJ, STL)", type="filepath")
             decimate_button = gr.Button("Decimate 3D Model")
-            status_decimate = gr.Textbox(label="Decimation Status", lines=1)
-            output_decimated_model_link = gr.HTML(label="Decimated 3D Model Link")
+            check_decimate_status_button = gr.Button("Refresh Status")
             
             # Event listeners
             decimate_db.change(fn=update_collections_dropdown, inputs=[decimate_db], outputs=[decimate_collection])
@@ -564,13 +666,19 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
                 outputs=[new_biome_col_decimate, existing_biome_col_decimate]
             )
             decimate_button.click(
-                fn=run_decimation,
+                fn=_start_decimation_task,
                 inputs=[decimate_db, decimate_collection, biome_action_type_decimate, new_biome_name_decimate, existing_biome_dropdown_decimate, input_3d_file_decimate],
-                outputs=[task_id_decimate, status_decimate, gr.Json(), output_decimated_model_link]
+                outputs=[task_id_decimate, task_status_decimate]
+            )
+            check_decimate_status_button.click(
+                fn=run_decimation,
+                inputs=[task_id_decimate, decimate_db, decimate_collection, existing_biome_dropdown_decimate, biome_choices_list],
+                outputs=[model_link_output, status_2d_output, json_2d_output, images_2d_gallery, status_3d_output, json_3d_output, model_link_output]
             )
 
 # Launch the Gradio application
 demo.launch(server_name="0.0.0.0", server_port=7860)
+
 
 
 
