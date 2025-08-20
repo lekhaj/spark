@@ -258,25 +258,25 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
     current_biome_id = gr.State(None)
     biome_choices_list = gr.State([])
 
-    with gr.TabItem("Database Settings"):
-        gr.Markdown("## ⚙️ MongoDB Connection")
-        gr.Markdown("First, select your database and collection. Then, click 'Refresh Biomes' to populate the dropdown on the 'Asset Pipeline' tab.")
-        
-        database_dropdown = gr.Dropdown(
-            label="Select Database", 
-            choices=get_database_names(), 
-            interactive=True
-        )
-        collection_dropdown = gr.Dropdown(
-            label="Select Collection", 
-            choices=[], 
-            interactive=True
-        )
-        refresh_button = gr.Button("Refresh Biomes")
-
     with gr.TabItem("Asset Pipeline"):
+        gr.Markdown("## ⚙️ MongoDB Connection")
+        gr.Markdown("First, select your database and collection. Then, click 'Refresh Biomes' to populate the dropdown below.")
+        
+        with gr.Row():
+            database_dropdown = gr.Dropdown(
+                label="Select Database", 
+                choices=get_database_names(), 
+                interactive=True
+            )
+            collection_dropdown = gr.Dropdown(
+                label="Select Collection", 
+                choices=[], 
+                interactive=True
+            )
+            refresh_button = gr.Button("Refresh Biomes")
+        
         gr.Markdown("## 📦 Asset Generation Pipeline")
-        gr.Markdown("Select a biome to view and manage its asset generation status.")
+        gr.Markdown("Select a biome to view its asset generation status.")
         
         biome_dropdown = gr.Dropdown(
             label="Select Biome", 
@@ -284,31 +284,65 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
             interactive=True
         )
         
-        status_2d_output = gr.Textbox(label="2D Status", show_label=False)
-        json_2d_output = gr.Json(label="2D Generation Details")
-        images_2d_gallery = gr.Gallery(label="Generated 2D Images", columns=2)
-        
-        status_3d_output = gr.Textbox(label="3D Status", show_label=False)
-        json_3d_output = gr.Json(label="3D Generation Details")
-        model_link_output = gr.HTML(label="3D Model Link")
-        
-        generate_2d_button = gr.Button("Generate 2D Images")
-
         with gr.Accordion("2D Image Generation", open=True):
             gr.Markdown("### Status")
-            # We no longer need to call .render() here, Gradio handles it automatically
+            status_2d_output = gr.Textbox(label="2D Status", show_label=False)
             gr.Markdown("### Details (JSON)")
-            # We no longer need to call .render() here, Gradio handles it automatically
+            json_2d_output = gr.Json(label="2D Generation Details")
+            gr.Markdown("### Generated Images")
+            images_2d_gallery = gr.Gallery(label="Generated 2D Images", columns=2)
             
-        generate_3d_button = gr.Button("Generate 3D Model")
-
         with gr.Accordion("3D Model Generation", open=False):
             gr.Markdown("### Status")
-            # We no longer need to call .render() here, Gradio handles it automatically
+            status_3d_output = gr.Textbox(label="3D Status", show_label=False)
             gr.Markdown("### Details (JSON)")
-            # We no longer need to call .render() here, Gradio handles it automatically
-            
-    # Event listeners
+            json_3d_output = gr.Json(label="3D Generation Details")
+            gr.Markdown("### 3D Model Link")
+            model_link_output = gr.HTML(label="3D Model Link")
+
+    with gr.TabItem("Text to Image"):
+        gr.Markdown("## Text-to-Image Generation")
+        gr.Markdown("Generate 2D images based on a text prompt.")
+        
+        text_to_image_db = gr.Dropdown(label="Select Database", choices=get_database_names(), interactive=True)
+        text_to_image_collection = gr.Dropdown(label="Select Collection", choices=[], interactive=True)
+        text_to_image_biome_dropdown = gr.Dropdown(label="Select Biome", choices=[], interactive=True)
+        text_to_image_refresh = gr.Button("Refresh Biomes")
+
+        text_to_image_button = gr.Button("Generate 2D Images")
+        
+        with gr.Accordion("2D Generation Results"):
+            text_to_image_status = gr.Textbox(label="Status")
+            text_to_image_json = gr.Json(label="Details")
+            text_to_image_gallery = gr.Gallery(label="Generated Images")
+
+    with gr.TabItem("Grid to Image"):
+        gr.Markdown("## Grid-to-Image Generation")
+        gr.Markdown("This section will be used to generate images from a grid input.")
+        # Placeholder for future functionality
+
+    with gr.TabItem("3D Generation"):
+        gr.Markdown("## 3D Model Generation")
+        gr.Markdown("Generate 3D models from existing 2D images.")
+        
+        _3d_gen_db = gr.Dropdown(label="Select Database", choices=get_database_names(), interactive=True)
+        _3d_gen_collection = gr.Dropdown(label="Select Collection", choices=[], interactive=True)
+        _3d_gen_biome_dropdown = gr.Dropdown(label="Select Biome", choices=[], interactive=True)
+        _3d_gen_refresh = gr.Button("Refresh Biomes")
+
+        _3d_gen_button = gr.Button("Generate 3D Model")
+        
+        with gr.Accordion("3D Generation Results"):
+            _3d_gen_status = gr.Textbox(label="Status")
+            _3d_gen_json = gr.Json(label="Details")
+            _3d_gen_model_link = gr.HTML(label="Model Link")
+    
+    with gr.TabItem("Decimated 3D"):
+        gr.Markdown("## Decimated 3D Models")
+        gr.Markdown("This section will be used for post-processing and decimating 3D models.")
+        # Placeholder for future functionality
+
+    # Event listeners for the main Asset Pipeline tab
     database_dropdown.change(
         fn=update_collections_dropdown,
         inputs=[database_dropdown],
@@ -321,34 +355,51 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
         outputs=[biome_dropdown, biome_choices_list]
     )
     
-    # Update the biome pipeline when a biome is selected.
-    # Pass the database and collection names to the function.
     biome_dropdown.change(
         fn=load_biome_pipeline_live,
         inputs=[biome_dropdown, biome_choices_list, database_dropdown, collection_dropdown],
         outputs=[current_biome_id, status_2d_output, json_2d_output, images_2d_gallery,
                  status_3d_output, json_3d_output, model_link_output]
     )
-    
-    # Update the 2D generation button click event.
-    # Pass the database and collection names.
-    generate_2d_button.click(
-        fn=run_2d_generation_live,
-        inputs=[current_biome_id, database_dropdown, collection_dropdown],
-        outputs=[status_2d_output, json_2d_output, images_2d_gallery]
+
+    # Event listeners for Text to Image tab
+    text_to_image_db.change(
+        fn=update_collections_dropdown,
+        inputs=[text_to_image_db],
+        outputs=[text_to_image_collection]
     )
-    
-    # Update the 3D generation button click event.
-    # Pass the database and collection names.
-    generate_3d_button.click(
+    text_to_image_refresh.click(
+        fn=update_biomes_dropdown,
+        inputs=[text_to_image_db, text_to_image_collection],
+        outputs=[text_to_image_biome_dropdown, biome_choices_list]
+    )
+    text_to_image_button.click(
+        fn=run_2d_generation_live,
+        inputs=[current_biome_id, text_to_image_db, text_to_image_collection],
+        outputs=[text_to_image_status, text_to_image_json, text_to_image_gallery]
+    )
+
+    # Event listeners for 3D Generation tab
+    _3d_gen_db.change(
+        fn=update_collections_dropdown,
+        inputs=[_3d_gen_db],
+        outputs=[_3d_gen_collection]
+    )
+    _3d_gen_refresh.click(
+        fn=update_biomes_dropdown,
+        inputs=[_3d_gen_db, _3d_gen_collection],
+        outputs=[_3d_gen_biome_dropdown, biome_choices_list]
+    )
+    _3d_gen_button.click(
         fn=run_3d_generation_live,
-        inputs=[current_biome_id, database_dropdown, collection_dropdown],
-        outputs=[status_3d_output, json_3d_output, model_link_output]
+        inputs=[current_biome_id, _3d_gen_db, _3d_gen_collection],
+        outputs=[_3d_gen_status, _3d_gen_json, _3d_gen_model_link]
     )
 
 
 # Launch the Gradio application
 demo.launch(server_name="0.0.0.0", server_port=7860)
+
 
 
 
