@@ -346,10 +346,6 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
         outputs=[status_3d_output, json_3d_output, model_link_output]
     )
 
-    # You can add your other existing tabs here.
-    with gr.TabItem("Your Existing Tabs"):
-        gr.Markdown("### Your Existing Gradio UI will go here.")
-        gr.Markdown("This shows how the new Asset Pipeline tab fits into your existing app.")
 
 # Launch the Gradio application
 demo.launch(server_name="0.0.0.0", server_port=7860)
