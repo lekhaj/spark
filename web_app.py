@@ -144,12 +144,17 @@ def update_collections_dropdown(database_name):
     return gr.Dropdown(choices=collections, value=collections[0] if collections else None)
 
 def update_biomes_dropdown(database_name, collection_name):
-    """Updates the biomes dropdown based on the selected collection."""
+    """
+    Updates the biomes dropdown and the biome choices state.
+    
+    CORRECTION: This function now returns the list of choices directly instead of wrapping
+    it in a new `gr.State` object, which was causing the TypeError.
+    """
     biome_choices = get_biome_choices_live(database_name, collection_name)
     biome_names = [name for name, _ in biome_choices]
     return (
         gr.Dropdown(choices=biome_names, value=biome_names[0] if biome_names else None),
-        gr.State(biome_choices)
+        biome_choices # Return the list directly
     )
 
 def load_biome_pipeline_live(biome_name, biome_choices, database_name, collection_name):
@@ -158,6 +163,8 @@ def load_biome_pipeline_live(biome_name, biome_choices, database_name, collectio
     This version includes more robust checks for JSON and data format to prevent errors.
     """
     # Find the document ID from the biome choices list
+    # The 'biome_choices' parameter now correctly receives the list from the state,
+    # so this line works as intended.
     doc_id = next((_id for name, _id in biome_choices if name == biome_name), None)
 
     # Return default, empty states if no biome is selected or found
@@ -482,6 +489,7 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
                 gr.Markdown("### 3D Model Link")
                 model_link_output = gr.HTML(label="3D Model Link")
             
+            # CORRECTION: The outputs for the change event are now a gr.Dropdown and the list itself.
             database_dropdown.change(fn=update_collections_dropdown, inputs=[database_dropdown], outputs=[collection_dropdown])
             collection_dropdown.change(fn=update_biomes_dropdown, inputs=[database_dropdown, collection_dropdown], outputs=[biome_dropdown, biome_choices_list])
             refresh_button.click(fn=update_biomes_dropdown, inputs=[database_dropdown, collection_dropdown], outputs=[biome_dropdown, biome_choices_list])
@@ -690,6 +698,7 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
 
 # Launch the Gradio application
 demo.launch(server_name="0.0.0.0", server_port=7860)
+
 
 
 
