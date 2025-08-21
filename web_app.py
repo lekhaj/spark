@@ -161,28 +161,27 @@ def load_biome_pipeline_live(biome_name, biome_choices, database_name, collectio
     """
     Loads the pipeline status for the selected biome from the live database.
     This version includes more robust checks for JSON and data format to prevent errors.
+    
+    This function has been updated to also retrieve and return the possible_structures data.
     """
     # Find the document ID from the biome choices list
-    # The 'biome_choices' parameter now correctly receives the list from the state,
-    # so this line works as intended.
     doc_id = next((_id for name, _id in biome_choices if name == biome_name), None)
 
     # Return default, empty states if no biome is selected or found
     if not doc_id:
-        return (gr.State(None), "Not Started", "{}", [], "Not Started", "{}", "")
+        return (gr.State(None), "Not Started", "{}", [], "Not Started", "{}", "", [], gr.Json({}))
 
     biome_doc = fetch_live_biome_details(database_name, collection_name, doc_id)
 
     # If the document cannot be fetched (e.g., due to connection error), return a clean state.
     if not biome_doc:
-        return (gr.State(doc_id), "Not Started", "{}", [], "Not Started", "{}", "")
+        return (gr.State(doc_id), "Not Started", "{}", [], "Not Started", "{}", "", [], gr.Json({}))
 
-    # Initialize outputs for the 2D section
+    # --- 2D Section ---
     status_2d_text = "Not Started"
     json_2d_text = "{}"
     images_2d_list = []
     
-    # Check if the 'image_generation_details' field exists and is a dictionary
     details_2d = biome_doc.get("image_generation_details", {})
     if isinstance(details_2d, dict):
         status_2d_text = details_2d.get("status", "Not Started")
@@ -191,19 +190,17 @@ def load_biome_pipeline_live(biome_name, biome_choices, database_name, collectio
         except TypeError:
             json_2d_text = "Error: Invalid JSON data"
         
-        # Check if 'generated_images' field exists and is a list
         generated_images = details_2d.get("generated_images", [])
         if isinstance(generated_images, list):
             images_2d_list = generated_images
         else:
-            images_2d_list = [] # Reset to empty list if format is incorrect
+            images_2d_list = []
 
-    # Initialize outputs for the 3D section
+    # --- 3D Section ---
     status_3d_text = "Not Started"
     json_3d_text = "{}"
     model_link = ""
 
-    # Check if the '3d_generation_details' field exists and is a dictionary
     details_3d = biome_doc.get("3d_generation_details", {})
     if isinstance(details_3d, dict):
         status_3d_text = details_3d.get("status", "Not Started")
@@ -216,6 +213,19 @@ def load_biome_pipeline_live(biome_name, biome_choices, database_name, collectio
             model_url = details_3d.get("model_url")
             if model_url:
                 model_link = f"<a href='{model_url}' target='_blank'>Download 3D Model</a>"
+
+    # --- New section for possible structures ---
+    structures_data = {}
+    structures_names = []
+    possible_structures_details = biome_doc.get("possible_structures", {})
+    if isinstance(possible_structures_details, dict):
+        for key, value in possible_structures_details.items():
+            if isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict) and "name" in item:
+                        structures_names.append(item["name"])
+                        # Store the full structure details for later lookup
+                        structures_data[item["name"]] = item
     
     return (
         gr.State(doc_id),
@@ -224,7 +234,10 @@ def load_biome_pipeline_live(biome_name, biome_choices, database_name, collectio
         images_2d_list,
         status_3d_text,
         json_3d_text,
-        model_link
+        model_link,
+        gr.Dropdown(choices=structures_names, value=None), # New output for structures dropdown
+        gr.State(structures_data), # New state to hold the structures data
+        gr.Json({}) # Reset the details box
     )
 
 def get_or_create_biome_doc(biome_action_type, new_biome_name, selected_biome_name, biome_choices, database_name, collection_name):
@@ -247,7 +260,7 @@ def _start_2d_task(database_name, collection_name, biome_action_type, new_biome_
     """Simulates starting a 2D generation task."""
     doc_id, msg = get_or_create_biome_doc(biome_action_type, new_biome_name, selected_biome_name, biome_choices, database_name, collection_name)
     if not doc_id:
-        return (None, "Failed to submit task.", "{}")
+        return (gr.State(None), "Failed to submit task.", "{}")
 
     task_id = f"task-2d-{doc_id}-{int(time.time())}"
     
@@ -431,6 +444,16 @@ def run_decimation(task_id_input, database_name, collection_name):
     print(f"Task {task_id_input} completed.")
 
     return (gr.HTML(model_link), "Task Completed.")
+    
+def display_structure_details(structure_name, structures_data):
+    """
+    Looks up the full details for a selected structure from the state and returns it.
+    """
+    if not structure_name:
+        return gr.Json({})
+    
+    structure_details = structures_data.get(structure_name, {})
+    return gr.Json(structure_details)
 
 # --- GRADIO INTERFACE LAYOUT ---
 
@@ -440,6 +463,7 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
     # Hidden states to manage the live connection and task IDs
     current_biome_id = gr.State(None)
     biome_choices_list = gr.State([])
+    possible_structures_data = gr.State({})
     current_task_id_2d = gr.State(None)
     current_task_id_grid = gr.State(None)
     current_task_id_3d = gr.State(None)
@@ -480,7 +504,7 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
                 json_2d_output = gr.Json(label="2D Generation Details")
                 gr.Markdown("### Generated Images")
                 images_2d_gallery = gr.Gallery(label="Generated 2D Images", columns=2)
-                
+            
             with gr.Accordion("3D Model Generation", open=False):
                 gr.Markdown("### Status")
                 status_3d_output = gr.Textbox(label="3D Status", show_label=False)
@@ -488,6 +512,17 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
                 json_3d_output = gr.Json(label="3D Generation Details")
                 gr.Markdown("### 3D Model Link")
                 model_link_output = gr.HTML(label="3D Model Link")
+            
+            # New section for possible structures
+            with gr.Accordion("Possible Structures", open=True):
+                gr.Markdown("### View Structure Details")
+                gr.Markdown("Select a structure from the current biome to view its details.")
+                possible_structures_dropdown = gr.Dropdown(
+                    label="Select Structure",
+                    choices=[],
+                    interactive=True
+                )
+                structure_details_json = gr.Json(label="Structure Details")
             
             # CORRECTION: The outputs for the change event are now a gr.Dropdown and the list itself.
             database_dropdown.change(fn=update_collections_dropdown, inputs=[database_dropdown], outputs=[collection_dropdown])
@@ -497,7 +532,14 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
             biome_dropdown.change(
                 fn=load_biome_pipeline_live,
                 inputs=[biome_dropdown, biome_choices_list, database_dropdown, collection_dropdown],
-                outputs=[current_biome_id, status_2d_output, json_2d_output, images_2d_gallery, status_3d_output, json_3d_output, model_link_output]
+                outputs=[current_biome_id, status_2d_output, json_2d_output, images_2d_gallery, status_3d_output, json_3d_output, model_link_output, possible_structures_dropdown, possible_structures_data, structure_details_json]
+            )
+            
+            # New event listener to handle changes in the possible structures dropdown
+            possible_structures_dropdown.change(
+                fn=display_structure_details,
+                inputs=[possible_structures_dropdown, possible_structures_data],
+                outputs=[structure_details_json]
             )
 
         # Text to Image Tab
@@ -698,6 +740,7 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
 
 # Launch the Gradio application
 demo.launch(server_name="0.0.0.0", server_port=7860)
+
 
 
 
