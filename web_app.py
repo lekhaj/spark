@@ -1,3 +1,4 @@
+import os
 import gradio as gr
 import json
 import time
@@ -6,7 +7,13 @@ from bson.objectid import ObjectId
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure, OperationFailure
 
-# MongoDB Connection String and details provided by the user.
+# --- Celery and MongoDB Configuration ---
+# You need to ensure both instances can see this Redis server
+redis_ip = "172.31.8.113"
+from celery import Celery
+celery_app = Celery("app", broker=f"redis://{redis_ip}:6379/0", backend=f"redis://{redis_ip}:6379/0")
+
+# --- MongoDB Connection String and details provided by the user.
 CONNECTION_STRING = "mongodb://sagar:KrSiDnSI9m8RgcHE@ec2-15-206-99-66.ap-south-1.compute.amazonaws.com:27017/World_builder?authSource=admin"
 
 # Global variables to hold the active database and collection.
@@ -93,24 +100,7 @@ def fetch_live_biome_details(database_name, collection_name, doc_id):
     except Exception as e:
         print(f"Failed to fetch biome details for ID {doc_id}: {e}")
         return None
-
-def update_live_biome_details(database_name, collection_name, doc_id, section, new_data):
-    """
-    Updates a specific section of a document in the live database.
-    """
-    client = get_db_client()
-    if not client:
-        return False
-    try:
-        db = client[database_name]
-        collection = db[collection_name]
-        # Use update_one to modify the specific field
-        result = collection.update_one({"_id": ObjectId(doc_id)}, {"$set": {section: new_data}})
-        return result.modified_count > 0
-    except Exception as e:
-        print(f"Failed to update document for ID {doc_id}: {e}")
-        return False
-
+    
 def create_new_biome(database_name, collection_name, biome_name):
     """
     Creates a new biome document in the specified database and collection.
@@ -149,9 +139,6 @@ def update_collections_dropdown(database_name):
 def update_biomes_dropdown(database_name, collection_name):
     """
     Updates the biomes dropdown and the biome choices state.
-    
-    CORRECTION: This function now correctly returns a gr.Dropdown component
-    and the list of biome choices, which will be stored in the state.
     """
     biome_choices = get_biome_choices_live(database_name, collection_name)
     biome_names = [name for name, _ in biome_choices]
@@ -245,62 +232,57 @@ def get_or_create_biome_doc(biome_action_type, new_biome_name, selected_biome_na
     return doc_id, None
 
 def _start_2d_task(database_name, collection_name, biome_action_type, new_biome_name, selected_biome_name, biome_choices, prompt):
-    """Simulates starting a 2D generation task."""
+    """Starts a real 2D generation task via Celery."""
     doc_id, msg = get_or_create_biome_doc(biome_action_type, new_biome_name, selected_biome_name, biome_choices, database_name, collection_name)
     if not doc_id:
-        return (None, "Failed to submit task.", "{}")
+        return (gr.State(None), msg, "{}")
 
-    task_id = f"task-2d-{doc_id}-{int(time.time())}"
-    
     # Immediately update the database with a PENDING status
     initial_data = {
         "status": "PENDING",
         "prompt": prompt,
-        "model_used": "Simulated AI Model",
+        "model_used": "runwayml/stable-diffusion-v1-5",
         "generated_images": [],
         "timestamp": time.time()
     }
-    update_live_biome_details(database_name, collection_name, doc_id, "image_generation_details", initial_data)
     
-    print(f"Task {task_id} for 2D generation submitted. Status: PENDING")
+    # Get a MongoDB client and update the document
+    client = get_db_client()
+    if client:
+        db = client[database_name]
+        collection = db[collection_name]
+        collection.update_one({"_id": ObjectId(doc_id)}, {"$set": {"image_generation_details": initial_data}})
     
-    return (gr.State(task_id), "Task submitted: PENDING", initial_data)
+    # Submit the Celery task
+    celery_app.send_task("app.generate_2d_image_task", args=[doc_id, prompt, 512, 512, 1])
+    
+    return (gr.State(doc_id), "Task submitted: PENDING", initial_data)
 
 def run_2d_generation(task_id_input, database_name, collection_name):
-    """Simulates the completion of a 2D task and updates the main pipeline view."""
+    """
+    Refreshes the UI by fetching the latest status from MongoDB.
+    This function no longer *runs* the task, it just updates the display.
+    """
     if not task_id_input:
         return (gr.Json({}), gr.Gallery([]), "No task to run.")
 
-    doc_id = task_id_input.split('-')[2]
-    
-    # Simulate work being done
-    time.sleep(2)
-    
-    # Generate mock, renderable placeholder image URLs instead of S3 links
-    new_images = [
-        f"https://placehold.co/600x400/1e88e5/ffffff?text=Biome+Image+{random.randint(1,9)}",
-        f"https://placehold.co/600x400/43a047/ffffff?text=Biome+Image+{random.randint(10,19)}",
-    ]
-    new_data = {
-        "status": "COMPLETED",
-        "generated_images": new_images,
-        "timestamp": time.time()
-    }
-    update_live_biome_details(database_name, collection_name, doc_id, "image_generation_details", new_data)
+    doc_id = task_id_input
+    biome_doc = fetch_live_biome_details(database_name, collection_name, doc_id)
+    if not biome_doc:
+        return (gr.Json({}), gr.Gallery([]), "Document not found.")
 
-    print(f"Task {task_id_input} completed.")
+    details_2d = biome_doc.get("image_generation_details", {})
+    status_2d = details_2d.get("status", "Not Started")
+    images_2d = details_2d.get("generated_images", [])
 
-    return (gr.Json(new_data), gr.Gallery(new_images), "Task Completed.")
-
+    return (gr.Json(details_2d), gr.Gallery(images_2d), f"Task Status: {status_2d}")
 
 def _start_grid_task(database_name, collection_name, biome_action_type, new_biome_name, selected_biome_name, biome_choices, grid_data_str):
-    """Simulates starting a Grid to Image generation task."""
+    """Starts a real Grid to Image generation task via Celery."""
     doc_id, msg = get_or_create_biome_doc(biome_action_type, new_biome_name, selected_biome_name, biome_choices, database_name, collection_name)
     if not doc_id:
-        return (None, "Failed to submit task.", "{}")
+        return (gr.State(None), msg, "{}")
         
-    task_id = f"task-grid-{doc_id}-{int(time.time())}"
-
     initial_data = {
         "status": "PENDING",
         "grid_data": json.loads(grid_data_str),
@@ -308,131 +290,133 @@ def _start_grid_task(database_name, collection_name, biome_action_type, new_biom
         "generated_images": [],
         "timestamp": time.time()
     }
-    update_live_biome_details(database_name, collection_name, doc_id, "grid_generation_details", initial_data)
+
+    client = get_db_client()
+    if client:
+        db = client[database_name]
+        collection = db[collection_name]
+        collection.update_one({"_id": ObjectId(doc_id)}, {"$set": {"grid_generation_details": initial_data}})
+
+    celery_app.send_task("app.generate_image_from_grid_task", args=[doc_id, grid_data_str, 512, 512, 1])
     
-    print(f"Task {task_id} for Grid generation submitted. Status: PENDING")
-    
-    return (gr.State(task_id), "Task submitted: PENDING", initial_data)
+    return (gr.State(doc_id), "Task submitted: PENDING", initial_data)
 
 def run_grid_generation(task_id_input, database_name, collection_name):
-    """Simulates the completion of a Grid task and updates the main pipeline view."""
+    """
+    Refreshes the UI by fetching the latest status from MongoDB.
+    """
     if not task_id_input:
         return (gr.Json({}), gr.Gallery([]), "No task to run.")
 
-    doc_id = task_id_input.split('-')[2]
+    doc_id = task_id_input
+    biome_doc = fetch_live_biome_details(database_name, collection_name, doc_id)
+    if not biome_doc:
+        return (gr.Json({}), gr.Gallery([]), "Document not found.")
 
-    # Simulate work being done
-    time.sleep(2)
+    details_grid = biome_doc.get("grid_generation_details", {})
+    status_grid = details_grid.get("status", "Not Started")
+    images_grid = details_grid.get("generated_images", [])
 
-    # Generate mock, renderable placeholder image URLs
-    new_images = [
-        f"https://placehold.co/600x400/ff9800/ffffff?text=Grid+Image+{random.randint(20,29)}",
-        f"https://placehold.co/600x400/9e9e9e/ffffff?text=Grid+Image+{random.randint(30,39)}",
-    ]
-    new_data = {
-        "status": "COMPLETED",
-        "generated_images": new_images,
-        "timestamp": time.time()
-    }
-    update_live_biome_details(database_name, collection_name, doc_id, "grid_generation_details", new_data)
-    
-    print(f"Task {task_id_input} completed.")
+    return (gr.Json(details_grid), gr.Gallery(images_grid), f"Task Status: {status_grid}")
 
-    return (gr.Json(new_data), gr.Gallery(new_images), "Task Completed.")
 
-def _start_3d_task(database_name, collection_name, biome_action_type, new_biome_name, selected_biome_name, biome_choices, input_2d_image):
-    """Simulates starting a 3D generation task."""
+def _start_3d_task(database_name, collection_name, biome_action_type, new_biome_name, selected_biome_name, biome_choices):
+    """Starts a real 3D generation task via Celery."""
     doc_id, msg = get_or_create_biome_doc(biome_action_type, new_biome_name, selected_biome_name, biome_choices, database_name, collection_name)
     if not doc_id:
-        return (gr.State(None), "Failed to submit task.", "")
+        return (gr.State(None), msg, "")
         
-    if input_2d_image is None:
-        return (gr.State(None), "Please upload a 2D image.", "")
-    
-    task_id = f"task-3d-{doc_id}-{int(time.time())}"
-
     initial_data = {
         "status": "PENDING",
         "input_images_count": 1,
         "model_url": "",
         "timestamp": time.time()
     }
-    update_live_biome_details(database_name, collection_name, doc_id, "3d_generation_details", initial_data)
-
-    print(f"Task {task_id} for 3D generation submitted. Status: PENDING")
-
-    return (gr.State(task_id), "Task submitted: PENDING", "")
+    
+    client = get_db_client()
+    if client:
+        db = client[database_name]
+        collection = db[collection_name]
+        collection.update_one({"_id": ObjectId(doc_id)}, {"$set": {"3d_generation_details": initial_data}})
+    
+    # Submit the Celery task
+    celery_app.send_task("app.generate_3d_from_2d_task", args=[doc_id])
+    
+    return (gr.State(doc_id), "Task submitted: PENDING", "")
 
 def run_3d_generation(task_id_input, database_name, collection_name):
-    """Simulates the completion of a 3D task and updates the main pipeline view."""
+    """
+    Refreshes the UI by fetching the latest status from MongoDB.
+    """
     if not task_id_input:
         return (gr.HTML(""), "No task to run.")
 
-    doc_id = task_id_input.split('-')[2]
+    doc_id = task_id_input
+    biome_doc = fetch_live_biome_details(database_name, collection_name, doc_id)
+    if not biome_doc:
+        return (gr.HTML(""), "Document not found.")
 
-    # Simulate work being done
-    time.sleep(2)
+    details_3d = biome_doc.get("3d_generation_details", {})
+    status_3d = details_3d.get("status", "Not Started")
+    model_url = details_3d.get("model_url", None)
 
-    new_model_url = f"s3://sparkassets/3d_assets/model-{random.randint(100, 999)}.glb"
-    new_data = {
-        "status": "COMPLETED",
-        "model_url": new_model_url,
-        "timestamp": time.time()
-    }
-    update_live_biome_details(database_name, collection_name, doc_id, "3d_generation_details", new_data)
-
-    model_link = f"<a href='{new_model_url}' target='_blank'>Download 3D Model</a>"
+    model_link = ""
+    if model_url:
+        model_link = f"<a href='{model_url}' target='_blank'>Download 3D Model</a>"
     
-    print(f"Task {task_id_input} completed.")
-
-    return (gr.HTML(model_link), "Task Completed.")
+    return (gr.HTML(model_link), f"Task Status: {status_3d}")
 
 def _start_decimation_task(database_name, collection_name, biome_action_type, new_biome_name, selected_biome_name, biome_choices, input_3d_file):
-    """Simulates starting a 3D decimation task."""
+    """Starts a real 3D decimation task via Celery."""
     doc_id, msg = get_or_create_biome_doc(biome_action_type, new_biome_name, selected_biome_name, biome_choices, database_name, collection_name)
     if not doc_id:
-        return (gr.State(None), "Failed to submit task.", "")
+        return (gr.State(None), msg, "")
 
     if input_3d_file is None:
         return (gr.State(None), "Please upload a 3D model.", "")
-    
-    task_id = f"task-decimate-{doc_id}-{int(time.time())}"
-    
+        
     initial_data = {
         "status": "PENDING",
         "input_file": input_3d_file.name,
         "model_url": "",
         "timestamp": time.time()
     }
-    update_live_biome_details(database_name, collection_name, doc_id, "decimation_details", initial_data)
-
-    print(f"Task {task_id} for decimation submitted. Status: PENDING")
     
-    return (gr.State(task_id), "Task submitted: PENDING", "")
+    client = get_db_client()
+    if client:
+        db = client[database_name]
+        collection = db[collection_name]
+        collection.update_one({"_id": ObjectId(doc_id)}, {"$set": {"decimation_details": initial_data}})
+    
+    # In a real scenario, we would upload the file to S3 first and pass the S3 URL
+    # For this example, we'll pass the file path and let the worker handle it.
+    
+    # Submit the Celery task
+    celery_app.send_task("app.decimate_3d_task", args=[doc_id, input_3d_file.name, open(input_3d_file.name, "rb").read()])
+    
+    return (gr.State(doc_id), "Task submitted: PENDING", "")
 
 def run_decimation(task_id_input, database_name, collection_name):
-    """Simulates the completion of a decimation task and updates the main pipeline view."""
+    """
+    Refreshes the UI by fetching the latest status from MongoDB.
+    """
     if not task_id_input:
         return (gr.HTML(""), "No task to run.")
 
-    doc_id = task_id_input.split('-')[2]
+    doc_id = task_id_input
+    biome_doc = fetch_live_biome_details(database_name, collection_name, doc_id)
+    if not biome_doc:
+        return (gr.HTML(""), "Document not found.")
 
-    # Simulate work being done
-    time.sleep(2)
-
-    new_model_url = f"s3://sparkassets/processed/decimated-model-{random.randint(100, 999)}.glb"
-    new_data = {
-        "status": "COMPLETED",
-        "model_url": new_model_url,
-        "timestamp": time.time()
-    }
-    update_live_biome_details(database_name, collection_name, doc_id, "decimation_details", new_data)
+    details_decimate = biome_doc.get("decimation_details", {})
+    status_decimate = details_decimate.get("status", "Not Started")
+    model_url = details_decimate.get("model_url", None)
     
-    model_link = f"<a href='{new_model_url}' target='_blank'>Download Decimated 3D Model</a>"
+    model_link = ""
+    if model_url:
+        model_link = f"<a href='{model_url}' target='_blank'>Download Decimated 3D Model</a>"
     
-    print(f"Task {task_id_input} completed.")
-
-    return (gr.HTML(model_link), "Task Completed.")
+    return (gr.HTML(model_link), f"Task Status: {status_decimate}")
 
 # --- GRADIO INTERFACE LAYOUT ---
 
@@ -442,7 +426,7 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
     # Hidden states to manage the live connection and task IDs
     current_biome_id = gr.State(None)
     # This state now holds the list of tuples, which is the correct format
-    biome_choices_list = gr.State([]) 
+    biome_choices_list = gr.State([])  
     current_task_id_2d = gr.State(None)
     current_task_id_grid = gr.State(None)
     current_task_id_3d = gr.State(None)
@@ -456,13 +440,13 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
             
             with gr.Row():
                 database_dropdown = gr.Dropdown(
-                    label="Select Database", 
-                    choices=get_database_names(), 
+                    label="Select Database",  
+                    choices=get_database_names(),  
                     interactive=True
                 )
                 collection_dropdown = gr.Dropdown(
-                    label="Select Collection", 
-                    choices=[], 
+                    label="Select Collection",  
+                    choices=[],  
                     interactive=True
                 )
                 refresh_button = gr.Button("Refresh Biomes")
@@ -471,7 +455,7 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
             gr.Markdown("Select a biome to view its asset generation status.")
             
             biome_dropdown = gr.Dropdown(
-                label="Select Biome", 
+                label="Select Biome",  
                 choices=[],
                 interactive=True
             )
@@ -495,18 +479,18 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
             # The .change() event now returns a Dropdown and a list, correctly
             # mapping to the two outputs.
             database_dropdown.change(
-                fn=update_collections_dropdown, 
-                inputs=[database_dropdown], 
+                fn=update_collections_dropdown,  
+                inputs=[database_dropdown],  
                 outputs=[collection_dropdown]
             )
             collection_dropdown.change(
-                fn=update_biomes_dropdown, 
-                inputs=[database_dropdown, collection_dropdown], 
+                fn=update_biomes_dropdown,  
+                inputs=[database_dropdown, collection_dropdown],  
                 outputs=[biome_dropdown, biome_choices_list]
             )
             refresh_button.click(
-                fn=update_biomes_dropdown, 
-                inputs=[database_dropdown, collection_dropdown], 
+                fn=update_biomes_dropdown,  
+                inputs=[database_dropdown, collection_dropdown],  
                 outputs=[biome_dropdown, biome_choices_list]
             )
             
@@ -653,7 +637,7 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
             )
             generate_3d_button.click(
                 fn=_start_3d_task,
-                inputs=[_3d_gen_db, _3d_gen_collection, biome_action_type_3d, new_biome_name_3d, existing_biome_dropdown_3d, biome_choices_list, input_2d_image_for_3d],
+                inputs=[_3d_gen_db, _3d_gen_collection, biome_action_type_3d, new_biome_name_3d, existing_biome_dropdown_3d, biome_choices_list],
                 outputs=[task_id_3d, task_status_3d, model_link_3d_results]
             )
             check_3d_status_button.click(
@@ -711,6 +695,5 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
                 outputs=[model_link_decimate_results, task_status_decimate]
             )
 
-
-# Launch the Gradio application
+# Launch the Gradio
 demo.launch(server_name="0.0.0.0", server_port=7860)
