@@ -47,7 +47,7 @@ def run_blender_script(input_path, output_dir):
     ]
     
     try:
-       subprocess.run(command, check=True, capture_output=True, text=True)
+        subprocess.run(command, check=True, capture_output=True, text=True)
         print("Blender processing completed successfully.")
         return True
     except subprocess.CalledProcessError as e:
@@ -92,7 +92,7 @@ def main():
             print("Blender processing completed successfully.")   # ✅ same indent as run_blender_processing
 
             # Delete message if processed successfully
-            sqs.delete_message(QueueUrl=https://sqs.ap-south-1.amazonaws.com/073643077764/3d-model-processing-queue, ReceiptHandle=receipt_handle)
+            sqs.delete_message(QueueUrl=config.SQS_QUEUE_URL, ReceiptHandle=receipt_handle)
 
         except Exception as e:
             print(f"An error occurred: {e}. Message will not be deleted.")
