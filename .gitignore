@@ -15,3 +15,5 @@ __pycache__/
 3D_pipeline_compress/output_models/
 output.log
 draco
+
+myenv/

@@ -57,12 +57,11 @@ def get_database_names():
         return client.list_database_names()
     except OperationFailure as e:
         print(f"Failed to list databases: {e}")
-        return []
+        return [] 
 
 def get_collection_names(database_name):
     """
     Lists all collection names in a given database.
-    Added a try-except block to handle potential authentication errors.
     """
     client = get_db_client()
     if not client:

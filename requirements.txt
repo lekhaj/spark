@@ -1,7 +1,0 @@
-fastapi
-uvicorn
-redis
-pymongo
-boto3
-#torch
-#hunyuan3d
