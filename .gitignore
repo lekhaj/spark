@@ -1,0 +1,17 @@
+# Python-specific
+__pycache__/
+*.pyc
+
+# IDE-specific
+.idea/
+.vscode/
+
+# Environment variables
+.env
+
+# Generated files
+/generated_files/
+3D_pipeline_compress/input_models/
+3D_pipeline_compress/output_models/
+output.log
+draco
