@@ -1,3 +1,4 @@
+from datetime import datetime
 from app.config import db
 
 def ping_db():
