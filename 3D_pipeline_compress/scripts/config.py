@@ -5,7 +5,7 @@ S3_BUCKET_NAME = "sparkassets"
 S3_PROCESSED_PREFIX = "processed/"
 
 # MongoDB Configuration
-MONGO_URI = "mongodb+srv://shubham1:Shubhamsharma1210@cluster0.nhns1r4.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+MONGO_URI = "mongodb://kartik:Kartikg421@15.206.99.66:27017/?authSource=admin"
 
 MONGO_DB_NAME = "World_builder"
 MONGO_COLLECTION_NAME = "biomes"
