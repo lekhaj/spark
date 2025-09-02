@@ -7,7 +7,7 @@ from pymongo import MongoClient
 from urllib.parse import unquote_plus
 
 # Import configuration
-import config
+from . import config
 
 # Add the project's root directory to the Python path
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
