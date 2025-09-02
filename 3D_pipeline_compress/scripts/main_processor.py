@@ -135,7 +135,7 @@ def main():
                 update_document = {
                     'biome_id': 'unique_biome_id_here',
                     'name': f'Asset_{asset_id_from_filename}',
-                    'climate': 'procedurally_generated_climate',
+                    'climate': 'temperate',
                     'description': f'Generated asset for biome {asset_id_from_filename}',
                     'structures': [],  # Data should be generated here
                     'layout_matrix': [], # Data should be generated here
