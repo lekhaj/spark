@@ -1,7 +1,3 @@
-# main.py
-
-
-
 import logging
 from logging.handlers import RotatingFileHandler
 from contextlib import asynccontextmanager
@@ -10,10 +6,9 @@ from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime
 from starlette.concurrency import run_in_threadpool
-
 from src import database as db
 from src.biome_generator import create_new_biome
-
+from src.celery_worker import generate_biome_task, celery_app
 import uvicorn
 
 LOG_FILE_NAME = "custom_inference.log"
@@ -32,10 +27,7 @@ def setup_logger(log_file: str = LOG_FILE_NAME):
     logger.addHandler(console_handler)
     return logger
 
-
 logger = setup_logger(LOG_FILE_NAME)
-
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -59,7 +51,7 @@ class BiomeGenerationRequest(BaseModel):
     theme_prompt: str = Field(
         ...,
         min_length=10,
-        max_length=300,
+        max_length=2000,
         example="A sun-scorched desert planet where giant crystalline cacti harvest lightning."
     )
 
@@ -71,6 +63,25 @@ class BiomeGenerationResponse(BaseModel):
 
 class BiomeListResponse(BaseModel):
     biome_names: List[str]
+    
+
+@app.post("/biomes/async/", tags=["Generation"])
+async def generate_biome_async(request: BiomeGenerationRequest):
+    task = generate_biome_task.delay(request.theme_prompt)
+    return {"task_id": task.id, "status": "queued"}
+
+@app.get("/biomes/result/{task_id}", tags=["Generation"])
+async def get_biome_result(task_id: str):
+    result = celery_app.AsyncResult(task_id)
+    if result.state == "PENDING":
+        return {"status": "pending"}
+    elif result.state == "SUCCESS":
+        return {"status": "success", "result": result.result}
+    elif result.state == "FAILURE":
+        return {"status": "failure", "error": str(result.info)}
+    else:
+        return {"status": result.state}
+
 
 @app.post("/biomes/", response_model=BiomeGenerationResponse, status_code=201, tags=["Generation"])
 async def generate_biome_endpoint(request: BiomeGenerationRequest):

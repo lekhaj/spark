@@ -18,6 +18,11 @@ def parse_llm_json_output(llm_response_text: str) -> dict | None:
     Returns:
         dict | None: A parsed dictionary if successful, otherwise None.
     """
+
+    temp_file = "temp_llm_response.txt"
+    with open(temp_file, "w") as f:
+        f.write(llm_response_text)
+    logger.info(f"LLM response written to {temp_file} for debugging.")
     if not llm_response_text:
         logger.warning("LLM response was empty or None. Cannot parse JSON.")
         return None

@@ -44,6 +44,8 @@ def create_new_biome(theme_prompt: str) -> GenerationResult:
 
     # 2. Call the LLM interface to get the raw response
     raw_llm_response = llm_interface.generate_structured_output(prompt_for_llm)
+    if isinstance(raw_llm_response, list):
+        raw_llm_response = " ".join(str(x) for x in raw_llm_response)
     if not raw_llm_response:
         error_msg = "LLM failed to generate a response or an error occurred."
         logger.error(error_msg)
@@ -52,7 +54,7 @@ def create_new_biome(theme_prompt: str) -> GenerationResult:
     # 3. Parse the raw response into a dictionary using our utility
     biome_document = utils.parse_llm_json_output(raw_llm_response)
     if not biome_document:
-        error_msg = "Failed to parse a valid JSON object from the LLM response."
+        error_msg = "Failed to parse a valid JSON object from the LLM response. _in biome_generator.py_"
         logger.error(error_msg)
         return GenerationResult(success=False, message=error_msg)
 

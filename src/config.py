@@ -7,8 +7,8 @@ load_dotenv()
 
 # --- LLM Provider Configuration ---
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "local").lower()
-if LLM_PROVIDER not in ["local", "api", "gemini"]:
-    raise ValueError(f"Invalid LLM_PROVIDER: '{LLM_PROVIDER}'. Must be 'local', 'api', or 'gemini'.")
+if LLM_PROVIDER not in ["local", "api", "gemini", "aws"]:
+    raise ValueError(f"Invalid LLM_PROVIDER: '{LLM_PROVIDER}'. Must be 'local', 'api', 'gemini', or 'aws'.")
 
 
 # Initialize variables for all providers
@@ -17,6 +17,9 @@ OPENAI_MODEL_NAME = None
 LOCAL_MODEL_PATH = None
 GEMINI_API_KEY = None
 GEMINI_MODEL = None
+AWS_API = None
+AWS_REGION = None
+AWS_BEDROCK_MODEL = None
 
 
 # _LLM_ provider prefixes
@@ -34,6 +37,16 @@ elif LLM_PROVIDER == "gemini":
     GEMINI_MODEL = os.getenv("GEMINI_MODEL", "models/gemini-pro")
     if not GEMINI_API_KEY:
         raise ValueError("FATAL ERROR: LLM_PROVIDER is 'gemini' but GEMINI_API_KEY is not set.")
+elif LLM_PROVIDER == "aws":
+    AWS_API = os.getenv("aws_bedrock_api")
+    AWS_REGION = os.getenv("AWS_REGION", "ap-south-1")
+    AWS_BEDROCK_MODEL = os.getenv("AWS_BEDROCK_MODEL", "anthropic.claude-3-haiku-20240307-v1:0")
+    if not AWS_API:
+        raise ValueError("FATAL ERROR: LLM_PROVIDER is 'aws' but AWS_API is not set.")
+    if not AWS_REGION:
+        raise ValueError("FATAL ERROR: LLM_PROVIDER is 'aws' but AWS_REGION is not set.")
+    if not AWS_BEDROCK_MODEL:
+        raise ValueError("FATAL ERROR: LLM_PROVIDER is 'aws' but AWS_BEDROCK_MODEL is not set.")
 
 
 # --- MongoDBConfiguration ---
@@ -43,3 +56,6 @@ if not MONGO_URL:
 
 MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "biome_db")
 MONGO_BIOME_COLLECTION = os.getenv("MONGO_BIOME_COLLECTION", "biomes")
+
+AWS_API = os.getenv("aws_bedrock_api")
+AWS_REGION = os.getenv("AWS_REGION", "ap-south-1")

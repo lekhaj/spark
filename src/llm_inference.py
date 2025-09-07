@@ -1,6 +1,10 @@
 import logging
+import os
+from streamlit import json
 from . import config
 import requests
+import boto3
+import json
 
 def get_logger():
     return logging.getLogger("rpg_fast_api.llm_inference")
@@ -107,6 +111,37 @@ def _call_local_model(prompt: str) -> str | None:
         logger.error(f"Error during local LLM inference: {e}", exc_info=True)
         return None
 
+def _call_claude_bedrock(prompt: str, max_tokens: int = 4096) -> str | None:
+    """
+    Sends a single-turn message to Anthropic Claude via AWS Bedrock and returns the response text.
+    """
+    try:
+        bedrock_runtime = boto3.client(service_name="bedrock-runtime", region_name=config.AWS_REGION)
+        model_id = config.AWS_BEDROCK_MODEL
+        user_theme = prompt.strip()
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"text": user_theme}
+                ]
+            }
+        ]
+        response = bedrock_runtime.converse(
+            modelId=model_id,
+            messages=messages,
+            inferenceConfig={
+                "maxTokens": max_tokens,
+                "temperature": 0.7
+            }
+        )
+        # Parse response as in test_bedrock_inference.py
+        response_body = response.get('output').get('message').get('content')[0].get('text')
+        return response_body
+    except Exception as e:
+        logger.error(f"Claude Bedrock API call failed: {e}")
+        return None
+
 # --- Public Function ---
 
 def generate_structured_output(prompt: str) -> str | None:
@@ -114,11 +149,12 @@ def generate_structured_output(prompt: str) -> str | None:
     The main, public function to generate a response from the configured LLM.
     """
     logger.info(f"Generating structured output using '{config.LLM_PROVIDER}' provider.")
-    if config.LLM_PROVIDER == "api":
+    provider = config.LLM_PROVIDER.lower()
+    if provider == "api":
         return _call_openai_api(prompt)
-    elif config.LLM_PROVIDER == "local":
+    elif provider == "local":
         return _call_local_model(prompt)
-    elif config.LLM_PROVIDER == "gemini":
+    elif provider == "gemini":
         gemini_mode = getattr(config, "GEMINI_MODE", "vertex").lower()
         if gemini_mode == "vertex":
             try:
@@ -151,6 +187,8 @@ def generate_structured_output(prompt: str) -> str | None:
             except Exception as e:
                 logger.error(f"Gemini REST API call failed: {e}")
                 return None
+    elif provider == "aws":
+        return _call_claude_bedrock(prompt)
     else:
         logger.error("Invalid LLM_PROVIDER configured.")
         return None

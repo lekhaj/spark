@@ -1,7 +1,14 @@
 fastapi
 uvicorn
-redis
+motor
 pymongo
-boto3
-#torch
-#hunyuan3d
+python-dotenv
+starlette
+requests
+transformers
+google-generativeai
+anyio
+# redis (optional, remove if not used)
+# boto3 (optional, remove if not used)
+# torch (optional, remove if not used)
+# hunyuan3d (optional, remove if not used)
