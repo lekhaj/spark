@@ -1,6 +1,3 @@
-# =====================
-# File: web_app.py
-# =====================
 import gradio as gr
 import json
 import time
@@ -238,7 +235,8 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
     with gr.Tab("Completed Biomes"):
         gr.Markdown("## ✅ Completed Biomes")
         refresh_completed_button = gr.Button("Refresh Completed List")
-        completed_output = gr.Markdown(label="Completed Biomes", interactive=False)
+        # The fix is on the line below
+        completed_output = gr.Markdown(label="Completed Biomes")
         
         refresh_completed_button.click(get_completed_biomes, outputs=completed_output)
 
