@@ -5,7 +5,7 @@ import redis
 import torch
 import time
 from diffusers import DiffusionPipeline
-from ...mongo_service import update_nested_status, check_all_sections_and_update_main_status
+from app.services.mongo_service import update_nested_status, check_all_sections_and_update_main_status
 # ------------ Configuration ------------
 REDIS_HOST = os.getenv("REDIS_HOST", "15.206.99.66")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6380))
