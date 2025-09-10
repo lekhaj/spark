@@ -1,6 +1,3 @@
-# =========================
-# File: worker_sdxl.py
-# =========================
 import os
 import json
 import boto3
@@ -8,7 +5,7 @@ import redis
 import torch
 import time
 from diffusers import DiffusionPipeline
-from mongo_service import update_nested_status, check_and_update_main_status
+from mongo_service import update_nested_status, check_all_sections_and_update_main_status
 
 # ------------ Configuration ------------
 REDIS_HOST = os.getenv("REDIS_HOST", "15.206.99.66")
@@ -42,14 +39,13 @@ def upload_to_s3(local_file_path, s3_key):
         s3_client = boto3.client("s3", region_name=S3_REGION)
         s3_client.upload_file(local_file_path, BUCKET_NAME, s3_key)
         
-        # Return public URL
         return f"https://{BUCKET_NAME}.s3.{S3_REGION}.amazonaws.com/{s3_key}"
     except Exception as e:
-        print(f"S3 upload failed: {e}")
+        print(f"Error uploading to S3: {e}")
         return None
 
 def process_image_task(task_data, sdxl_pipeline):
-    """Generates an image from a text prompt."""
+    """Generates an image from a text prompt and updates MongoDB."""
     job_id = task_data.get("job_id")
     prompt = task_data.get("prompt")
     
@@ -57,22 +53,20 @@ def process_image_task(task_data, sdxl_pipeline):
         return {"job_id": job_id, "status": "failed", "error": "No prompt provided"}
 
     try:
-        # Generate the image
         print(f"Generating image for job {job_id} with prompt: '{prompt}'")
         image = sdxl_pipeline(prompt=prompt).images[0]
         
-        # Save the image locally
         temp_file_path = f"/tmp/{job_id}.png"
         image.save(temp_file_path)
         
-        # Upload to S3
         s3_key = f"image_assets/{job_id}.png"
         image_url = upload_to_s3(temp_file_path, s3_key)
         
         if not image_url:
+            update_nested_status(task_id=job_id, section_name="image_generation_details", new_status="FAILED")
             return {"job_id": job_id, "status": "failed", "error": "S3 upload failed"}
 
-        # Update MongoDB
+        # Update MongoDB with the COMPLETED status and the S3 link
         update_success = update_nested_status(
             task_id=job_id,
             section_name="image_generation_details",
@@ -81,16 +75,15 @@ def process_image_task(task_data, sdxl_pipeline):
         )
         
         if update_success:
-            # Check if the main document status can be updated
-            check_and_update_main_status(job_id)
+            check_all_sections_and_update_main_status(job_id)
 
-        # Cleanup
         os.remove(temp_file_path)
 
         return {"job_id": job_id, "status": "completed", "url": image_url}
 
     except Exception as e:
         print(f"Error processing image task {job_id}: {e}")
+        update_nested_status(task_id=job_id, section_name="image_generation_details", new_status="FAILED")
         return {"job_id": job_id, "status": "failed", "error": str(e)}
 
 def image_worker():
@@ -101,7 +94,6 @@ def image_worker():
     print(f"Listening for tasks on queue: {REDIS_QUEUE}")
     try:
         while True:
-            # Blocking pop from the queue with a timeout
             task_data = redis_client.brpop(REDIS_QUEUE, timeout=60)
             
             if not task_data:
@@ -112,10 +104,11 @@ def image_worker():
                 task = json.loads(raw_task)
                 print(f"Received task: {task.get('job_id', 'unknown')}")
                 
-                # Process the image task
+                # Immediately update MongoDB to 'PROCESSING' status
+                update_nested_status(task_id=task.get("job_id"), section_name="image_generation_details", new_status="PROCESSING")
+                
                 result = process_image_task(task, sdxl_pipeline)
                 
-                # Log completion
                 if result['status'] == 'completed':
                     print(f"Successfully completed job {result['job_id']}")
                 else:
