@@ -506,7 +506,7 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
                 outputs=[task_id_2d, task_status_2d, json_2d_results]
             )
             check_2d_status_button.click(
-                fn=run_2d_generation,
+                fn=_start_2d_task,
                 inputs=[task_id_2d, text_to_image_db, text_to_image_collection],
                 outputs=[json_2d_results, images_2d_results, task_status_2d]
             )
@@ -601,7 +601,7 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
                 outputs=[task_id_3d, task_status_3d, model_link_3d_results]
             )
             check_3d_status_button.click(
-                fn=run_3d_generation,
+                fn=_start_3d_task,
                 inputs=[task_id_3d, _3d_gen_db, _3d_gen_collection],
                 outputs=[model_link_3d_results, task_status_3d]
             )
@@ -648,7 +648,7 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
                 outputs=[task_id_decimate, task_status_decimate, model_link_decimate_results]
             )
             check_decimate_status_button.click(
-                fn=run_decimation,
+                fn=_start_decimation_task,
                 inputs=[task_id_decimate, decimate_db, decimate_collection],
                 outputs=[model_link_decimate_results, task_status_decimate]
             )
