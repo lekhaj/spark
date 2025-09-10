@@ -289,31 +289,6 @@ def _start_2d_task(database_name, collection_name, biome_action_type, new_biome_
     
     return (gr.State(doc_id), status_message, initial_data)
 
-def run_2d_generation(task_id_input, database_name, collection_name):
-    """Simulates the completion of a 2D task and updates the main pipeline view."""
-    # Check the value of the State object
-    if not task_id_input.value:
-        return (gr.Json({}), gr.Gallery([]), "No task to run.")
-
-    # Access the string value directly, no need to split
-    doc_id = task_id_input.value
-
-    time.sleep(2)
-
-    new_images = [
-        f"https://placehold.co/600x400/1e88e5/ffffff?text=Biome+Image+{random.randint(1,9)}",
-        f"https://placehold.co/600x400/43a047/ffffff?text=Biome+Image+{random.randint(10,19)}",
-    ]
-    new_data = {
-        "status": "COMPLETED",
-        "generated_images": new_images,
-        "timestamp": time.time()
-    }
-    update_live_biome_details(database_name, collection_name, doc_id, "image_generation_details", new_data)
-
-    print(f"Task {task_id_input.value} completed.")
-
-    return (gr.Json(new_data), gr.Gallery(new_images), "Task Completed.")
 def _start_grid_task(database_name, collection_name, biome_action_type, new_biome_name, selected_biome_name, biome_choices, grid_data_str):
     """Simulates starting a Grid to Image generation task."""
     doc_id, msg = get_or_create_biome_doc(biome_action_type, new_biome_name, selected_biome_name, biome_choices, database_name, collection_name)
@@ -335,29 +310,6 @@ def _start_grid_task(database_name, collection_name, biome_action_type, new_biom
     
     return (gr.State(task_id), "Task submitted: PENDING", initial_data)
 
-def run_grid_generation(task_id_input, database_name, collection_name):
-    """Simulates the completion of a Grid task and updates the main pipeline view."""
-    if not task_id_input:
-        return (gr.Json({}), gr.Gallery([]), "No task to run.")
-
-    doc_id = task_id_input.split('-')[2]
-
-    time.sleep(2)
-
-    new_images = [
-        f"https://placehold.co/600x400/ff9800/ffffff?text=Grid+Image+{random.randint(20,29)}",
-        f"https://placehold.co/600x400/9e9e9e/ffffff?text=Grid+Image+{random.randint(30,39)}",
-    ]
-    new_data = {
-        "status": "COMPLETED",
-        "generated_images": new_images,
-        "timestamp": time.time()
-    }
-    update_live_biome_details(database_name, collection_name, doc_id, "grid_generation_details", new_data)
-    
-    print(f"Task {task_id_input} completed.")
-
-    return (gr.Json(new_data), gr.Gallery(new_images), "Task Completed.")
 
 def _start_3d_task(database_name, collection_name, biome_action_type, new_biome_name, selected_biome_name, biome_choices, input_2d_image):
     """Submits a 3D generation task to the Redis queue."""
@@ -394,29 +346,6 @@ def _start_3d_task(database_name, collection_name, biome_action_type, new_biome_
 
     return (gr.State(doc_id), status_message, "")
 
-def run_3d_generation(task_id_input, database_name, collection_name):
-    """Simulates the completion of a 3D task and updates the main pipeline view."""
-    if not task_id_input:
-        return (gr.HTML(""), "No task to run.")
-
-    doc_id = task_id_input.split('-')[2]
-
-    time.sleep(2)
-
-    new_model_url = f"s3://sparkassets/3d_assets/model-{random.randint(100, 999)}.glb"
-    new_data = {
-        "status": "COMPLETED",
-        "model_url": new_model_url,
-        "timestamp": time.time()
-    }
-    update_live_biome_details(database_name, collection_name, doc_id, "3d_generation_details", new_data)
-
-    model_link = f"<a href='{new_model_url}' target='_blank'>Download 3D Model</a>"
-    
-    print(f"Task {task_id_input} completed.")
-
-    return (gr.HTML(model_link), "Task Completed.")
-
 def _start_decimation_task(database_name, collection_name, biome_action_type, new_biome_name, selected_biome_name, biome_choices, input_3d_file):
     """Simulates starting a 3D decimation task."""
     doc_id, msg = get_or_create_biome_doc(biome_action_type, new_biome_name, selected_biome_name, biome_choices, database_name, collection_name)
@@ -439,29 +368,6 @@ def _start_decimation_task(database_name, collection_name, biome_action_type, ne
     print(f"Task {task_id} for decimation submitted. Status: PENDING")
     
     return (gr.State(task_id), "Task submitted: PENDING", "")
-
-def run_decimation(task_id_input, database_name, collection_name):
-    """Simulates the completion of a decimation task and updates the main pipeline view."""
-    if not task_id_input:
-        return (gr.HTML(""), "No task to run.")
-
-    doc_id = task_id_input.split('-')[2]
-
-    time.sleep(2)
-
-    new_model_url = f"s3://sparkassets/processed/decimated-model-{random.randint(100, 999)}.glb"
-    new_data = {
-        "status": "COMPLETED",
-        "model_url": new_model_url,
-        "timestamp": time.time()
-    }
-    update_live_biome_details(database_name, collection_name, doc_id, "decimation_details", new_data)
-    
-    model_link = f"<a href='{new_model_url}' target='_blank'>Download Decimated 3D Model</a>"
-    
-    print(f"Task {task_id_input} completed.")
-
-    return (gr.HTML(model_link), "Task Completed.")
 
 # --- AWS Control Functions ---
 
