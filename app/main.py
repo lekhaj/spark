@@ -1,11 +1,11 @@
-from fastapi import FastAPI, UploadFile, File
-from app.routes import aws_routes
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-import redis, json, uuid, boto3
+import redis, json, uuid
+import time
+from enum import Enum
 
 REDIS_HOST = "15.206.99.66"
 REDIS_PORT = 6380
-BUCKET_NAME = "sparkassets"
 
 # Redis client
 try:
@@ -15,34 +15,113 @@ try:
 except Exception as e:
     print(f"[FastAPI] Failed to connect to Redis: {e}")
 
-# S3 client
-s3 = boto3.client("s3")
+app = FastAPI(title="Dual Model Generation API")
 
-app = FastAPI(title="FastAPI MongoDB AWS Control")
+class TaskType(str, Enum):
+    IMAGE = "image"
+    MODEL_3D = "3d_model"
 
-#app.include_router(mongo_routes.router)
-app.include_router(aws_routes.router)
+class ImagePromptRequest(BaseModel):
+    prompt: str
+    negative_prompt: str = ""
+    width: int = 1024
+    height: int = 1024
+    num_inference_steps: int = 30
 
+class Model3DRequest(BaseModel):
+    image_s3_url: str
+    prompt: str = ""  # Optional prompt for guidance
 
 @app.get("/")
 def home():
-    return {"message": "text to 3d pipeline"}
+    return {"message": "Dual model generation API - Image prompts & 3D model tasks"}
 
-class Task(BaseModel):
-    image_url: str
-
-@app.post("/submit_task/")
-async def submit_task(task: Task):
+@app.post("/submit_image_task/")
+async def submit_image_task(image_request: ImagePromptRequest):
+    """Submit a prompt for SDXL image generation"""
+    
     job_id = str(uuid.uuid4())
     
     task_data = {
         "job_id": job_id,
-        "image_s3_url": task.image_url,
-        "output_key": f"spackassets/3d_assets/{job_id}_mesh.obj"
+        "task_type": TaskType.IMAGE,
+        "prompt": image_request.prompt,
+        "negative_prompt": image_request.negative_prompt,
+        "width": image_request.width,
+        "height": image_request.height,
+        "num_inference_steps": image_request.num_inference_steps,
+        "timestamp": time.time(),
+        "status": "queued",
+        "output_key": f"generated-images/{job_id}/sdxl_output.png"
     }
 
-    r.lpush("tasks", json.dumps(task_data))
-    print(f"[FastAPI] Task pushed into Redis queue: {task_data}")
-    print(f"[MongoDB] Inserted job {job_id} with status='queued'")
+    # Push to image tasks queue
+    r.lpush("image_tasks", json.dumps(task_data))
+    print(f"[FastAPI] Image task pushed to Redis: {job_id}")
 
-    return {"status": "queued", "task": task_data}
+    return {
+        "status": "success", 
+        "message": "Image generation task added to queue",
+        "job_id": job_id,
+        "task_type": TaskType.IMAGE
+    }
+
+@app.post("/submit_3d_task/")
+async def submit_3d_task(model_request: Model3DRequest):
+    """Submit an S3 image URL for 3D model generation"""
+    
+    job_id = str(uuid.uuid4())
+    
+    task_data = {
+        "job_id": job_id,
+        "task_type": TaskType.MODEL_3D,
+        "image_s3_url": model_request.image_s3_url,
+        "prompt": model_request.prompt,
+        "timestamp": time.time(),
+        "status": "queued",
+        "output_key": f"3d_assets/{job_id}_mesh.obj"
+    }
+
+    # Push to 3D tasks queue
+    r.lpush("3d_tasks", json.dumps(task_data))
+    print(f"[FastAPI] 3D task pushed to Redis: {job_id}")
+
+    return {
+        "status": "success", 
+        "message": "3D model generation task added to queue",
+        "job_id": job_id,
+        "task_type": TaskType.MODEL_3D
+    }
+
+@app.get("/queue_status/")
+async def queue_status():
+    """Check status of both queues"""
+    image_queue_length = r.llen("image_tasks")
+    model_3d_queue_length = r.llen("model_tasks")
+    
+    return {
+        "image_tasks": image_queue_length,
+        "3d_tasks": model_3d_queue_length,
+        "total_pending": image_queue_length + model_3d_queue_length
+    }
+
+@app.get("/get_result/{job_id}")
+async def get_result(job_id: str):
+    """Check result for a specific job"""
+    result_key = f"result:{job_id}"
+    result = r.get(result_key)
+    
+    if result:
+        return json.loads(result)
+    else:
+        return {"status": "processing", "job_id": job_id}
+
+@app.get("/get_all_results/")
+async def get_all_results():
+    """Get all completed results (for debugging)"""
+    results = {}
+    for key in r.scan_iter("result:*"):
+        job_id = key.decode().split(":")[1]
+        results[job_id] = json.loads(r.get(key))
+    
+    return results
