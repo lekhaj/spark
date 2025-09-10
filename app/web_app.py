@@ -295,8 +295,8 @@ def run_2d_generation(task_id_input, database_name, collection_name):
     if not task_id_input.value:
         return (gr.Json({}), gr.Gallery([]), "No task to run.")
 
-    # Access the string value to use the split() method
-    doc_id = task_id_input.value.split('-')[2]
+    # Access the string value directly, no need to split
+    doc_id = task_id_input.value
 
     time.sleep(2)
 
