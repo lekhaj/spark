@@ -30,12 +30,12 @@ API_BASE_URL = os.getenv("API_BASE_URL", "http://15.206.99.66:8000")
 
 # Initialize Redis client
 try:
-    redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
-    redis_client.ping()
+    r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
+    r.ping()
     print("Successfully connected to Redis.")
-except redis.exceptions.ConnectionError as e:
+except redis.ConnectionError as e:
     print(f"Could not connect to Redis: {e}")
-    redis_client = None
+    r = None
 
 # Global variables to hold the active database and collection.
 db_client = None
