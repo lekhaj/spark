@@ -17,15 +17,6 @@ import requests
 load_dotenv()
 
 
-# Redis client
-try:
-    r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
-    r.ping()
-    print("Successfully connected to Redis.")
-except redis.ConnectionError as e:
-    print(f"Could not connect to Redis: {e}")
-    r = None
-
 # --- Configuration from environment variables ---
 MONGO_URI = os.getenv("MONGO_URI")
 MONGO_DB = os.getenv("MONGO_DB")
