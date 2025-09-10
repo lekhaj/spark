@@ -554,7 +554,7 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
                 outputs=[task_id_grid, task_status_grid, json_grid_results]
             )
             check_grid_status_button.click(
-                fn=run_grid_generation,
+                fn=_start_grid_task,
                 inputs=[task_id_grid, grid_to_image_db, grid_to_image_collection],
                 outputs=[json_grid_results, images_grid_results, task_status_grid]
             )
