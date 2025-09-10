@@ -278,13 +278,15 @@ def _start_2d_task(database_name, collection_name, biome_action_type, new_biome_
 
 def run_2d_generation(task_id_input, database_name, collection_name):
     """Simulates the completion of a 2D task and updates the main pipeline view."""
-    if not task_id_input:
+    # Check the value of the State object
+    if not task_id_input.value:
         return (gr.Json({}), gr.Gallery([]), "No task to run.")
 
-    doc_id = task_id_input.split('-')[2]
-    
+    # Access the string value to use the split() method
+    doc_id = task_id_input.value.split('-')[2]
+
     time.sleep(2)
-    
+
     new_images = [
         f"https://placehold.co/600x400/1e88e5/ffffff?text=Biome+Image+{random.randint(1,9)}",
         f"https://placehold.co/600x400/43a047/ffffff?text=Biome+Image+{random.randint(10,19)}",
@@ -296,10 +298,9 @@ def run_2d_generation(task_id_input, database_name, collection_name):
     }
     update_live_biome_details(database_name, collection_name, doc_id, "image_generation_details", new_data)
 
-    print(f"Task {task_id_input} completed.")
+    print(f"Task {task_id_input.value} completed.")
 
     return (gr.Json(new_data), gr.Gallery(new_images), "Task Completed.")
-
 def _start_grid_task(database_name, collection_name, biome_action_type, new_biome_name, selected_biome_name, biome_choices, grid_data_str):
     """Simulates starting a Grid to Image generation task."""
     doc_id, msg = get_or_create_biome_doc(biome_action_type, new_biome_name, selected_biome_name, biome_choices, database_name, collection_name)
