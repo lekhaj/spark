@@ -1,37 +1,129 @@
-import boto3
+# ========================
+# File: mongo_service.py
+# ========================
 import os
 from dotenv import load_dotenv
+from pymongo import MongoClient
+from pymongo.errors import ConnectionFailure, OperationFailure
+from bson.objectid import ObjectId
 
+# Load environment variables
 load_dotenv()
 
-AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY")
-AWS_SECRET_KEY = os.getenv("AWS_SECRET_KEY")
-AWS_REGION = os.getenv("AWS_REGION", "ap-south-1")
+# --- Configuration from environment variables ---
+MONGO_URI = os.getenv("MONGO_URI")
+MONGO_DB = os.getenv("MONGO_DB")
+MONGO_COLLECTION = os.getenv("MONGO_COLLECTION", "biomes")
 
-INSTANCE_CPU = os.getenv("CPU")
-INSTANCE_GPU = os.getenv("GPU")
+# Global variables to hold the active database client
+db_client = None
 
-ec2 = boto3.client(
-    "ec2",
-    aws_access_key_id=AWS_ACCESS_KEY,
-    aws_secret_access_key=AWS_SECRET_KEY,
-    region_name=AWS_REGION
-)
+def get_db_client():
+    """Establishes and returns a MongoDB client connection."""
+    global db_client
+    if db_client is None:
+        try:
+            db_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+            db_client.admin.command('ping')
+            print("Successfully connected to MongoDB.")
+        except ConnectionFailure as e:
+            print(f"MongoDB connection failed: {e}")
+            db_client = None
+    return db_client
 
-def instance(instance_name_or_id: str) -> str:
-    """Return actual instance ID from alias or direct ID."""
-    if instance_name_or_id.lower() == "cpu":
-        return INSTANCE_CPU
-    elif instance_name_or_id.lower() == "gpu":
-        return INSTANCE_GPU
-    return instance_name_or_id 
+def update_nested_status(task_id: str, section_name: str, new_status: str, link: str = None):
+    """
+    Updates the status and link for a specific nested section within a biome document.
 
-def start_instance(instance_name_or_id: str):
-    instance_id = instance(instance_name_or_id)
-    return ec2.start_instances(InstanceIds=[instance_id])
+    Args:
+        task_id (str): The ID of the biome document to update.
+        section_name (str): The name of the nested section (e.g., "3d_generation_details").
+        new_status (str): The new status to set (e.g., "COMPLETED").
+        link (str): The S3 link for the generated asset.
 
-def stop_instance(instance_name_or_id: str):
-    instance_id = instance(instance_name_or_id)
-    return ec2.stop_instances(InstanceIds=[instance_id])
+    Returns:
+        bool: True if the update was successful, False otherwise.
+    """
+    client = get_db_client()
+    if not client:
+        return False
 
+    try:
+        biomes_collection = client[MONGO_DB][MONGO_COLLECTION]
+        
+        # Use dot notation to update the nested fields atomically.
+        update_fields = {
+            f"{section_name}.status": new_status
+        }
+        
+        if link:
+            # Check if the section should have a list or a single URL
+            if section_name == "image_generation_details":
+                update_fields[f"{section_name}.s3_links"] = [link]
+            else:
+                update_fields[f"{section_name}.s3_link"] = link
+        
+        result = biomes_collection.update_one(
+            {"_id": ObjectId(task_id)},
+            {"$set": update_fields}
+        )
 
+        if result.modified_count > 0:
+            print(f"Updated document {task_id}: {section_name} status to '{new_status}'")
+            return True
+        else:
+            print(f"No document found or no change made for ID {task_id}.")
+            return False
+
+    except (OperationFailure, ConnectionFailure) as e:
+        print(f"MongoDB update failed for task {task_id}: {e}")
+        return False
+    except Exception as e:
+        print(f"An unexpected error occurred during update: {e}")
+        return False
+
+def check_and_update_main_status(task_id: str):
+    """
+    Checks if all required sections of a document are "COMPLETED" and updates the main status.
+    """
+    client = get_db_client()
+    if not client:
+        return
+
+    try:
+        biomes_collection = client[MONGO_DB][MONGO_COLLECTION]
+        doc = biomes_collection.find_one({"_id": ObjectId(task_id)})
+        
+        if not doc:
+            print(f"Document with ID {task_id} not found.")
+            return
+
+        all_sections_completed = True
+        
+        # Check image generation
+        image_details = doc.get("image_generation_details", {})
+        if image_details.get("status") != "COMPLETED" or not image_details.get("s3_links"):
+            all_sections_completed = False
+
+        # Check 3D generation
+        if all_sections_completed:
+            model_details = doc.get("3d_generation_details", {})
+            if model_details.get("status") != "COMPLETED" or not model_details.get("s3_link"):
+                all_sections_completed = False
+
+        # Check decimation
+        if all_sections_completed:
+            decimation_details = doc.get("decimated_assets_details", {})
+            if decimation_details.get("status") != "COMPLETED" or not decimation_details.get("s3_link"):
+                all_sections_completed = False
+
+        # If all sections are confirmed complete, update the main status
+        if all_sections_completed:
+            biomes_collection.update_one(
+                {"_id": ObjectId(task_id)},
+                {"$set": {"status": "completed"}}
+            )
+            print(f"Biome {task_id} is now complete!")
+
+    except Exception as e:
+        print(f"Error checking and updating main status for task {task_id}: {e}")
