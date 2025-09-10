@@ -1,17 +1,15 @@
-# ===========================
-# File: worker_hunyuan.py
-# ===========================
 import os
 import json
 import redis
 import boto3
 import requests
+import torch
 from rembg import remove
 from PIL import Image
 import trimesh
 from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
 from hy3dgen.texgen import Hunyuan3DPaintPipeline
-from mongo_service import update_nested_status, check_and_update_main_status
+from mongo_service import update_nested_status, check_all_sections_and_update_main_status
 
 # Redis config
 REDIS_HOST = os.getenv("REDIS_HOST", "15.206.99.66")
@@ -50,7 +48,6 @@ def remove_bg(input_path, output_path):
 def process_3d_task(task):
     """
     Main function to process a 3D generation task.
-    This function will be triggered by a message queue.
     """
     global shape_pipeline, paint_pipeline
     job_id = task.get("job_id")
@@ -59,17 +56,20 @@ def process_3d_task(task):
     
     if not job_id or not prompt or not image_url:
         print("Invalid task data received.")
+        update_nested_status(task_id=job_id, section_name="3d_generation_details", new_status="FAILED")
         return {"status": "failed", "error": "Invalid task data"}
 
     try:
         # Load pipelines once
         if shape_pipeline is None:
+            print("[GPU] Loading shape pipeline...")
             shape_pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained("hpcai-tech/Hunyuan3D-Shape-Generator")
             shape_pipeline.to(torch.device("cuda"))
-
         if paint_pipeline is None:
+            print("[GPU] Loading paint pipeline...")
             paint_pipeline = Hunyuan3DPaintPipeline.from_pretrained("hpcai-tech/Hunyuan3D-Paint-Generator")
             paint_pipeline.to(torch.device("cuda"))
+        print("[GPU] Pipelines loaded successfully!")
 
         # 1. Download image and remove background
         print(f"[GPU] Downloading image for job {job_id}...")
@@ -77,18 +77,19 @@ def process_3d_task(task):
         local_input_nobg = f"/tmp/{job_id}_nobg.png"
         download_from_s3_url(image_url, local_input_img)
         remove_bg(local_input_img, local_input_nobg)
+        print("[GPU] Background removed.")
 
         # 2. Generate 3D shape
         print(f"[GPU] Generating 3D shape for prompt: '{prompt}'...")
         mesh = shape_pipeline(prompt)
-        shape_file = "mesh_output.glb"
+        shape_file = f"/tmp/{job_id}_mesh_output.glb"
         trimesh.exchange.export.export_mesh(mesh, shape_file, file_type='glb')
         print(f"[GPU] Shape generated and saved: {shape_file}")
 
         # 3. Paint texture
         print("[GPU] Painting texture...")
         textured_mesh = paint_pipeline(mesh, image=local_input_nobg)
-        textured_file = "painted_output.glb"
+        textured_file = f"/tmp/{job_id}_painted_output.glb"
         textured_mesh.export(textured_file)
         print(f"[GPU] Textured mesh saved: {textured_file}")
 
@@ -108,8 +109,7 @@ def process_3d_task(task):
         )
         
         if update_success:
-            # Check if the main document status can be updated
-            check_and_update_main_status(job_id)
+            check_all_sections_and_update_main_status(job_id)
 
         print(f"[GPU] Uploaded untextured: {url_untextured}")
         print(f"[GPU] Uploaded textured: {url_textured}")
@@ -124,25 +124,49 @@ def process_3d_task(task):
 
     except Exception as e:
         print(f"Error processing 3D task {job_id}: {e}")
+        update_nested_status(task_id=job_id, section_name="3d_generation_details", new_status="FAILED")
         return {"status": "failed", "error": str(e)}
 
-def main():
+def hunyuan_worker():
+    """Main worker loop that listens for tasks on Redis."""
     print(f"[GPU] Worker started. Listening on queue: {MODEL_QUEUE}...")
     while True:
         task_data = r.brpop(MODEL_QUEUE, timeout=30)
         if not task_data:
-            print("[GPU] No new tasks. Exiting...")
-            break
+            print("[GPU] No new tasks. Waiting...")
+            continue
 
         _, raw_task = task_data
         task = json.loads(raw_task)
+        job_id = task.get("job_id", "unknown")
 
         try:
-            print(f"[GPU] job_id={task['job_id']} → status='processing'")
-            process_3d_task(task)
+            print(f"[GPU] job_id={job_id} → status='processing'")
+            update_nested_status(task_id=job_id, section_name="3d_generation_details", new_status="PROCESSING")
+            
+            # Re-fetch image URL from Mongo in case it wasn't available when the task was queued
+            client = get_db_client()
+            if client:
+                doc = client[os.getenv("MONGO_DB")][os.getenv("MONGO_COLLECTION")].find_one({"_id": ObjectId(job_id)})
+                if doc:
+                    image_url = doc.get("image_generation_details", {}).get("s3_links", [None])[0]
+                    task["image_url"] = image_url
 
+            if not task["image_url"]:
+                print(f"[GPU] Job {job_id} failed: No 2D image link found in MongoDB.")
+                update_nested_status(task_id=job_id, section_name="3d_generation_details", new_status="FAILED")
+                continue
+
+            output_urls = process_3d_task(task)
+
+            if output_urls.get("status") == "completed":
+                print(f"[GPU] job_id={job_id} → status='completed'")
+            else:
+                print(f"[GPU] job_id={job_id} → status='failed'")
+        
         except Exception as e:
-            print(f"An error occurred while processing task {task.get('job_id')}: {e}")
+            print(f"An error occurred while processing task {job_id}: {e}")
+            update_nested_status(task_id=job_id, section_name="3d_generation_details", new_status="FAILED")
 
 if __name__ == "__main__":
-    main()
+    hunyuan_worker()
