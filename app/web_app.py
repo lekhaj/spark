@@ -16,6 +16,16 @@ import requests
 # Load environment variables from .env file
 load_dotenv()
 
+
+# Redis client
+try:
+    r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
+    r.ping()
+    print("Successfully connected to Redis.")
+except redis.ConnectionError as e:
+    print(f"Could not connect to Redis: {e}")
+    r = None
+
 # --- Configuration from environment variables ---
 MONGO_URI = os.getenv("MONGO_URI")
 MONGO_DB = os.getenv("MONGO_DB")
@@ -256,25 +266,37 @@ def get_or_create_biome_doc(biome_action_type, new_biome_name, selected_biome_na
     return doc_id, None
 
 def _start_2d_task(database_name, collection_name, biome_action_type, new_biome_name, selected_biome_name, biome_choices, prompt):
-    """Simulates starting a 2D generation task."""
+    """Submits a 2D generation task to the Redis queue."""
+    # ... (existing code to get doc_id)
     doc_id, msg = get_or_create_biome_doc(biome_action_type, new_biome_name, selected_biome_name, biome_choices, database_name, collection_name)
     if not doc_id:
         return (None, "Failed to submit task.", "{}")
 
-    task_id = f"task-2d-{doc_id}-{int(time.time())}"
+    # This is the task payload for the worker
+    task_payload = {
+        'job_id': str(doc_id),
+        'prompt': prompt,
+    }
     
+    # Send task to Redis queue
+    if r:
+        r.lpush("image_tasks", json.dumps(task_payload))
+        status_message = f"Task {doc_id} for 2D generation submitted. Status: PENDING"
+    else:
+        status_message = "Failed to connect to Redis. Task not submitted."
+        
     initial_data = {
         "status": "PENDING",
         "prompt": prompt,
-        "model_used": "Simulated AI Model",
+        "model_used": "Stable Diffusion XL",
         "generated_images": [],
         "timestamp": time.time()
     }
     update_live_biome_details(database_name, collection_name, doc_id, "image_generation_details", initial_data)
     
-    print(f"Task {task_id} for 2D generation submitted. Status: PENDING")
+    print(status_message)
     
-    return (gr.State(task_id), "Task submitted: PENDING", initial_data)
+    return (gr.State(doc_id), status_message, initial_data)
 
 def run_2d_generation(task_id_input, database_name, collection_name):
     """Simulates the completion of a 2D task and updates the main pipeline view."""
@@ -347,15 +369,27 @@ def run_grid_generation(task_id_input, database_name, collection_name):
     return (gr.Json(new_data), gr.Gallery(new_images), "Task Completed.")
 
 def _start_3d_task(database_name, collection_name, biome_action_type, new_biome_name, selected_biome_name, biome_choices, input_2d_image):
-    """Simulates starting a 3D generation task."""
+    """Submits a 3D generation task to the Redis queue."""
+    # ... (existing code)
     doc_id, msg = get_or_create_biome_doc(biome_action_type, new_biome_name, selected_biome_name, biome_choices, database_name, collection_name)
     if not doc_id:
         return (gr.State(None), "Failed to submit task.", "")
-        
+
     if input_2d_image is None:
         return (gr.State(None), "Please upload a 2D image.", "")
+
+    # This is the task payload for the worker
+    task_payload = {
+        'job_id': str(doc_id),
+        'image_path': input_2d_image.name
+    }
     
-    task_id = f"task-3d-{doc_id}-{int(time.time())}"
+    # Send task to Redis queue
+    if r:
+        r.lpush("model_tasks", json.dumps(task_payload))
+        status_message = f"Task {doc_id} for 3D generation submitted. Status: PENDING"
+    else:
+        status_message = "Failed to connect to Redis. Task not submitted."
 
     initial_data = {
         "status": "PENDING",
@@ -365,9 +399,9 @@ def _start_3d_task(database_name, collection_name, biome_action_type, new_biome_
     }
     update_live_biome_details(database_name, collection_name, doc_id, "3d_generation_details", initial_data)
 
-    print(f"Task {task_id} for 3D generation submitted. Status: PENDING")
+    print(status_message)
 
-    return (gr.State(task_id), "Task submitted: PENDING", "")
+    return (gr.State(doc_id), status_message, "")
 
 def run_3d_generation(task_id_input, database_name, collection_name):
     """Simulates the completion of a 3D task and updates the main pipeline view."""
