@@ -1,6 +1,3 @@
-# =========================
-# File: web_app.py
-# =========================
 import gradio as gr
 import json
 import time
@@ -463,7 +460,7 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
                 outputs=[current_biome_id, status_2d_output, json_2d_output, images_2d_gallery, status_3d_output, json_3d_output, model_link_output]
             )
 
-        # Text to Image Tab (unchanged)
+        # Text to Image Tab
         with gr.TabItem("Text to Image"):
             gr.Markdown("## Text-to-Image Generation")
             gr.Markdown("Generate 2D images based on a text prompt for a new or existing biome.")
@@ -488,7 +485,8 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
             generate_image_button = gr.Button("🚀 Generate Image from Text")
             
             with gr.Row():
-                check_2d_status_button = gr.Button("Run Task & Refresh")
+                # Corrected: Now calls load_biome_pipeline_live to poll the database
+                check_2d_status_button = gr.Button("Refresh Status")
                 
             json_2d_results = gr.Json(label="Generation Results")
             images_2d_results = gr.Gallery(label="Generated Images")
@@ -506,12 +504,12 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
                 outputs=[task_id_2d, task_status_2d, json_2d_results]
             )
             check_2d_status_button.click(
-                fn=_start_2d_task,
-                inputs=[task_id_2d, text_to_image_db, text_to_image_collection],
-                outputs=[json_2d_results, images_2d_results, task_status_2d]
+                fn=load_biome_pipeline_live,
+                inputs=[existing_biome_dropdown_txt2img, biome_choices_list, text_to_image_db, text_to_image_collection],
+                outputs=[task_id_2d, task_status_2d, json_2d_results, images_2d_results, gr.Textbox(), gr.Json(), gr.HTML()] # Outputs for all tabs, some are placeholders
             )
 
-        # Grid to Image Tab (unchanged)
+        # Grid to Image Tab
         with gr.TabItem("Grid to Image"):
             gr.Markdown("## Grid-to-Image Generation")
             gr.Markdown("Generate 2D images from a grid for a new or existing biome.")
@@ -536,7 +534,8 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
             generate_grid_image_button = gr.Button("Generate Image from Grid")
             
             with gr.Row():
-                check_grid_status_button = gr.Button("Run Task & Refresh")
+                # Corrected: Now calls load_biome_pipeline_live to poll the database
+                check_grid_status_button = gr.Button("Refresh Status")
 
             json_grid_results = gr.Json(label="Generation Results")
             images_grid_results = gr.Gallery(label="Generated Images")
@@ -554,12 +553,12 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
                 outputs=[task_id_grid, task_status_grid, json_grid_results]
             )
             check_grid_status_button.click(
-                fn=_start_grid_task,
-                inputs=[task_id_grid, grid_to_image_db, grid_to_image_collection],
-                outputs=[json_grid_results, images_grid_results, task_status_grid]
+                fn=load_biome_pipeline_live,
+                inputs=[existing_biome_dropdown_grid2img, biome_choices_list, grid_to_image_db, grid_to_image_collection],
+                outputs=[task_id_grid, gr.Textbox(), gr.Json(), images_grid_results, gr.Textbox(), gr.Json(), gr.HTML()] # Outputs for all tabs, some are placeholders
             )
 
-        # 3D Generation Tab (unchanged)
+        # 3D Generation Tab
         with gr.TabItem("3D Generation"):
             gr.Markdown("## 3D Model Generation from 2D Image")
             gr.Markdown("Upload or select a 2D image to generate a 3D GLB model for a new or existing biome.")
@@ -584,7 +583,8 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
             generate_3d_button = gr.Button("Generate 3D Model")
 
             with gr.Row():
-                check_3d_status_button = gr.Button("Run Task & Refresh")
+                # Corrected: Now calls load_biome_pipeline_live to poll the database
+                check_3d_status_button = gr.Button("Refresh Status")
 
             model_link_3d_results = gr.HTML(label="3D Model Link")
             
@@ -601,12 +601,12 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
                 outputs=[task_id_3d, task_status_3d, model_link_3d_results]
             )
             check_3d_status_button.click(
-                fn=_start_3d_task,
-                inputs=[task_id_3d, _3d_gen_db, _3d_gen_collection],
-                outputs=[model_link_3d_results, task_status_3d]
+                fn=load_biome_pipeline_live,
+                inputs=[existing_biome_dropdown_3d, biome_choices_list, _3d_gen_db, _3d_gen_collection],
+                outputs=[task_id_3d, gr.Textbox(), gr.Json(), gr.Gallery(), task_status_3d, gr.Json(), model_link_3d_results] # Outputs for all tabs
             )
 
-        # Decimated 3D Tab (unchanged)
+        # Decimated 3D Tab
         with gr.TabItem("Decimated 3D"):
             gr.Markdown("## Decimate 3D Model")
             gr.Markdown("Upload an existing 3D GLB/OBJ/STL model to reduce its polygon count for a new or existing biome.")
@@ -631,7 +631,8 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
             decimate_button = gr.Button("Decimate 3D Model")
             
             with gr.Row():
-                check_decimate_status_button = gr.Button("Run Task & Refresh")
+                # Corrected: Now calls load_biome_pipeline_live to poll the database
+                check_decimate_status_button = gr.Button("Refresh Status")
 
             model_link_decimate_results = gr.HTML(label="Decimated 3D Model Link")
             
@@ -648,9 +649,9 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
                 outputs=[task_id_decimate, task_status_decimate, model_link_decimate_results]
             )
             check_decimate_status_button.click(
-                fn=_start_decimation_task,
-                inputs=[task_id_decimate, decimate_db, decimate_collection],
-                outputs=[model_link_decimate_results, task_status_decimate]
+                fn=load_biome_pipeline_live,
+                inputs=[existing_biome_dropdown_decimate, biome_choices_list, decimate_db, decimate_collection],
+                outputs=[task_id_decimate, gr.Textbox(), gr.Json(), gr.Gallery(), gr.Textbox(), gr.Json(), model_link_decimate_results] # Outputs for all tabs
             )
             
         # New Tab for AWS Control
