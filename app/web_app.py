@@ -19,6 +19,7 @@ REDIS_HOST = os.getenv("REDIS_HOST", "15.206.99.66")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6380))
 REDIS_QUEUE_2D = "image_tasks"
 REDIS_QUEUE_3D = "model_tasks"
+REDIS_QUEUE_DECIMATE = "decimation_tasks"
 
 # Initialize Redis client
 redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
@@ -32,6 +33,7 @@ def get_db_client():
         client.admin.command('ping')
         return client
     except ConnectionFailure:
+        print("Failed to connect to MongoDB.")
         return None
 
 def find_documents(query: dict):
@@ -42,30 +44,9 @@ def find_documents(query: dict):
     collection = client[MONGO_DB][MONGO_COLLECTION]
     return list(collection.find(query))
 
-# --- GRADIO FUNCTIONS ---
-
-def get_biome_details():
-    """Fetches the latest biome documents from MongoDB and formats them for display."""
-    docs = find_documents({"status": "pending"})
-    if not docs:
-        return "No pending biomes found."
-    
-    formatted_output = ""
-    for doc in docs:
-        doc_id = str(doc.get('_id', 'N/A'))
-        prompt = doc.get('text_prompt', 'No prompt provided')
-        status = doc.get('status', 'unknown')
-        
-        formatted_output += f"**ID:** `{doc_id}`\n"
-        formatted_output += f"**Prompt:** \"{prompt}\"\n"
-        formatted_output += f"**Status:** `{status}`\n\n"
-        
-    return formatted_output
-
-def start_pipeline(doc_id):
+def start_generation_pipeline(doc_id):
     """
-    Starts the full pipeline for a given document ID by enqueuing tasks
-    for both 2D image generation and 3D model generation.
+    Enqueues the generation tasks to Redis.
     """
     client = get_db_client()
     if not client:
@@ -87,10 +68,7 @@ def start_pipeline(doc_id):
         }
         redis_client.lpush(REDIS_QUEUE_2D, json.dumps(image_task))
         
-        # Enqueue 3D model generation task (this worker will wait for the image)
-        # Note: In a real app, this would be a single task that coordinates both.
-        # Here, we assume the 3D worker will wait for the image URL to appear in Mongo.
-        # For simplicity, we'll enqueue it immediately.
+        # Enqueue 3D model generation task
         model_task = {
             "job_id": str(doc['_id']),
             "prompt": prompt,
@@ -98,6 +76,13 @@ def start_pipeline(doc_id):
         }
         redis_client.lpush(REDIS_QUEUE_3D, json.dumps(model_task))
 
+        # Enqueue decimation task
+        decimate_task = {
+            "job_id": str(doc['_id']),
+            "model_url": doc.get('3d_generation_details', {}).get('s3_link', '')
+        }
+        redis_client.lpush(REDIS_QUEUE_DECIMATE, json.dumps(decimate_task))
+        
         return f"Pipeline started for document ID `{doc_id}`. Check the status tabs for progress."
 
     except Exception as e:
@@ -158,9 +143,9 @@ def check_decimation_status(doc_id):
         if not doc:
             return "Document not found."
             
-        details = doc.get("decimated_assets_details", {})
+        details = doc.get("decimation_details", {})
         status = details.get("status", "pending")
-        s3_link = details.get("s3_link")
+        s3_link = details.get("model_url")
         
         if status == "COMPLETED" and s3_link:
             return f"Status: {status}\nLink: {s3_link}"
@@ -168,28 +153,6 @@ def check_decimation_status(doc_id):
             return f"Status: {status}"
     except Exception as e:
         return f"Error checking decimation status: {e}"
-
-def get_completed_biomes():
-    """Fetches and displays biomes that are completed."""
-    docs = find_documents({"status": "completed"})
-    if not docs:
-        return "No completed biomes found."
-    
-    formatted_output = ""
-    for doc in docs:
-        doc_id = str(doc.get('_id', 'N/A'))
-        prompt = doc.get('text_prompt', 'No prompt provided')
-        image_link = doc.get('image_generation_details', {}).get('s3_links', [''])[0]
-        model_link = doc.get('3d_generation_details', {}).get('s3_link', '')
-        decimated_link = doc.get('decimated_assets_details', {}).get('s3_link', '')
-
-        formatted_output += f"**ID:** `{doc_id}`\n"
-        formatted_output += f"**Prompt:** \"{prompt}\"\n"
-        formatted_output += f"**Image Link:** [View Image]({image_link})\n"
-        formatted_output += f"**Model Link:** [Download GLB]({model_link})\n"
-        formatted_output += f"**Decimated Link:** [Download Decimated GLB]({decimated_link})\n\n"
-        
-    return formatted_output
 
 # --- GRADIO INTERFACE LAYOUT ---
 
@@ -201,7 +164,10 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
         refresh_pending_button = gr.Button("Refresh List")
         pending_output = gr.Textbox(label="Pending Biomes (ID, Prompt, Status)", interactive=False)
         
-        refresh_pending_button.click(get_biome_details, outputs=pending_output)
+        refresh_pending_button.click(
+            fn=lambda: json.dumps(find_documents({"status": "pending"}), indent=2, default=str), 
+            outputs=pending_output
+        )
         
     with gr.Tab("Start Pipeline"):
         gr.Markdown("## ▶️ Start a New Pipeline")
@@ -210,7 +176,7 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
         start_output = gr.Textbox(label="Status", interactive=False)
         
         start_button.click(
-            fn=start_pipeline,
+            fn=start_generation_pipeline,
             inputs=doc_id_input,
             outputs=start_output
         )
@@ -231,14 +197,6 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
         check_image_button.click(check_image_status, inputs=status_doc_id_input, outputs=image_status_output)
         check_3d_button.click(check_3d_status, inputs=status_doc_id_input, outputs=model_status_output)
         check_decimation_button.click(check_decimation_status, inputs=status_doc_id_input, outputs=decimation_status_output)
-
-    with gr.Tab("Completed Biomes"):
-        gr.Markdown("## ✅ Completed Biomes")
-        refresh_completed_button = gr.Button("Refresh Completed List")
-        # The fix is on the line below
-        completed_output = gr.Markdown(label="Completed Biomes")
-        
-        refresh_completed_button.click(get_completed_biomes, outputs=completed_output)
 
 # Launch the Gradio application
 demo.launch(server_name="0.0.0.0", server_port=7860)
