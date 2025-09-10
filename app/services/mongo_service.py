@@ -34,15 +34,6 @@ def get_db_client():
 def update_nested_status(task_id: str, section_name: str, new_status: str, link: str = None):
     """
     Updates the status and link for a specific nested section within a biome document.
-
-    Args:
-        task_id (str): The ID of the biome document to update.
-        section_name (str): The name of the nested section (e.g., "3d_generation_details").
-        new_status (str): The new status to set (e.g., "COMPLETED").
-        link (str): The S3 link for the generated asset.
-
-    Returns:
-        bool: True if the update was successful, False otherwise.
     """
     client = get_db_client()
     if not client:
@@ -51,18 +42,15 @@ def update_nested_status(task_id: str, section_name: str, new_status: str, link:
     try:
         biomes_collection = client[MONGO_DB][MONGO_COLLECTION]
         
-        # Use dot notation to update the nested fields atomically.
         update_fields = {
             f"{section_name}.status": new_status
         }
         
         if link:
-            # Check if the section should have a list or a single URL
+            # Handle list for image links and single string for 3D/decimated links
             if section_name == "image_generation_details":
                 update_fields[f"{section_name}.s3_links"] = [link]
-            elif section_name == "3d_generation_details":
-                update_fields[f"{section_name}.s3_link"] = link
-            elif section_name == "decimated_assets_details":
+            elif section_name in ["3d_generation_details", "decimated_assets_details"]:
                 update_fields[f"{section_name}.s3_link"] = link
         
         result = biomes_collection.update_one(
@@ -70,7 +58,7 @@ def update_nested_status(task_id: str, section_name: str, new_status: str, link:
             {"$set": update_fields}
         )
 
-        # After updating, check if the overall biome status should be updated
+        # Check if the overall biome is complete after this update
         if result.modified_count > 0 and new_status == "COMPLETED":
             check_all_sections_and_update_main_status(task_id)
 
@@ -91,7 +79,7 @@ def update_nested_status(task_id: str, section_name: str, new_status: str, link:
 def check_all_sections_and_update_main_status(task_id: str):
     """
     Checks the status of all nested sections and updates the main biome status
-    to "completed" only if all sections are completed with a valid link/image.
+    to "completed" only if all sections are completed with a valid link.
     """
     client = get_db_client()
     if not client:
@@ -106,24 +94,21 @@ def check_all_sections_and_update_main_status(task_id: str):
 
         all_sections_completed = True
         
-        # Check image generation
+        # Check image generation status and link
         image_details = biome_document.get("image_generation_details", {})
         if image_details.get("status") != "COMPLETED" or not image_details.get("s3_links"):
             all_sections_completed = False
 
-        # Check 3D generation
-        if all_sections_completed:
-            model_details = biome_document.get("3d_generation_details", {})
-            if model_details.get("status") != "COMPLETED" or not model_details.get("s3_link"):
-                all_sections_completed = False
+        # Check 3D model generation status and link
+        model_details = biome_document.get("3d_generation_details", {})
+        if model_details.get("status") != "COMPLETED" or not model_details.get("s3_link"):
+            all_sections_completed = False
 
-        # Check decimation
-        if all_sections_completed:
-            decimation_details = biome_document.get("decimation_details", {})
-            if decimation_details.get("status") != "COMPLETED" or not decimation_details.get("model_url"):
-                all_sections_completed = False
+        # Check decimation status and link
+        decimation_details = biome_document.get("decimated_assets_details", {})
+        if decimation_details.get("status") != "COMPLETED" or not decimation_details.get("s3_link"):
+            all_sections_completed = False
 
-        # If all sections are confirmed complete, update the main status
         if all_sections_completed:
             biomes_collection.update_one(
                 {"_id": ObjectId(task_id)},
@@ -133,3 +118,11 @@ def check_all_sections_and_update_main_status(task_id: str):
 
     except Exception as e:
         print(f"Error checking and updating main status for task {task_id}: {e}")
+
+def find_documents(query: dict):
+    """Finds documents based on a query."""
+    client = get_db_client()
+    if not client:
+        return []
+    collection = client[MONGO_DB][MONGO_COLLECTION]
+    return list(collection.find(query))
