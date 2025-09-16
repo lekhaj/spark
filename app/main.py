@@ -107,7 +107,7 @@ async def submit_3d_task(model_request: Model3DRequest):
 async def queue_status():
     """Check status of both queues"""
     image_queue_length = r.llen("image_tasks")
-    model_3d_queue_length = r.llen("3d_tasks")
+    model_3d_queue_length = r.llen("model_tasks")
     return {
         "image_tasks": image_queue_length,
         "3d_tasks": model_3d_queue_length,

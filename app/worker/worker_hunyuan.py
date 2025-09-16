@@ -1,17 +1,25 @@
-
 import os
 import json
 import redis
+import boto3
 import requests
 from rembg import remove
 from PIL import Image
 import trimesh
 from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
 from hy3dgen.texgen import Hunyuan3DPaintPipeline
-from .worker_config import redis_client as r, s3, BUCKET_NAME
 
 # Redis config
+REDIS_HOST = "15.206.99.66"
+REDIS_PORT = 6380
 MODEL_QUEUE = "model_tasks"
+
+# AWS S3 config
+BUCKET_NAME = "sparkassets"
+s3 = boto3.client("s3", region_name="ap-south-1")
+
+# Redis client
+r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
 
 # Global model caches
 shape_pipeline = None
@@ -28,7 +36,7 @@ def download_from_s3_url(s3_url, local_path):
 
 def upload_to_s3(local_file, s3_key):
     s3.upload_file(local_file, BUCKET_NAME, s3_key)
-    return f"https://{BUCKET_NAME}.s3.{s3.meta.region_name}.amazonaws.com/{s3_key}"
+    return f"https://{BUCKET_NAME}.s3.ap-south-1.amazonaws.com/{s3_key}"
 
 
 def remove_bg(input_path, output_path):
