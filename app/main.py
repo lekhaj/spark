@@ -3,6 +3,8 @@ from pydantic import BaseModel
 import redis, json, uuid
 import time
 from enum import Enum
+from app.services.orchestrator_service import orchestrator_main
+import asyncio
 
 REDIS_HOST = "15.206.99.66"
 REDIS_PORT = 6380
@@ -31,6 +33,11 @@ class ImagePromptRequest(BaseModel):
 class Model3DRequest(BaseModel):
     image_s3_url: str
     prompt: str = ""  # Optional prompt for guidance
+
+@app.on_event("startup")
+async def start_background():
+    asyncio.create_task(orchestrator_main())
+   
 
 @app.get("/")
 def home():
