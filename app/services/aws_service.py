@@ -1,15 +1,13 @@
+
 import boto3
-import os
-from dotenv import load_dotenv
+from app.config import settings
 
-load_dotenv()
+AWS_ACCESS_KEY = settings.AWS_ACCESS_KEY_ID
+AWS_SECRET_KEY = settings.AWS_SECRET_ACCESS_KEY
+AWS_REGION = settings.AWS_REGION
 
-AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY_ID")
-AWS_SECRET_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
-AWS_REGION = os.getenv("AWS_DEFAULT_REGION", "ap-south-1")
-
-INSTANCE_CPU = os.getenv("CPU")
-INSTANCE_GPU = os.getenv("GPU")
+INSTANCE_CPU = getattr(settings, "AWS_CPU_INSTANCE_ID", None)
+INSTANCE_GPU = settings.AWS_GPU_INSTANCE_ID
 
 ec2 = boto3.client(
     "ec2",

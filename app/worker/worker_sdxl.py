@@ -1,16 +1,14 @@
+
 import os
 import json
-import boto3
-import redis
 import torch
 import time
+import redis
 from diffusers import DiffusionPipeline
+from .worker_config import redis_client, s3, BUCKET_NAME, REDIS_HOST, REDIS_PORT
+
 
 # ------------ Configuration ------------
-REDIS_HOST = "15.206.99.66"
-REDIS_PORT = 6380
-S3_REGION = "ap-south-1"
-BUCKET_NAME = "sparkassets"
 REDIS_QUEUE = "image_tasks"  # Queue to listen for image tasks
 # ---------------------------------------
 
@@ -35,11 +33,9 @@ def initialize_sdxl_pipeline():
 def upload_to_s3(local_file_path, s3_key):
     """Upload file to S3 and return public URL"""
     try:
-        s3_client = boto3.client("s3", region_name=S3_REGION)
-        s3_client.upload_file(local_file_path, BUCKET_NAME, s3_key)
-        
+        s3.upload_file(local_file_path, BUCKET_NAME, s3_key)
         # Return public URL
-        return f"https://{BUCKET_NAME}.s3.{S3_REGION}.amazonaws.com/{s3_key}"
+        return f"https://{BUCKET_NAME}.s3.{s3.meta.region_name}.amazonaws.com/{s3_key}"
     except Exception as e:
         print(f"Error uploading to S3: {e}")
         raise
@@ -118,6 +114,7 @@ def store_result(redis_client, job_id, result):
     except Exception as e:
         print(f"Failed to store result for job {job_id}: {e}")
 
+
 def image_worker():
     """Main worker function for image processing"""
     print("=" * 50)
@@ -127,16 +124,7 @@ def image_worker():
     print(f"Queue: {REDIS_QUEUE}")
     print(f"S3 Bucket: {BUCKET_NAME}")
     print("=" * 50)
-    
-    # Initialize clients
     try:
-        redis_client = redis.Redis(
-            host=REDIS_HOST, 
-            port=REDIS_PORT, 
-            db=0,
-            socket_timeout=60,
-            retry_on_timeout=True
-        )
         redis_client.ping()
         print("Connected to Redis")
     except Exception as e:
@@ -192,7 +180,7 @@ def image_worker():
                 print("Reconnecting in 5 seconds...")
                 time.sleep(5)
                 # Reinitialize Redis connection
-                redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
+                # redis_client is already set from worker_config
             except Exception as e:
                 print(f"Unexpected error in main loop: {e}")
                 time.sleep(5)  # Prevent tight error loops

@@ -1,17 +1,18 @@
+
 import asyncio, time, subprocess, os
 import redis
 from app.services.aws_service import start_instance, stop_instance
+from app.config import settings
 
 # ----- CONFIG -----
-REDIS_HOST      = "15.206.99.66"
-REDIS_PORT      = 6380
-GPU_SSH_USER    = "ubuntu"
-GPU_PUBLIC_IP   = "13.204.29.107"          # or hostname
-POLL_INTERVAL   = 30                       # seconds
-IDLE_SHUTDOWN   = 300                      # 5 minutes
+REDIS_URL      = settings.CELERY_BROKER_URL
+GPU_SSH_USER   = settings.GPU_SSH_USER
+GPU_PUBLIC_IP  = settings.GPU_PUBLIC_IP
+POLL_INTERVAL  = 30                       # seconds
+IDLE_SHUTDOWN  = 300                      # 5 minutes
 # ------------------
 
-r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 
 def ssh_cmd(*args: str) -> None:
     """Run a command on GPU instance via SSH."""
@@ -46,10 +47,10 @@ def active_service() -> str | None:
 
 def wait_for_gpu():
     import boto3
-    ec2 = boto3.client("ec2", region_name="ap-south-1")
+    ec2 = boto3.client("ec2", region_name=settings.AWS_REGION)
     print("[AWS] Waiting for GPU instance to reach 'running' state …")
     while True:
-        st = ec2.describe_instances(InstanceIds=[os.getenv("GPU")]) \
+        st = ec2.describe_instances(InstanceIds=[settings.AWS_GPU_INSTANCE_ID]) \
                  ["Reservations"][0]["Instances"][0]["State"]["Name"]
         print(f"[AWS] GPU instance state: {st}")
         if st == "running":
