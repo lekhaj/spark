@@ -16,6 +16,9 @@ from app.routes.aws_routes import router as aws_router
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("app")
 
+## main was edited to make api endpoints as a executable function...
+## core_logic is unchanged. :)
+
 
 def create_image_task_dict(prompt, negative_prompt="", width=1024, height=1024, num_inference_steps=30):
     job_id = str(uuid.uuid4())
