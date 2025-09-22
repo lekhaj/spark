@@ -20,7 +20,7 @@ def ssh_cmd(*args: str) -> None:
     subprocess.run(
         [
             "ssh",
-            "-i", "C:/Users/Harsh Thakur/.ssh/s_spu_key.pem",   # full path to your key
+            "-i", "C:/Users/Hp/Downloads/s_spu_key.pem",   # full path to your key
             "-o", "StrictHostKeyChecking=accept-new",
             f"{GPU_SSH_USER}@{GPU_PUBLIC_IP}",
             *args
