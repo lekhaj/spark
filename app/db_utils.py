@@ -1,3 +1,17 @@
+import os
+from pymongo import MongoClient
+from pymongo.errors import ConnectionFailure
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Use the same variable names as the rest of the app
+MONGO_URI = os.getenv("MONGODB_URL")
+MONGO_DB = os.getenv("MONGODB_DB_NAME")
+
+db_client = None
+
 def get_biome_choices_live(database_name, collection_name):
     """
     Fetches all biome names and their IDs from a live MongoDB collection.
@@ -15,20 +29,6 @@ def get_biome_choices_live(database_name, collection_name):
     except Exception as e:
         print(f"Failed to fetch biomes from collection '{collection_name}': {e}")
         return []
-
-import os
-from pymongo import MongoClient
-from pymongo.errors import ConnectionFailure
-from dotenv import load_dotenv
-
-# Load environment variables from .env file
-load_dotenv()
-
-# Use the same variable names as the rest of the app
-MONGO_URI = os.getenv("MONGODB_URL")
-MONGO_DB = os.getenv("MONGODB_DB_NAME")
-
-db_client = None
 
 def get_db_client():
     global db_client
