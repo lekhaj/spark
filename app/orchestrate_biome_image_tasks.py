@@ -26,13 +26,16 @@ def submit_image_tasks(biome_id: str):
             height=asset.get("height", 1024),
             num_inference_steps=asset.get("num_inference_steps", 30)
         )
-        update_or_add_biome_asset(
-            biome_id,
-            asset_name=asset_name,
-            update_dict={"status": "pending", "job_id": job_id}
-        )
         update_key = get_biome_asset_update_key(biome_id, asset_name)
-        task["update_key"] = update_key # example: "possible_structures.buildings.House1"
+        if update_key:
+            update_or_add_biome_asset(
+                biome_id,
+                update_key,
+                {"status": "pending", "job_id": job_id}
+            )
+            task["update_key"] = update_key # example: "possible_structures.buildings.House1"
+        else:
+            task["update_key"] = None
         task["biome_id"] = biome_id
         r.rpush(REDIS_IMAGE_QUEUE, json.dumps(task))
         job_ids.append(job_id)
@@ -50,13 +53,16 @@ def submit_3d_tasks(biome_id: str):
             prompt=asset["description"]
         )
         
-        update_or_add_biome_asset(
-            biome_id,
-            asset_name=asset_name,
-            update_dict={"status": "3d pending", "job_id_3d": job_id}
-        )
         update_key = get_biome_asset_update_key(biome_id, asset_name)
-        task["update_key"] = update_key
+        if update_key:
+            update_or_add_biome_asset(
+                biome_id,
+                update_key,
+                {"status": "3d pending", "job_id_3d": job_id}
+            )
+            task["update_key"] = update_key
+        else:
+            task["update_key"] = None
         task["biome_id"] = biome_id
         r.rpush(REDIS_3D_QUEUE, json.dumps(task))
         job_ids.append(job_id)

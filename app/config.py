@@ -1,6 +1,10 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
+    # --- Additional Redis/API Config for Orchestrator/Gradio ---
+    redis_host: str = "localhost"
+    redis_port: int = 6379
+    api_base_url: str = "http://localhost:8000"
     """
     Application settings are defined in this class, loaded from environment
     variables or a .env file using pydantic-settings.
