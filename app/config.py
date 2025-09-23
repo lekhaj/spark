@@ -15,24 +15,17 @@ class Settings(BaseSettings):
     
 
     MONGODB_URL: str
-    
-    
     MONGODB_DB_NAME: str
     
     CELERY_BROKER_URL: str
-    
     CELERY_RESULT_BACKEND: str
+
     LOGS_DIR: str = "logs"
-    
     LOG_LEVEL: str = "INFO"
 
 
     AWS_REGION: str = "ap-south-1"
-    
-    
     AWS_S3_BUCKET: str
-    
-    
     AWS_GPU_INSTANCE_ID: str
     
     AWS_ACCESS_KEY_ID: str
@@ -41,6 +34,6 @@ class Settings(BaseSettings):
     GPU_SSH_USER: str
     GPU_PUBLIC_IP: str
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding='utf-8')
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding='utf-8',extra="ignore" )
 
 settings = Settings()

@@ -6,7 +6,7 @@ import redis, json, uuid
 import time
 from enum import Enum
 import asyncio
-
+from app.routes import mongo_routes 
 from app.services.orchestrator_service import orchestrator_main
 from app.services.mongo_service import get_db
 from app.config import settings
@@ -23,7 +23,7 @@ except Exception as e:
     print(f"[FastAPI] Failed to connect to Redis: {e}")
 
 app = FastAPI(title="Dual Model Generation API")
-
+app.include_router(mongo_routes.router, prefix="") 
 class TaskType(str, Enum):
     IMAGE = "image"
     MODEL_3D = "3d_model"
@@ -43,11 +43,11 @@ class Model3DRequest(BaseModel):
 async def start_background():
     # Test DB connection on startup
     db = get_db()
-    if db:
+    if db is not None:
         logger.info("MongoDB connected on startup.")
     else:
         logger.error("MongoDB connection failed on startup.")
-    asyncio.create_task(orchestrator_main())
+    #asyncio.create_task(orchestrator_main())
    
 
 @app.get("/")
