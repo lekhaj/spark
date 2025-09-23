@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from app.services.mongo_service import ping_db, get_data
+from app.services.mongo_service import ping_db, get_data, get_biome,get_assets_by_biome
 from app.services.redis_service import enqueue_task
 import uuid
 from datetime import datetime
@@ -25,8 +25,33 @@ def view_data(collection_name: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     
- #main route need to be completed . for creating  task update on mongo and redis and do other things like 
- # grid and biome generation and sending task from redis to gpu
+@router.get("/biome/{biome_id}")
+def read_biome(biome_id: str):
+    """
+    Fetch a single biome document by its biome_id field.
+    """
+    try:
+        biome = get_biome(biome_id)
+        if not biome:
+            raise HTTPException(status_code=404, detail="Biome not found")
+        # strip _id if needed
+        biome.pop("_id", None)
+        return {"biome": biome}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/assets/{biome_id}")
+def get_biome_assets(biome_id: str):
+    """
+    Fetch all assets associated with a specific biome
+    """
+    try:
+        assets = get_assets_by_biome(biome_id)
+        return {"biome_id": biome_id, "assets": assets}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+       
+# Create GPU generation task
 @router.post("/generate")
 def generate_asset(req: GenerateRequest):
     try:
