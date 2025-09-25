@@ -46,18 +46,6 @@ def create_3d_task_dict(image_s3_url, prompt=""):
         "status": "queued",
         "output_key": f"3d_assets/{job_id}_mesh.obj"
     }
-
-def get_result(job_id):
-    result_key = f"result:{job_id}"
-    result = r.get(result_key)
-    if result:
-        try:
-            return json.loads(result)
-        except Exception:
-            return None
-    else:
-        return None
-
 # Redis client using config
 try:
     r = redis.Redis.from_url(settings.CELERY_BROKER_URL)
@@ -144,16 +132,17 @@ async def queue_status():
     model_3d_queue_length = r.llen("model_tasks")
     return {
         "image_tasks": image_queue_length,
-        "model_tasks": model_3d_queue_length,
+        "3d_tasks": model_3d_queue_length,
         "total_pending": image_queue_length + model_3d_queue_length
     }
 
 @app.get("/get_result/{job_id}")
-async def get_result_endpoint(job_id: str):
+async def get_result(job_id: str):
     """Check result for a specific job"""
-    result = get_result(job_id)
+    result_key = f"result:{job_id}"
+    result = r.get(result_key)
     if result:
-        return result
+        return json.loads(result)
     else:
         return {"status": "processing", "job_id": job_id}
 

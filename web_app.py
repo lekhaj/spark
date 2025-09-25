@@ -2,29 +2,31 @@ import gradio as gr
 import json
 import time
 import random
-from pages.s3_asset_viewer_page import s3_asset_viewer_ui
-from db_utils import get_db_client, MONGO_DB, get_biome_choices_live
 import os
 import redis
+import requests
 from dotenv import load_dotenv
 from bson.objectid import ObjectId
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure, OperationFailure
-import requests
+from app.pages.s3_asset_viewer_page import s3_asset_viewer_ui
+from app.pages.decimation_page import decimation_page_ui
+from app.services.mongo_service import get_db, get_biome_choices_live
 
 # Load environment variables from .env file
 load_dotenv()
 
 
 # --- Configuration from environment variables ---
-MONGO_URI = os.getenv("MONGO_URI")
-MONGO_COLLECTION = os.getenv("MONGO_COLLECTION", "biomes")
+
+MONGO_URI = os.getenv("MONGODB_URL")
+MONGO_COLLECTION = os.getenv("MONGODB_DB_NAME", "biomes")
 REDIS_HOST = os.getenv("REDIS_HOST", "15.206.99.66")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6380))
 REDIS_QUEUE_2D = "image_tasks"
 REDIS_QUEUE_3D = "model_tasks"
-REDIS_QUEUE_DECIMATE = "decimation_tasks"
-API_BASE_URL = os.getenv("API_BASE_URL", "http://15.206.99.66:8000")
+REDIS_QUEUE_DECIMATE = "__tasks"
+API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 
 # Initialize Redis client
 try:
@@ -44,12 +46,12 @@ active_collection = None
 
 def get_database_names():
     """Lists all database names from the connected client."""
-    client = get_db_client()
-    if not client:
+    db = get_db()
+    if db is None:
         return []
     try:
-        return client.list_database_names()
-    except OperationFailure as e:
+        return db.client.list_database_names()
+    except Exception as e:
         print(f"Failed to list databases: {e}")
         return []
 
@@ -58,17 +60,13 @@ def get_collection_names(database_name):
     Lists all collection names in a given database.
     Added a try-except block to handle potential authentication errors.
     """
-    client = get_db_client()
-    if not client:
+    db = get_db()
+    if db is None:
         return []
     try:
-        db = client[database_name]
-        return db.list_collection_names()
-    except OperationFailure as e:
-        print(f"Failed to list collections in database '{database_name}': {e}. Check user permissions.")
-        return []
+        return db.client[database_name].list_collection_names()
     except Exception as e:
-        print(f"An unexpected error occurred: {e}")
+        print(f"Failed to list collections in database '{database_name}': {e}.")
         return []
 
 
@@ -76,11 +74,10 @@ def fetch_live_biome_details(database_name, collection_name, doc_id):
     """
     Fetches a single document from the live database by its ID.
     """
-    client = get_db_client()
-    if not client:
+    db = get_db()
+    if db is None:
         return None
     try:
-        db = client[database_name]
         collection = db[collection_name]
         # Try ObjectId, else fallback to string/UUID
         try:
@@ -96,11 +93,10 @@ def update_live_biome_details(database_name, collection_name, doc_id, section, n
     """
     Updates a specific section of a document in the live database.
     """
-    client = get_db_client()
-    if not client:
+    db = get_db()
+    if db is None:
         return False
     try:
-        db = client[database_name]
         collection = db[collection_name]
         try:
             query_id = ObjectId(doc_id)
@@ -116,15 +112,13 @@ def create_new_biome(database_name, collection_name, biome_name):
     """
     Creates a new biome document in the specified database and collection.
     """
-    client = get_db_client()
-    if not client or not database_name or not collection_name or not biome_name:
+    db = get_db()
+    if db is None or not database_name or not collection_name or not biome_name:
         return (None, "Failed to create biome. Please check inputs.")
     try:
-        db = client[database_name]
         collection = db[collection_name]
         if collection.find_one({"biome_name": biome_name}):
             return (None, f"Biome '{biome_name}' already exists.")
-            
         new_doc = {
             "biome_name": biome_name,
             "status": "created",
@@ -636,53 +630,10 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
                 outputs=[task_id_3d, gr.Textbox(), gr.Json(), gr.Gallery(), task_status_3d, gr.Json(), model_link_3d_results] # Outputs for all tabs
             )
 
-        # Decimated 3D Tab
-        with gr.TabItem("Decimated 3D"):
-            gr.Markdown("## Decimate 3D Model")
-            gr.Markdown("Upload an existing 3D GLB/OBJ/STL model to reduce its polygon count for a new or existing biome.")
-
-            with gr.Row():
-                decimate_db = gr.Dropdown(label="Select Database", choices=get_database_names(), interactive=True)
-                decimate_collection = gr.Dropdown(label="Select Collection", choices=[], interactive=True)
-
-            with gr.Row():
-                biome_action_type_decimate = gr.Radio(choices=["Create New Biome", "Select Existing Biome"], value="Create New Biome", label="Biome Action")
-
-            with gr.Column(visible=True) as new_biome_col_decimate:
-                new_biome_name_decimate = gr.Textbox(label="New Biome Name")
-
-            with gr.Column(visible=False) as existing_biome_col_decimate:
-                existing_biome_dropdown_decimate = gr.Dropdown(label="Select Biome", choices=[], interactive=True)
-
-            task_status_decimate = gr.Textbox(label="Task Status", interactive=False)
-            task_id_decimate = gr.State(None)
             
-            input_3d_file_decimate = gr.File(label="Upload 3D Model (GLB, OBJ, STL)", type="filepath")
-            decimate_button = gr.Button("Decimate 3D Model")
-            
-            with gr.Row():
-                # Corrected: Now calls load_biome_pipeline_live to poll the database
-                check_decimate_status_button = gr.Button("Refresh Status")
-
-            model_link_decimate_results = gr.HTML(label="Decimated 3D Model Link")
-            
-            decimate_db.change(fn=update_collections_dropdown, inputs=[decimate_db], outputs=[decimate_collection])
-            decimate_collection.change(fn=update_biomes_dropdown, inputs=[decimate_db, decimate_collection], outputs=[existing_biome_dropdown_decimate, biome_choices_list])
-            biome_action_type_decimate.change(
-                fn=lambda x: (gr.Column(visible=x=="Create New Biome"), gr.Column(visible=x=="Select Existing Biome")),
-                inputs=biome_action_type_decimate,
-                outputs=[new_biome_col_decimate, existing_biome_col_decimate]
-            )
-            decimate_button.click(
-                fn=_start_decimation_task,
-                inputs=[decimate_db, decimate_collection, biome_action_type_decimate, new_biome_name_decimate, existing_biome_dropdown_decimate, biome_choices_list, input_3d_file_decimate],
-                outputs=[task_id_decimate, task_status_decimate, model_link_decimate_results]
-            )
-            check_decimate_status_button.click(
-                fn=load_biome_pipeline_live,
-                inputs=[existing_biome_dropdown_decimate, biome_choices_list, decimate_db, decimate_collection],
-                outputs=[task_id_decimate, gr.Textbox(), gr.Json(), gr.Gallery(), gr.Textbox(), gr.Json(), model_link_decimate_results] # Outputs for all tabs
-            )
+        # Asset Decimation Tab
+        with gr.TabItem("Asset Decimation"):
+            decimation_page_ui()
             
         # New Tab for AWS Control
         with gr.TabItem("AWS Control"):

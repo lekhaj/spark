@@ -41,6 +41,14 @@ def biome_assets_for_task(biome_id: str, status_filter: str = "not complete"):
             for asset_name, asset in assets.items():
                 # If asset is a dict and has a status field
                 if isinstance(asset, dict) and asset.get("status") == status_filter:
+                    # Try to get s3_3d_url and image_url from top level or from attributes
+                    s3_3d_url = asset.get("s3_3d_url")
+                    image_url = asset.get("image_url")
+                    # If not found at top level, check attributes
+                    if not s3_3d_url and isinstance(asset.get("attributes"), dict):
+                        s3_3d_url = asset["attributes"].get("s3_3d_url")
+                    if not image_url and isinstance(asset.get("attributes"), dict):
+                        image_url = asset["attributes"].get("image_url")
                     result[asset_name] = {
                         "name": asset_name,
                         "description": asset.get("description", ""),
@@ -48,7 +56,9 @@ def biome_assets_for_task(biome_id: str, status_filter: str = "not complete"):
                         "type": asset.get("type", ""),
                         "background_prompt": asset.get("background_prompt", ""),
                         "attributes": asset.get("attributes", {}),
-                        "id": asset.get("id", None)
+                        "id": asset.get("id", None),
+                        "s3_3d_url": s3_3d_url,
+                        "image_url": image_url
                     }
         return result
     except Exception as e:
@@ -205,3 +215,20 @@ def get_biome_asset_update_key(biome_id: str, asset_name: str) -> str | None:
             if key == asset_name or (isinstance(asset, dict) and asset.get("name") == asset_name):
                 return f"possible_structures.{category}.{key}"
     return None
+
+def get_biome_choices_live(database_name, collection_name):
+    """
+    Fetches all biome names and their IDs from a live MongoDB collection.
+    Returns a list of tuples: [(biome_name, doc_id), ...].
+    """
+    db = get_db()
+    if db is None or not database_name or not collection_name:
+        return []
+    try:
+        collection = db[collection_name]
+        documents = list(collection.find({}, {"biome_name": 1}))
+        choices = [(doc.get("biome_name", "Unknown Biome"), str(doc["_id"])) for doc in documents]
+        return choices
+    except Exception as e:
+        logger_db.error(f"Failed to fetch biomes from collection '{collection_name}': {e}")
+        return []

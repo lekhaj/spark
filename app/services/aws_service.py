@@ -33,3 +33,16 @@ def stop_instance(instance_name_or_id: str):
     return ec2.stop_instances(InstanceIds=[instance_id])
 
 
+def download_from_s3(bucket, key, download_path):
+    s3 = boto3.client('s3')
+    import os
+    os.makedirs(os.path.dirname(download_path), exist_ok=True)
+    s3.download_file(bucket, key, download_path)
+    print(f"[S3] Downloaded: {bucket}/{key} → {download_path}")
+
+def upload_to_s3(bucket, key, file_path):
+    s3 = boto3.client('s3')
+    s3.upload_file(file_path, bucket, key)
+    print(f"[S3] Uploaded: {file_path} → {bucket}/{key}")
+
+
