@@ -390,12 +390,43 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
     default_db = dbs[0] if dbs else None
     colls = get_collection_names(default_db) if default_db else []
     default_coll = colls[0] if colls else None
-    biome_dropdown_choices, biome_choices_val = ([], [])
+    initial_biome_names = []
+    initial_biome_value = None
+    initial_biome_choices_val = []
     if default_db and default_coll:
-        biome_dropdown_choices, biome_choices_val = update_biomes_dropdown(default_db, default_coll)
+        initial_biome_choices_val = get_biome_choices_live(default_db, default_coll)
+        initial_biome_names = [name for name, _ in initial_biome_choices_val]
+        initial_biome_value = initial_biome_names[0] if initial_biome_names else None
 
     with gr.Tabs() as tabs:
-    # S3 Asset Viewer Tab (modular, non-destructive)
+    # Orchestrate Biome Tab (now first)
+        with gr.TabItem("Orchestrate Biome"):
+            gr.Markdown("## Orchestrate Biome Tasks")
+            gr.Markdown("Submit image and 3D generation tasks for a biome using backend orchestration API.")
+
+            biome_id_input = gr.Textbox(label="Biome ID", placeholder="Enter Biome ID")
+            submit_image_btn = gr.Button("Submit Image Tasks")
+            submit_3d_btn = gr.Button("Submit 3D Tasks")
+            orchestration_result = gr.Json(label="Orchestration Result")
+
+            def submit_image_tasks_gradio(biome_id):
+                try:
+                    resp = requests.post(f"http://localhost:8000/submit_image_tasks/", params={"biome_id": biome_id})
+                    return resp.json()
+                except Exception as e:
+                    return {"error": str(e)}
+
+            def submit_3d_tasks_gradio(biome_id):
+                try:
+                    resp = requests.post(f"http://localhost:8000/submit_3d_tasks/", params={"biome_id": biome_id})
+                    return resp.json()
+                except Exception as e:
+                    return {"error": str(e)}
+
+            submit_image_btn.click(fn=submit_image_tasks_gradio, inputs=[biome_id_input], outputs=[orchestration_result])
+            submit_3d_btn.click(fn=submit_3d_tasks_gradio, inputs=[biome_id_input], outputs=[orchestration_result])
+
+    # S3 Asset Viewer Tab (now second)
         with gr.TabItem("S3 Asset Viewer"):
             s3_asset_viewer_ui()
         # Asset Pipeline Tab
@@ -424,8 +455,8 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
 
             biome_dropdown = gr.Dropdown(
                 label="Select Biome",
-                choices=biome_dropdown_choices.choices if hasattr(biome_dropdown_choices, 'choices') else biome_dropdown_choices,
-                value=biome_dropdown_choices.value if hasattr(biome_dropdown_choices, 'value') else (biome_dropdown_choices[0] if biome_dropdown_choices else None),
+                choices=initial_biome_names,
+                value=initial_biome_value,
                 interactive=True
             )
 
@@ -630,7 +661,6 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
                 outputs=[task_id_3d, gr.Textbox(), gr.Json(), gr.Gallery(), task_status_3d, gr.Json(), model_link_3d_results] # Outputs for all tabs
             )
 
-            
         # Asset Decimation Tab
         with gr.TabItem("Asset Decimation"):
             decimation_page_ui()
