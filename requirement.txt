@@ -1,0 +1,21 @@
+# Blender Pipeline Requirements
+# Note: Blender comes with its own Python environment
+
+# Core dependencies (included with Blender)
+# - bpy (Blender Python API)
+# - bmesh (Blender mesh operations)
+# - json (configuration)
+# - pathlib (file operations)
+# - subprocess (system calls)
+# - tempfile (temporary files)
+# - shutil (file operations)
+
+# Optional: For advanced mesh processing
+# trimesh>=3.15.0  # Alternative mesh processing
+# numpy>=1.21.0    # Numerical operations
+# scipy>=1.7.0     # Scientific computing
+
+# Development dependencies (optional)
+# pytest>=6.0.0    # Testing
+# black>=21.0.0    # Code formatting
+# flake8>=3.9.0    # Linting

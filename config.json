@@ -1,0 +1,15 @@
+{
+  "remesh_voxel_size": 0.003,
+  "instantmesh_poly_ratio": 0.3,
+  "decimate_ratio": 0.3,
+  "temp_dir": "./temp",
+  "instantmesh_path": "instant-meshes",
+  "export_format": "OBJ",
+  "log_level": "INFO",
+  "preserve_materials": true,
+  "preserve_uvs": true,
+  "use_smooth_shade": true,
+  "use_python_mesh_processing": true,
+  "quadify_faces": true,
+  "preserve_normals": true
+}

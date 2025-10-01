@@ -1,293 +1,180 @@
-# Spark Biome Inspector & 2D/3D Generation Pipeline
+# Blender GLB to OBJ Pipeline
 
-## Overview
-This project provides a robust Gradio-based UI for inspecting, generating, and monitoring 2D/3D biomes and assets, with MongoDB integration and GPU control utilities for AWS EC2 instances.
+This Python pipeline automates the 3D model processing workflow described in the [YouTube video](https://youtu.be/O_65iVCcXJk?si=oudzQ0U7fACz9i67), converting GLB files to optimized OBJ files through a multi-step process.
 
-- **Multi-tab Gradio UI**: Biome inspector, text-to-image, grid-to-image, file upload, MongoDB prompt/grid, and 3D decimation monitor.
-- **MongoDB Integration**: Robust to DB failures, with mock fallback.
-- **3D Model Handling**: Images and 3D models are separated; 3D models are downloadable.
-- **GPU Instance Control**: Easily start/stop/list AWS EC2 GPU instances with `ec2_gpu_control.py`.
+## Workflow Overview
 
-## Features
-- Inspect and generate biomes with structure images and downloadable 3D models.
-- Generate images from text, grid, or file input.
-- Batch process MongoDB prompts and grids.
-- Monitor and dispatch 3D decimation tasks.
-- Control AWS EC2 GPU instances from the command line.
+The pipeline follows these steps:
 
-## Setup
-1. **Clone the repository**
-2. **Install dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   # For AWS EC2 control:
-   pip install boto3
-   ```
-3. **Configure MongoDB and AWS credentials** as needed (see `config.py` and AWS CLI docs).
+1. **Import GLB** → Load the input 3D model
+2. **Remesh Modifier** → Apply voxel remeshing with 0.001m resolution
+3. **Export Intermediate OBJ** → Save for InstantMesh processing
+4. **InstantMesh Processing** → Reduce polygon count to 30% and quadify
+5. **Re-import to Blender** → Load the processed model back
+6. **Decimate Modifier** → Apply collapse decimation with 0.3 ratio
+7. **Export Final OBJ** → Save the optimized result
 
-## Running the Gradio App
-```bash
-python src/merged_gradio_app.py --port 8080 --host 0.0.0.0
-```
+## Prerequisites
 
-## AWS EC2 GPU Control
-The `ec2_gpu_control.py` script allows you to list, start, and stop GPU EC2 instances in your AWS account.
+### Required Software
+- **Blender** (3.0+ recommended)
+- **Python** (comes with Blender)
 
-### Usage
-```bash
-python src/ec2_gpu_control.py start <instance-id-1> 
-python src/ec2_gpu_control.py stop <instance-id-1>
-```
+### Instant Meshes Integration
+The pipeline uses Python-based mesh processing to replicate Instant Meshes functionality:
+- **Polygon reduction** to 30% of original count
+- **Quadification** of triangular faces where possible
+- **Field-aligned mesh generation** using Blender's built-in tools
 
-- Requires `boto3` and valid AWS credentials (see [AWS CLI setup](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-quickstart.html)).
-
-## File Structure
-- `src/merged_gradio_app.py` — Main Gradio UI application
-- `src/ec2_gpu_control.py` — AWS EC2 GPU instance control utility
-- `src/config.py` — Configuration (MongoDB, S3, etc.)
-- `src/db_helper.py` — MongoDB helper functions
-- `src/pipeline/` — Image/grid/text processing pipeline
-- `src/utils/` — Utility functions
-
-## Notes
-- The UI is robust to MongoDB failures and will use mock data if the DB is unavailable.
-- 3D models are provided as download links, not previews.
-- Structure names are displayed below images in the gallery.
-
-## License
-MIT# Text to grid ,2D-to-3D Generation Pipeline
-
-A versatile pipeline that converts text prompts and terrain grids into images, and then transforms those images into 3D models using Hunyuan3D-2.
-
-## Project Structure
-
-```
-2d-to-3d-pipeline
-├── src
-│   ├── app.py                # Command line app entry point
-│   ├── config.py             # Configuration settings
-│   ├── gradio_app.py         # Original Gradio web interface
-│   ├── merged_gradio_app.py  # NEW! Unified 2D & 3D Gradio interface
-│   ├── pipeline               # Contains processing logic
-│   │   ├── __init__.py
-│   │   ├── pipeline.py        # Main pipeline class
-│   │   ├── text_processor.py   # Text processing logic
-│   │   └── grid_processor.py   # Grid processing logic
-│   ├── models                 # Contains model implementations
-│   │   ├── __init__.py
-│   │   ├── api_client.py      # API client for external LLMs
-│   │   └── local_model.py     # Local model implementation
-│   ├── terrain                # Terrain type definitions and grid parsing
-│   │   ├── __init__.py
-│   │   ├── terrain_types.py    # Definitions of terrain types
-│   │   └── grid_parser.py
-│   ├── text_to_grid                # Terrain type definitions and grid parsing
-│   │   ├── __init__.py
-│   │   ├── grid_generator.py    grid logic -> grid
-│   │   ├── grid_placement_logic.py    # logic -> grid logic
-|   |   ├── placement_suggestor.py    # llm suggestions -> logic
-│   │   ├── utils.py             # utility functions
-|   |   ├── llm.py             # llm calls
-|   |   └── structure_registry.py # Grid parsing logic
-│   └── utils                  # Utility functions
-│       ├── __init__.py
-│       └── image_utils.py      # Image manipulation utilities
-├── Hunyuan3D-2               # 3D generation component
-│   ├── examples              # Example scripts for 3D generation
-│   ├── hy3dgen               # 3D generation library
-│   ├── assets                # Templates and example files
-│   └── ...                   # Other 3D model files and configs
-├── tests                      # Unit tests for the application
-├── examples                   # Example input files
-├── requirements.txt           # Project dependencies
-├── .env                       # Environment variables
-└── README.md                  # Project documentation
-```
+For the original Instant Meshes GUI tool, visit: [wjakob/instant-meshes](https://github.com/wjakob/instant-meshes)
 
 ## Installation
 
-1. Clone the repository with submodules:
-
-```bash
-git clone --recursive [repository_url]
-```
-
-2. Install the required dependencies:
-
-```bash
-# Install main project dependencies
-pip install -r requirements.txt
-
-# Install 3D generation dependencies (optional but required for 3D features)
-pip install -r Hunyuan3D-2/requirements.txt
-pip install -e Hunyuan3D-2
-```
-
-3. Install system dependencies for 3D features (if needed):
-
-```bash
-# For Ubuntu/Debian
-sudo apt-get install libgl1-mesa-glx xvfb
-
-# For CentOS/RHEL
-sudo yum install mesa-libGL
-```
-
-4. Create a `.env` file in the project root with your API keys:
-
-```
-OPENAI_API_KEY=your_openai_api_key_here
-STABILITY_API_KEY=your_stability_api_key_here
-DALLE_API_KEY=your_dalle_api_key_here
-```
+1. Clone or download this repository
+2. Ensure Blender and InstantMesh are installed
+3. Update the configuration file if needed
 
 ## Usage
 
-### Command Line Interface
+### Library Usage (Recommended)
 
-#### Text-to-Image
+Use the pipeline as a library in your own applications:
 
-Convert a text prompt to an image:
+```python
+from pipeline_lib import BlenderPipelineLib, convert_glb_to_obj
+
+# Simple one-line conversion
+success = convert_glb_to_obj("input.glb", "output.obj")
+
+# Using the library class with custom settings
+pipeline = BlenderPipelineLib()
+pipeline.set_config(remesh_voxel_size=0.002, decimate_ratio=0.5)
+success = pipeline.convert_glb_to_obj("input.glb", "output.obj")
+
+# Batch processing
+from pipeline_lib import batch_convert_glb_to_obj
+results = batch_convert_glb_to_obj(
+    input_files=["model1.glb", "model2.glb"],
+    output_dir="./output"
+)
+```
+
+### Command Line Usage
 
 ```bash
-python src/app.py --mode text --prompt "A beautiful sunset over the mountains" --num-images 1
+# Basic usage
+blender --background --python blender_pipeline.py -- input.glb output.obj
+
+# With custom configuration
+blender --background --python blender_pipeline.py -- input.glb output.obj config.json
 ```
 
-#### Grid-to-Image
+### Python Script Usage
 
-Convert a grid of terrain types to an image:
+```python
+from blender_pipeline import BlenderPipeline
 
-```bash
-python src/app.py --mode grid --grid "0 1 1 0 0
-1 1 0 0 1
-0 0 1 1 0
-0 1 1 0 0
-1 0 0 1 1" --num-images 1
+# Initialize pipeline
+pipeline = BlenderPipeline('config.json')
+
+# Run the pipeline
+success = pipeline.run_pipeline('input.glb', 'output.obj')
+
+if success:
+    print("Pipeline completed successfully!")
+else:
+    print("Pipeline failed!")
 ```
 
-#### File Input
+## Configuration
 
-Process a file containing either a text prompt or a grid:
+Edit `config.json` to customize the pipeline parameters:
 
-```bash
-python src/app.py --mode file --file examples/text_prompts.txt
-python src/app.py --mode file --file examples/grid_samples.txt
+```json
+{
+  "remesh_voxel_size": 0.001,        // Voxel size for remeshing (meters)
+  "instantmesh_poly_ratio": 0.3,     // Target polygon reduction ratio (30%)
+  "decimate_ratio": 0.3,             // Decimate collapse ratio
+  "temp_dir": "./temp",              // Temporary files directory
+  "instantmesh_path": "instantmesh", // Path to InstantMesh executable
+  "export_format": "OBJ",            // Output format
+  "log_level": "INFO",               // Logging level
+  "preserve_materials": true,        // Keep material information
+  "preserve_uvs": true,              // Keep UV coordinates
+  "use_smooth_shade": true           // Use smooth shading
+}
 ```
 
-#### Additional CLI Options
+## Pipeline Steps Explained
 
-```
---width          Width of the generated image (default: 512)
---height         Height of the generated image (default: 512)
---num-images     Number of images to generate (default: 1)
---text-model     Model for text-to-image (openai, stability, local) (default: openai)
---grid-model     Model for grid-to-image (openai, stability, local) (default: stability)
---output-dir     Directory to save generated images
-```
+### 1. Remesh Modifier (0.001m voxel)
+- Converts the mesh to a uniform voxel-based structure
+- Ensures consistent topology for better processing
+- Uses 0.001m voxel size for high detail preservation
 
-### Web Interface (NEW!)
+### 2. InstantMesh Processing (30% poly reduction)
+- Reduces polygon count to 30% of original
+- Converts triangles to quads where possible
+- Maintains mesh quality while reducing complexity
 
-The project now includes a unified Gradio web interface that combines the 2D image generation capabilities with 3D model generation using Hunyuan3D-2.
+### 3. Decimate Modifier (0.3 collapse ratio)
+- Further reduces polygon count using edge collapse
+- Preserves important mesh features
+- Final optimization step
 
-#### Starting the Web Interface
+## Output
 
-```bash
-# Launch with default settings
-python src/merged_gradio_app.py
+The pipeline produces:
+- **Final OBJ file** with optimized geometry
+- **Log file** with processing details
+- **Temporary files** (automatically cleaned up)
 
-# Launch with CPU-only mode (for systems without GPU)
-python src/merged_gradio_app.py --device cpu
+## Known Limitations
 
-# Launch with a specific port and host
-python src/merged_gradio_app.py --port 7860 --host 0.0.0.0
+- **Texture information is lost** during the process (as mentioned in the original workflow)
+- Materials and UV coordinates may be affected
+- Processing time depends on model complexity
 
-# Launch with a public shareable link
-python src/merged_gradio_app.py --share
+## Troubleshooting
 
-# Launch with 3D generation features disabled
-python src/merged_gradio_app.py --disable_3d
-```
+### Common Issues
 
-#### Web Interface Features
+1. **InstantMesh not found**
+   - Ensure InstantMesh is installed and in PATH
+   - Update `instantmesh_path` in config.json
 
-1. **Text to Image**: Generate images from text descriptions
-2. **Grid to Image**: Create terrain images from grid inputs
-3. **File Upload**: Process text or grid files to create images
-4. **3D Generation**: Convert generated images to 3D models
-   - Requires system OpenGL libraries (see Requirements section)
-   - Includes mesh generation and texturing capabilities
-   - Exports in various 3D formats (GLB, OBJ, etc.)
+2. **Memory issues with large models**
+   - Reduce `remesh_voxel_size` for smaller voxels
+   - Process models in smaller batches
 
-#### System Requirements for 3D Generation
+3. **Import/Export errors**
+   - Check file permissions
+   - Ensure output directory exists
+   - Verify GLB file is not corrupted
 
-3D generation features require additional system libraries. If you're running into the `libGL.so.1` error, install:
+### Logging
 
-For Ubuntu/Debian:
-```bash
-sudo apt-get install libgl1-mesa-glx xvfb
-```
+The pipeline provides detailed logging. Check the console output for:
+- Processing steps
+- Error messages
+- Performance metrics
 
-For CentOS/RHEL:
-```bash
-sudo yum install mesa-libGL
-```
+## Performance Tips
 
-## Terrain Types
+- Use SSD storage for temporary files
+- Close other applications to free up memory
+- Process multiple files in batch for efficiency
 
-The grid processor supports the following terrain types:
+## Contributing
 
-- 0: Plains - Flat, grassy plains
-- 1: Forest - Dense forest with tall trees
-- 2: Mountain - Rugged mountains with snow-capped peaks
-- 3: Water - Clear blue water
-- 4: Desert - Sandy desert with dunes
-- 5: Snow - Snowy landscape
-- 6: Swamp - Murky swampland
-- 7: Hills - Rolling hills
-- 8: Urban - Bustling urban area
-- 9: Ruins - Ancient ruins
+Feel free to submit issues and enhancement requests!
 
-## Tutorial: Using the Web Interface
+## License
 
-### Step 1: Generate a 2D Image
-1. Choose a tab based on your input type (Text, Grid, or File)
-2. For text input:
-   - Enter a descriptive prompt (e.g., "A majestic castle on a hilltop")
-   - Select model type, image dimensions, etc.
-   - Click "Generate Image from Text"
-3. For grid input:
-   - Enter a grid of numbers (use "Load Sample Grid" for an example)
-   - Click "Generate Image from Grid"
+This project is open source. Please check the original InstantMesh license for their components.
 
-### Step 2: Convert to 3D Model
-1. After generating an image, click the "Convert to 3D" button
-2. The application will switch to the 3D Generation tab with your image loaded
-3. Adjust 3D generation parameters as needed:
-   - Steps: Controls generation quality (higher = better but slower)
-   - Guidance Scale: Controls adherence to the input image
-   - Octree Resolution: Controls mesh detail
-   - Seed: Controls randomness (useful for reproducibility)
-4. Click "Generate 3D Model" to create the 3D representation
-5. View and download the resulting 3D model
+## References
 
-### Step 3: Export and Use
-1. Download the generated 3D model files
-2. Use in 3D software like Blender, Unity, or other 3D applications
-
-## Current Features
-
-- Text-to-image generation using OpenAI, Stability AI, or local models
-- Grid-to-image terrain generation with multiple terrain types
-- 3D model generation from 2D images using Hunyuan3D-2
-- Texture generation for 3D models
-- Web interface for easy use and visualization
-- Command line interface for batch processing or automation
-
-## Future Improvements
-
-- Implement additional local model support for offline usage
-- Add more terrain types and biome combinations
-- Support for image-to-image transformations and editing
-- Advanced 3D model editing capabilities
-- Animation support for 3D models
-- Virtual environment creation from text descriptions
+- [Original YouTube Tutorial](https://youtu.be/O_65iVCcXJk?si=oudzQ0U7fACz9i67)
+- [InstantMesh GitHub Repository](https://github.com/TencentARC/InstantMesh)
+- [Blender Python API Documentation](https://docs.blender.org/api/current/)
