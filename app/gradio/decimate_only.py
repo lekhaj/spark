@@ -1,3 +1,23 @@
+import bpy
+import os
+import sys
+import bmesh
+
+import json
+from mathutils import Vector
+
+
+
+
+
+DECIMATION_PROFILES = [
+    ("5k", 5000, "COLLAPSE", None),
+    ("6k", 6000, "COLLAPSE", None),
+    ("8k", 8000, "COLLAPSE", None),
+    ("10k", 10000, "COLLAPSE", None),
+]
+
+# ---------------- BLENDER OPERATIONS ----------------
 import time
 def preprocess_mesh(obj):
     """
@@ -20,26 +40,7 @@ def preprocess_mesh(obj):
     except Exception as e:
         print(f"[WARN] delete_loose failed: {e}")
     bpy.ops.object.mode_set(mode='OBJECT')
-import bpy
-import os
-import sys
-import bmesh
-
-import json
-from mathutils import Vector
-
-
-
-
-
-DECIMATION_PROFILES = [
-    ("5k", 5000, "COLLAPSE", None),
-    ("6k", 6000, "COLLAPSE", None),
-    ("8k", 8000, "COLLAPSE", None),
-    ("10k", 10000, "COLLAPSE", None),
-]
-
-# ---------------- BLENDER OPERATIONS ----------------
+    
 def clear_scene():
     bpy.ops.object.select_all(action='SELECT')
     bpy.ops.object.delete(use_global=False)
@@ -174,7 +175,9 @@ def main():
     if len(args) > 2 and args[2]:
         output_folder = args[2]
     else:
-        output_folder = os.path.join(os.path.dirname(input_file), 'decimated_output')
+        # Default to app/gradio/s3_downloads/decimated_output relative to this script
+        workspace_root = os.path.abspath(os.path.join(os.path.dirname(__file__)))
+        output_folder = os.path.join(workspace_root, 's3_downloads', 'decimated_output')
     os.makedirs(output_folder, exist_ok=True)
     log_path = os.path.join(output_folder, "decimation.log")
     try:

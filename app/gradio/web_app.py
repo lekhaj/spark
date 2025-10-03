@@ -9,8 +9,8 @@ from dotenv import load_dotenv
 from bson.objectid import ObjectId
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure, OperationFailure
-from app.pages.s3_asset_viewer_page import s3_asset_viewer_ui
-from app.pages.decimation_page import decimation_page_ui
+from app.gradio.pages.s3_asset_viewer_page import s3_asset_viewer_ui
+from app.gradio.pages.decimation_page import decimation_page_ui
 from app.services.mongo_service import get_db, get_biome_choices_live
 
 # Load environment variables from .env file
