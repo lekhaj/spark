@@ -32,7 +32,7 @@ def start_decimation_process(database_name: str, collection_name: str, biome_nam
         return "Selected biome not found."
     try:
         if asset_name == "All Assets":
-            result = f"Starting decimation for ALL assets in biome '{biome_name}' (ID: {biome_id})\n"
+            result = f"_ing decimation for ALL assets in biome '{biome_name}' (ID: {biome_id})\n"
             result += "This would normally trigger the full biome decimation process.\n"
             result += "Note: Full biome processing should be run on the GPU server with Blender."
         else:
@@ -154,52 +154,50 @@ def decimation_page_ui():
 
 
         def handle_start_decimation(coll_name, biome_id, asset_id, biome_choices):
+            import os
+            import subprocess, json
             db_name = settings.MONGODB_DB_NAME
             biome_name_display = next((name for name, _id in biome_choices if _id == biome_id), biome_id)
-            # Use backend helper for asset list
             assets_dict = biome_assets_for_task(biome_id, status_filter="3d asset generated")
             if not isinstance(assets_dict, dict) or not assets_dict:
-                return "No assets ready for decimation."
+                yield "No assets ready for decimation."
+                return
             assets_to_decimate = []
             if asset_id == "all":
-                # All assets with status '3d asset generated'
                 for asset_name, asset in assets_dict.items():
                     assets_to_decimate.append((asset.get('type', 'Asset'), asset_name, asset))
             else:
-                # Only the selected asset
                 if asset_id in assets_dict:
                     asset = assets_dict[asset_id]
                     assets_to_decimate.append((asset.get('type', 'Asset'), asset_id, asset))
             if not assets_to_decimate:
-                return "No assets ready for decimation."
-            import os
+                yield "No assets ready for decimation."
+                return
             bucket_name = settings.AWS_S3_BUCKET if hasattr(settings, 'AWS_S3_BUCKET') else 'dummy-bucket'
             s3_prefix = "3d_assets"
-            # Place s3_downloads and s3_decimated in the workspace root (spark directory)
+
             workspace_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
             models_folder = os.path.join(workspace_root, "s3_downloads")
             output_folder = os.path.join(workspace_root, "s3_decimated")
             os.makedirs(models_folder, exist_ok=True)
             os.makedirs(output_folder, exist_ok=True)
 
-            results = []
             for category, asset_name, asset in assets_to_decimate:
                 update_key = get_biome_asset_update_key(biome_id, asset_name)
                 s3_3d_url = asset.get('s3_3d_url')
                 if not s3_3d_url:
-                    results.append(f"[ERROR] Asset '{asset_name}' has no s3_3d_url, skipping.")
+                    yield f"[ERROR] Asset '{asset_name}' has no s3_3d_url, skipping."
                     continue
                 try:
                     parsed = urlparse(s3_3d_url)
                     bucket = parsed.netloc.split('.')[0] if parsed.netloc else bucket_name
                     key = parsed.path.lstrip('/')
-                    # Use the filename from the S3 key for local download
                     s3_filename = os.path.basename(key)
                     local_file = os.path.abspath(os.path.join(models_folder, s3_filename))
                     download_from_s3(bucket, key, local_file)
-                    results.append(f"[S3] Downloaded {s3_3d_url} to {local_file}")
+                    yield f"[S3] Downloaded {s3_3d_url} to {local_file}"
                 except Exception as e:
-                    results.append(f"[ERROR] Failed to download s3_3d_url for {asset_name}: {e}")
+                    yield f"[ERROR] Failed to download s3_3d_url for {asset_name}: {e}"
                     if update_key:
                         update_or_add_biome_asset(biome_id, update_key, {"decimation_status": "error", "decimation_error": str(e)})
                     continue
@@ -207,10 +205,8 @@ def decimation_page_ui():
                     update_or_add_biome_asset(biome_id, update_key, {"decimation_status": "queued"})
                 decimated_assets = {}
                 success_count = 0
-                import subprocess, json
-                blender_path = r"C:\\Program Files\\Blender Foundation\\Blender 4.5\\blender.exe"  # Full path to Blender executable
+                blender_path = r"C:\\Program Files\\Blender Foundation\\Blender 4.5\\blender.exe"
                 decimation_script = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../decimate_only.py'))
-                # Call Blender script ONCE for all profiles
                 blender_cmd = [
                     blender_path,
                     "--background",
@@ -219,38 +215,47 @@ def decimation_page_ui():
                     asset_name,
                     local_file
                 ]
-                # Show the Blender command in the Gradio UI output before running
-                results.append(f"[INFO] Running Blender command: {' '.join(blender_cmd)}")
+                yield f"[INFO] Running Blender command: {' '.join(blender_cmd)}"
                 try:
-                    result = subprocess.run(blender_cmd, capture_output=True, text=True, timeout=1200)
-                    if result.returncode != 0:
-                        results.append(f"[ERROR] Blender decimation failed for {asset_name}: Return code {result.returncode}\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
-                        continue
-                    # Parse JSON output from Blender script
+                    process = subprocess.Popen(blender_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+                    output_lines = []
                     output_json = None
-                    for line in result.stdout.splitlines():
+                    log_accum = ""
+                    # Accumulate and yield all output lines for Gradio
+                    for line in process.stdout:
+                        output_lines.append(line)
+                        log_accum += line.rstrip() + "\n"
+                        yield log_accum
                         try:
-                            output_json = json.loads(line)
-                            break
+                            maybe_json = json.loads(line)
+                            output_json = maybe_json
                         except Exception:
-                            continue
+                            pass
+                    process.wait(timeout=1200)
+                    if process.returncode != 0:
+                        log_accum += f"[ERROR] Blender decimation failed for {asset_name}: Return code {process.returncode}\nSTDOUT/STDERR:\n{''.join(output_lines)}\n"
+                        yield log_accum
+                        continue
                     if not output_json:
-                        results.append(f"[ERROR] No valid JSON output from Blender script for {asset_name}.\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+                        log_accum += f"[ERROR] No valid JSON output from Blender script for {asset_name}.\nSTDOUT/STDERR:\n{''.join(output_lines)}\n"
+                        yield log_accum
                         continue
                     for suffix, data in output_json.items():
                         if "error" in data:
                             decimated_assets[f"decimated_{suffix}"] = {"error": data["error"]}
-                            results.append(f"[ERROR] Decimation failed for {asset_name} profile {suffix}: {data['error']}")
+                            log_accum += f"[ERROR] Decimation failed for {asset_name} profile {suffix}: {data['error']}\n"
+                            yield log_accum
                             continue
                         local_fbx = data["local_file"]
                         if not os.path.exists(local_fbx):
-                            results.append(f"[ERROR] Output file not found: {local_fbx} for {asset_name} profile {suffix}.\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+                            log_accum += f"[ERROR] Output file not found: {local_fbx} for {asset_name} profile {suffix}.\n"
                             decimated_assets[f"decimated_{suffix}"] = {"error": f"Output file not found: {local_fbx}"}
+                            yield log_accum
                             continue
-                        # S3 upload with robust try/except and debug info
                         try:
                             s3_dest = f"{s3_prefix}/decimated/{os.path.basename(local_fbx)}"
-                            results.append(f"[DEBUG] Uploading {local_fbx} to S3 bucket '{bucket_name}' at key '{s3_dest}'")
+                            log_accum += f"[DEBUG] Uploading {local_fbx} to S3 bucket '{bucket_name}' at key '{s3_dest}'\n"
+                            yield log_accum
                             upload_to_s3(bucket_name, s3_dest, local_fbx)
                             s3_url = f"https://{bucket_name}.s3.amazonaws.com/{s3_dest}"
                             decimated_assets[f"decimated_{suffix}"] = {
@@ -260,28 +265,30 @@ def decimation_page_ui():
                                 "reduction_ratio": data.get("reduction_ratio"),
                                 "status": "complete"
                             }
-                            results.append(f"[SUCCESS] Uploaded {local_fbx} to S3 bucket '{bucket_name}' at key '{s3_dest}'")
-                            results.append(f"[SUCCESS] {suffix}: {data.get('poly_before')} → {data.get('poly_after')} polygons for {asset_name}")
+                            log_accum += f"[SUCCESS] Uploaded {local_fbx} to S3 bucket '{bucket_name}' at key '{s3_dest}'\n"
+                            log_accum += f"[SUCCESS] {suffix}: {data.get('poly_before')} → {data.get('poly_after')} polygons for {asset_name}\n"
                             success_count += 1
+                            yield log_accum
                         except Exception as e:
                             import traceback
                             tb = traceback.format_exc()
                             decimated_assets[f"decimated_{suffix}"] = {"error": f"S3 upload failed: {e}"}
-                            results.append(f"[ERROR] S3 upload failed for {local_fbx}: {e}\n{tb}")
-                        # Remove local file after upload
+                            log_accum += f"[ERROR] S3 upload failed for {local_fbx}: {e}\n{tb}\n"
+                            yield log_accum
                         try:
                             if os.path.exists(local_fbx):
                                 os.remove(local_fbx)
-                                results.append(f"[INFO] Removed local file {local_fbx}")
+                                log_accum += f"[INFO] Removed local file {local_fbx}\n"
+                                yield log_accum
                         except Exception as e:
                             import traceback
                             tb = traceback.format_exc()
-                            results.append(f"[WARN] Could not remove {local_fbx}: {e}\n{tb}")
+                            log_accum += f"[WARN] Could not remove {local_fbx}: {e}\n{tb}\n"
+                            yield log_accum
                 except Exception as e:
                     import traceback
                     tb = traceback.format_exc()
-                    results.append(f"[ERROR] Blender decimation failed for {asset_name}: {e}\n{tb}")
-                # Update Mongo and cleanup local_file
+                    yield f"[ERROR] Blender decimation failed for {asset_name}: {e}\n{tb}"
                 update_data = {
                     "decimation_status": "completed" if success_count > 0 else "failed",
                     "decimated_assets": decimated_assets,
@@ -289,16 +296,23 @@ def decimation_page_ui():
                     "decimation_profiles_processed": success_count,
                     "decimation_profiles_total": len(DECIMATION_PROFILES)
                 }
+                # Remove decimation_error if decimation succeeded
+                if success_count > 0:
+                    update_data["decimation_error"] = None
                 if update_key:
-                    update_or_add_biome_asset(biome_id, update_key, update_data)
-                # Only delete the downloaded file if Blender ran successfully
+                    # If decimation_error is None, remove the field from Mongo
+                    if "decimation_error" in update_data and update_data["decimation_error"] is None:
+                        update_or_add_biome_asset(biome_id, update_key, {**update_data, "$unset": {"decimation_error": ""}})
+                    else:
+                        update_or_add_biome_asset(biome_id, update_key, update_data)
                 if success_count > 0:
                     try:
                         if os.path.exists(local_file):
                             os.remove(local_file)
                     except Exception as e:
-                        results.append(f"[WARN] Could not clean up file {local_file}: {e}")
-            return "\n".join(results) + f"\nTimestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}"
+                        yield f"[WARN] Could not clean up file {local_file}: {e}"
+            log_accum += f"\nTimestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            yield log_accum
 
         def handle_check_status(coll_name, biome_id, asset_id, biome_choices):
             db_name = settings.MONGODB_DB_NAME
@@ -327,7 +341,10 @@ def decimation_page_ui():
         start_decimation_btn.click(
             fn=handle_start_decimation,
             inputs=[decimation_collection, biome_dropdown_decim, asset_dropdown_decim, biome_choices_decim],
-            outputs=[decimation_status_output]
+            outputs=[decimation_status_output],
+            api_name=None,
+            queue=True,
+            show_progress=True
         )
         check_status_btn.click(
             fn=handle_check_status,

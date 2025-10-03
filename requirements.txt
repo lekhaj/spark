@@ -3,5 +3,12 @@ uvicorn
 redis
 pymongo
 boto3
-#torch
-#hunyuan3d
+gradio
+
+# The following Blender modules are only available inside Blender's Python:
+# bpy, bmesh, mathutils
+# Do NOT install them via pip; they are bundled with Blender.
+
+# Optional/experimental:
+# torch           # Uncomment if using PyTorch
+# hunyuan3d       # Uncomment if using hunyuan3d
