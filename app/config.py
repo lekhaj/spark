@@ -1,7 +1,9 @@
-
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
+    redis_host: str = "localhost"
+    redis_port: int = 6379
+    api_base_url: str = "http://localhost:8000"
     """
     Application settings are defined in this class, loaded from environment
     variables or a .env file using pydantic-settings.
@@ -9,12 +11,11 @@ class Settings(BaseSettings):
     This provides a single, type-safe source of truth for all configuration.
     """
     
-    # --- Project Metadata ---
     PROJECT_NAME: str = "Biome Generation Orchestrator"
     API_V1_STR: str = "/api/v1"
     
-
     MONGODB_URL: str
+    
     MONGODB_DB_NAME: str
     
     CELERY_BROKER_URL: str
@@ -22,7 +23,6 @@ class Settings(BaseSettings):
 
     LOGS_DIR: str = "logs"
     LOG_LEVEL: str = "INFO"
-
 
     AWS_REGION: str = "ap-south-1"
     AWS_S3_BUCKET: str
@@ -32,8 +32,9 @@ class Settings(BaseSettings):
     AWS_SECRET_ACCESS_KEY: str
     
     GPU_SSH_USER: str
-    GPU_PUBLIC_IP: str
+    GPU_PUBLIC_IP:str
 
+  
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding='utf-8',extra="ignore" )
 
 settings = Settings()

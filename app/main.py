@@ -10,10 +10,42 @@ from app.routes import mongo_routes
 from app.services.orchestrator_service import orchestrator_main
 from app.services.mongo_service import get_db
 from app.config import settings
+from app.routes.mongo_routes import router as mongo_router
+from app.routes.aws_routes import router as aws_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("app")
 
+## main was edited to make api endpoints as a executable function...
+## core_logic is unchanged. :)
+
+
+def create_image_task_dict(prompt, negative_prompt="", width=1024, height=1024, num_inference_steps=30):
+    job_id = str(uuid.uuid4())
+    return job_id, {
+        "job_id": job_id,
+        "task_type": TaskType.IMAGE,
+        "prompt": prompt,
+        "negative_prompt": negative_prompt,
+        "width": width,
+        "height": height,
+        "num_inference_steps": num_inference_steps,
+        "timestamp": time.time(),
+        "status": "queued",
+        "output_key": f"generated-images/{job_id}/sdxl_output.png"
+    }
+
+def create_3d_task_dict(image_s3_url, prompt=""):
+    job_id = str(uuid.uuid4())
+    return job_id, {
+        "job_id": job_id,
+        "task_type": TaskType.MODEL_3D,
+        "image_s3_url": image_s3_url,
+        "prompt": prompt,
+        "timestamp": time.time(),
+        "status": "queued",
+        "output_key": f"3d_assets/{job_id}_mesh.obj"
+    }
 # Redis client using config
 try:
     r = redis.Redis.from_url(settings.CELERY_BROKER_URL)
@@ -23,6 +55,11 @@ except Exception as e:
     print(f"[FastAPI] Failed to connect to Redis: {e}")
 
 app = FastAPI(title="Dual Model Generation API")
+
+# Mount routers for Mongo and AWS
+app.include_router(mongo_router, prefix="/mongo", tags=["MongoDB"])
+app.include_router(aws_router, prefix="/aws", tags=["AWS"])
+
 app.include_router(mongo_routes.router, prefix="") 
 class TaskType(str, Enum):
     IMAGE = "image"
@@ -57,20 +94,13 @@ def home():
 @app.post("/submit_image_task/")
 async def submit_image_task(image_request: ImagePromptRequest):
     """Submit a prompt for SDXL image generation"""
-    job_id = str(uuid.uuid4())
-    task_data = {
-        "job_id": job_id,
-        "task_type": TaskType.IMAGE,
-        "prompt": image_request.prompt,
-        "negative_prompt": image_request.negative_prompt,
-        "width": image_request.width,
-        "height": image_request.height,
-        "num_inference_steps": image_request.num_inference_steps,
-        "timestamp": time.time(),
-        "status": "queued",
-        "output_key": f"generated-images/{job_id}/sdxl_output.png"
-    }
-    # Push to image tasks queue
+    job_id, task_data = create_image_task_dict(
+        prompt=image_request.prompt,
+        negative_prompt=image_request.negative_prompt,
+        width=image_request.width,
+        height=image_request.height,
+        num_inference_steps=image_request.num_inference_steps
+    )
     r.lpush("image_tasks", json.dumps(task_data))
     print(f"[FastAPI] Image task pushed to Redis: {job_id}")
     return {
@@ -83,18 +113,11 @@ async def submit_image_task(image_request: ImagePromptRequest):
 @app.post("/submit_3d_task/")
 async def submit_3d_task(model_request: Model3DRequest):
     """Submit an S3 image URL for 3D model generation"""
-    job_id = str(uuid.uuid4())
-    task_data = {
-        "job_id": job_id,
-        "task_type": TaskType.MODEL_3D,
-        "image_s3_url": model_request.image_s3_url,
-        "prompt": model_request.prompt,
-        "timestamp": time.time(),
-        "status": "queued",
-        "output_key": f"3d_assets/{job_id}_mesh.obj"
-    }
-    # Push to 3D tasks queue
-    r.lpush("3d_tasks", json.dumps(task_data))
+    job_id, task_data = create_3d_task_dict(
+        image_s3_url=model_request.image_s3_url,
+        prompt=model_request.prompt
+    )
+    r.lpush("model_tasks", json.dumps(task_data))
     print(f"[FastAPI] 3D task pushed to Redis: {job_id}")
     return {
         "status": "success", 

@@ -70,3 +70,4 @@ def generate_asset(req: GenerateRequest):
         return {"task_id": task_id, "status": "queued", "message": "Task sent to GPU worker"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
