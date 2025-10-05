@@ -240,7 +240,7 @@ def get_biome_choices_live(database_name, collection_name):
     biome = biome_collection.find_one({"_id": biome_id})
     return serialize_mongo_doc(biome)
 
-def get_data(collection_name: str, limit: int = 5):
+def get_data(collection_name: str, limit: int = 20):
     db = get_db()                     
     if db is None:
         logger_db.error("Database not connected.")
@@ -267,3 +267,69 @@ def get_assets_by_biome(biome_id: str):
             asset['_id'] = str(asset['_id'])
     
     return assets_list
+def get_all_biomes_with_images() -> List[Dict[str, Any]]:
+    """Retrieve all biomes that have at least one image"""
+    db = get_db()
+    if db is None:
+        logger_db.error("Database connection is not available.")
+        return []
+    
+    # Search for biomes with any image field
+    biomes = list(db["biomes"].find({
+        "$or": [
+            {"possible_structures.buildings.image_url": {"$exists": True}},
+            {"possible_structures.props.image_url": {"$exists": True}},
+            {"possible_structures.creatures.image_url": {"$exists": True}},
+            {"possible_structures.terrain.image_url": {"$exists": True}},
+            {"possible_structures.buildings.s3_image_uri": {"$exists": True}},
+            {"possible_structures.props.s3_image_uri": {"$exists": True}},
+            {"possible_structures.creatures.s3_image_uri": {"$exists": True}},
+            {"possible_structures.terrain.s3_image_uri": {"$exists": True}}
+        ]
+    }))
+    
+    return [serialize_mongo_doc(biome) for biome in biomes]
+
+def extract_all_images_from_biome(biome_id: str) -> List[Dict[str, Any]]:
+    """Extract all images from a specific biome"""
+    db = get_db()
+    if db is None:
+        logger_db.error("Database connection is not available.")
+        return []
+    
+    biome = db["biomes"].find_one({"_id": biome_id})
+    if not biome:
+        return []
+    
+    images = []
+    image_fields = ['image_url', 's3_image_uri']
+    
+    def find_images(obj, category=""):
+        if isinstance(obj, dict):
+            # Check if this object has an image
+            for field in image_fields:
+                if field in obj and obj[field]:
+                    images.append({
+                        "url": obj[field],
+                        "name": obj.get('description', 'Unnamed'),
+                        "type": category,
+                        "status": obj.get('status', 'unknown')
+                    })
+                    break
+            
+            # Search nested objects
+            for key, value in obj.items():
+                find_images(value, category or key)
+                
+        elif isinstance(obj, list):
+            for item in obj:
+                find_images(item, category)
+    
+    # Search through all structures
+    structures = biome.get('possible_structures', {})
+    for category, items in structures.items():
+        if isinstance(items, dict):
+            for name, details in items.items():
+                find_images(details, category)
+    
+    return images
