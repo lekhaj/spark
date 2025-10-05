@@ -1,4 +1,6 @@
 import logging
+from datetime import datetime
+from bson import ObjectId
 from asyncssh import logger
 from pymongo import MongoClient
 from pymongo.database import Database
@@ -68,7 +70,6 @@ def get_db() -> Database | None:
     if db_connection.db is not None:
         return db_connection.db
     try:
-        logger_db.info("Database connection not initialized. Initializing now...")
         db_connection.client = MongoClient(settings.MONGODB_URL)
         db_connection.client.admin.command('ismaster')
         db_connection.db = db_connection.client[settings.MONGODB_DB_NAME]
@@ -80,6 +81,7 @@ def get_db() -> Database | None:
             db_connection.client = None
             db_connection.db = None
             return None
+
 def close_mongo_connection():
     """Closes the connection if it exists."""
     if db_connection.client is not None:
@@ -88,6 +90,7 @@ def close_mongo_connection():
         db_connection.client = None
         db_connection.db = None
         logger_db.info("MongoDB connection closed.")
+
 def fetch_recent():
     """Returns a sort order to fetch the most recent documents first."""
     return [("timestamp", -1)]
@@ -99,6 +102,7 @@ def get_biome(biome_id: str):
     if db is None:
         logger_db.error("Database connection is not available.")
         return None
+    
     biome_collection = db["biomes"]
     from bson import ObjectId
     try:
@@ -232,3 +236,34 @@ def get_biome_choices_live(database_name, collection_name):
     except Exception as e:
         logger_db.error(f"Failed to fetch biomes from collection '{collection_name}': {e}")
         return []
+    # Fix: Use sort properly, not as projection
+    biome = biome_collection.find_one({"_id": biome_id})
+    return serialize_mongo_doc(biome)
+
+def get_data(collection_name: str, limit: int = 5):
+    db = get_db()                     
+    if db is None:
+        logger_db.error("Database not connected.")
+        return []
+    
+    collection = db[collection_name]
+    # Get documents and serialize them
+    documents = list(collection.find({}).limit(limit))
+    return [serialize_mongo_doc(doc) for doc in documents]
+
+    
+def get_assets_by_biome(biome_id: str):
+    db = get_db()
+    if db is None:
+        logger_db.error("Database connection is not available.")
+        return []
+    
+    assets_collection = db["assets"]
+    assets_cursor = assets_collection.find({"_id": biome_id})
+    assets_list = list(assets_cursor)  
+    
+    for asset in assets_list:
+        if '_id' in asset:
+            asset['_id'] = str(asset['_id'])
+    
+    return assets_list

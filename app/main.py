@@ -6,7 +6,7 @@ import redis, json, uuid
 import time
 from enum import Enum
 import asyncio
-
+from app.routes import mongo_routes 
 from app.services.orchestrator_service import orchestrator_main
 from app.services.mongo_service import get_db
 from app.config import settings
@@ -60,6 +60,7 @@ app = FastAPI(title="Dual Model Generation API")
 app.include_router(mongo_router, prefix="/mongo", tags=["MongoDB"])
 app.include_router(aws_router, prefix="/aws", tags=["AWS"])
 
+app.include_router(mongo_routes.router, prefix="") 
 class TaskType(str, Enum):
     IMAGE = "image"
     MODEL_3D = "3d_model"
@@ -83,7 +84,7 @@ async def start_background():
         logger.info("MongoDB connected on startup.")
     else:
         logger.error("MongoDB connection failed on startup.")
-    asyncio.create_task(orchestrator_main())
+    #asyncio.create_task(orchestrator_main())
    
 
 @app.get("/")
