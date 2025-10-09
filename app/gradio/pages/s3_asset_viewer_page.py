@@ -25,12 +25,15 @@ def s3_asset_viewer_ui():
 
         # print("[DEBUG] biome_choices:", biome_choices)
         # Only show dropdown if there are selectable biomes
-        if biome_choices:
-            biome_dropdown = gr.Dropdown(choices=[(name, _id) for name, _id in biome_choices], label="Biome Name", interactive=True, value=biome_choices[0][1])
-        else:
-            biome_dropdown = gr.Dropdown(choices=[], label="Biome Name", interactive=False, visible=False)
+        with gr.Row():
+            if biome_choices:
+                biome_dropdown = gr.Dropdown(choices=[(name, _id) for name, _id in biome_choices], label="Biome Name", interactive=True, value=biome_choices[0][1])
+            else:
+                biome_dropdown = gr.Dropdown(choices=[], label="Biome Name", interactive=False, visible=False)
+            asset_name_box = gr.Textbox(label="Asset Name (optional)", placeholder="Enter asset name (steppe_watchtower)")
+            
         refresh_biomes_button = gr.Button("Refresh Biome List")
-        asset_name_box = gr.Textbox(label="Asset Name (optional)", placeholder="Enter asset name (e.g., steppe_watchtower)")
+        
         fetch_s3_button = gr.Button("Show Images")
         s3_image_uri_output = gr.Textbox(label="Image URI(s)", interactive=False)
         s3_image_display = gr.Gallery(label="Image Gallery", show_label=True, allow_preview=True, columns=3, rows=2, height=400)

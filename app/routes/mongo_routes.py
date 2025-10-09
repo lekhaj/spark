@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from app.services.mongo_service import ping_db, get_data, get_biome,get_assets_by_biome,serialize_mongo_doc,get_db
+from app.services.mongo_service import ping_db, get_data, get_biome,get_assets_by_biome,get_db
 from app.services.redis_service import enqueue_task
 import uuid
 from datetime import datetime
@@ -39,17 +39,6 @@ def read_biome(biome_id: str):
         return {"biome": biome}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/assets/{biome_id}")
-def get_biome_assets(biome_id: str):
-    """
-    Fetch all assets associated with a specific biome
-    """
-    try:
-        assets = get_assets_by_biome(biome_id)
-        return {"biome_id": biome_id, "assets": assets}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
        
 # Create GPU generation task
 @router.post("/generate")
@@ -72,7 +61,7 @@ def generate_asset(req: GenerateRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-from app.services.mongo_service import get_all_biomes_with_images, extract_all_images_from_biome
+from app.services.mongo_service import  extract_all_images_from_biome
 
 @router.get("/biome-images/{biome_id}")
 def get_biome_images(biome_id: str):

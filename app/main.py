@@ -101,7 +101,9 @@ async def submit_image_task(image_request: ImagePromptRequest):
         height=image_request.height,
         num_inference_steps=image_request.num_inference_steps
     )
+    print(task_data)
     r.lpush("image_tasks", json.dumps(task_data))
+    print(task_data)
     print(f"[FastAPI] Image task pushed to Redis: {job_id}")
     return {
         "status": "success", 
