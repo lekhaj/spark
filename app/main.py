@@ -12,6 +12,7 @@ from app.services.mongo_service import get_db
 from app.config import settings
 from app.routes.mongo_routes import router as mongo_router
 from app.routes.aws_routes import router as aws_router
+from app.routes.orchestrator_router import router as orchestrator_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("app")
@@ -60,7 +61,11 @@ app = FastAPI(title="Dual Model Generation API")
 app.include_router(mongo_router, prefix="/mongo", tags=["MongoDB"])
 app.include_router(aws_router, prefix="/aws", tags=["AWS"])
 
-app.include_router(mongo_routes.router, prefix="") 
+app.include_router(mongo_routes.router, prefix="")
+# Orchestrator endpoints (submit_image_tasks, submit_3d_tasks) are exposed under /orchestrate
+app.include_router(orchestrator_router, prefix="/orchestrate", tags=["Orchestrator"])
+# Also expose the same orchestrator router at root so legacy clients can POST to /submit_image_tasks/
+app.include_router(orchestrator_router, prefix="", tags=["Orchestrator"])
 class TaskType(str, Enum):
     IMAGE = "image"
     MODEL_3D = "3d_model"

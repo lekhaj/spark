@@ -79,7 +79,6 @@ def fetch_live_biome_details(database_name, collection_name, doc_id):
         return None
     try:
         collection = db[collection_name]
-        # Try ObjectId, else fallback to string/UUID
         try:
             query_id = ObjectId(doc_id)
         except Exception:
@@ -150,6 +149,16 @@ def update_biomes_dropdown(database_name, collection_name):
         gr.Dropdown(choices=biome_names, value=biome_names[0] if biome_names else None),
         biome_choices
     )
+
+def refresh_orchestrate_biomes(database_name):
+    """Reload choices from the 'biomes' collection and return a Dropdown.update and the choices list."""
+    try:
+        choices = get_biome_choices_live(database_name, "biomes")
+        if not choices:
+            return gr.Dropdown.update(choices=[], value=None), []
+        return gr.Dropdown.update(choices=[(name, _id) for name, _id in choices], value=choices[0][1]), choices
+    except Exception:
+        return gr.Dropdown.update(choices=[], value=None), []
 
 # --- ORCHESTRATOR ENDPOINT CALLERS ---
 def submit_image_tasks_api(biome_id):
@@ -242,7 +251,6 @@ def get_or_create_biome_doc(biome_action_type, new_biome_name, selected_biome_na
         if not doc_id:
             return None, "Selected biome not found."
     return doc_id, None
-
 def _start_2d_task(database_name, collection_name, biome_action_type, new_biome_name, selected_biome_name, biome_choices, prompt):
     """Submits a 2D generation task to the Redis queue."""
     # ... (existing code to get doc_id)
@@ -393,8 +401,13 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
     initial_biome_names = []
     initial_biome_value = None
     initial_biome_choices_val = []
-    if default_db and default_coll:
-        initial_biome_choices_val = get_biome_choices_live(default_db, default_coll)
+    # Prefer explicitly loading from the 'biomes' collection for the Orchestrate tab
+    if default_db:
+        # Try the explicit 'biomes' collection first
+        initial_biome_choices_val = get_biome_choices_live(default_db, "biomes")
+        # Fallback to the default collection if 'biomes' is empty or not present
+        if not initial_biome_choices_val and default_coll:
+            initial_biome_choices_val = get_biome_choices_live(default_db, default_coll)
         initial_biome_names = [name for name, _ in initial_biome_choices_val]
         initial_biome_value = initial_biome_names[0] if initial_biome_names else None
 
@@ -404,10 +417,21 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
             gr.Markdown("## Orchestrate Biome Tasks")
             gr.Markdown("Submit image and 3D generation tasks for a biome using backend orchestration API.")
 
-            biome_id_input = gr.Textbox(label="Biome ID", placeholder="Enter Biome ID")
+            # Biome selection dropdown: show name but value is document id (choices are (label, value))
+            if initial_biome_choices_val:
+                orchestrate_biome_dropdown = gr.Dropdown(
+                    label="Select Biome",
+                    choices=[(name, _id) for name, _id in initial_biome_choices_val],
+                    value=initial_biome_choices_val[0][1],
+                    interactive=True
+                )
+            else:
+                orchestrate_biome_dropdown = gr.Dropdown(label="Select Biome", choices=[], value=None, interactive=False)
+
             submit_image_btn = gr.Button("Submit Image Tasks")
             submit_3d_btn = gr.Button("Submit 3D Tasks")
             orchestration_result = gr.Json(label="Orchestration Result")
+            refresh_biomes_btn = gr.Button("Refresh Biomes")
 
             def submit_image_tasks_gradio(biome_id):
                 try:
@@ -423,243 +447,14 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
                 except Exception as e:
                     return {"error": str(e)}
 
-            submit_image_btn.click(fn=submit_image_tasks_gradio, inputs=[biome_id_input], outputs=[orchestration_result])
-            submit_3d_btn.click(fn=submit_3d_tasks_gradio, inputs=[biome_id_input], outputs=[orchestration_result])
-
-    # S3 Asset Viewer Tab (now second)
+            # Bind clicks: pass the dropdown value (document id) directly to the handlers
+            submit_image_btn.click(fn=submit_image_tasks_gradio, inputs=[orchestrate_biome_dropdown], outputs=[orchestration_result])
+            submit_3d_btn.click(fn=submit_3d_tasks_gradio, inputs=[orchestrate_biome_dropdown], outputs=[orchestration_result])
+            refresh_biomes_btn.click(fn=refresh_orchestrate_biomes, inputs=[gr.State(default_db)], outputs=[orchestrate_biome_dropdown, biome_choices_list])
+        
+        # S3 Asset Viewer Tab
         with gr.TabItem("S3 Asset Viewer"):
             s3_asset_viewer_ui()
-        # Asset Pipeline Tab
-        with gr.TabItem("Asset Pipeline"):
-            gr.Markdown("## ⚙️ MongoDB Connection")
-            gr.Markdown("First, select your database and collection. Then, click 'Refresh Biomes' to populate the dropdown below.")
-
-            with gr.Row():
-                database_dropdown = gr.Dropdown(
-                    label="Select Database",
-                    choices=dbs,
-                    value=default_db,
-                    interactive=True
-                )
-                collection_dropdown = gr.Dropdown(
-                    label="Select Collection",
-                    choices=colls,
-                    value=default_coll,
-                    interactive=True
-                )
-                refresh_button = gr.Button("Refresh Biomes")
-
-            gr.Markdown("## 📦 Asset Generation Pipeline")
-            gr.Markdown("Select a biome to view its asset generation status.")
-
-
-            biome_dropdown = gr.Dropdown(
-                label="Select Biome",
-                choices=initial_biome_names,
-                value=initial_biome_value,
-                interactive=True
-            )
-
-            with gr.Row():
-                submit_image_tasks_btn = gr.Button("Submit All Image Tasks (Orchestrator)")
-                submit_3d_tasks_btn = gr.Button("Submit All 3D Tasks (Orchestrator)")
-            orchestrator_api_result = gr.Textbox(label="Orchestrator API Result", interactive=False, lines=6)
-
-            with gr.Accordion("2D Image Generation", open=True):
-                gr.Markdown("### Status")
-                status_2d_output = gr.Textbox(label="2D Status", show_label=False)
-                gr.Markdown("### Details (JSON)")
-                json_2d_output = gr.Json(label="2D Generation Details")
-                gr.Markdown("### Generated Images")
-                images_2d_gallery = gr.Gallery(label="Generated 2D Images", columns=2)
-
-            with gr.Accordion("3D Model Generation", open=False):
-                gr.Markdown("### Status")
-                status_3d_output = gr.Textbox(label="3D Status", show_label=False)
-                gr.Markdown("### Details (JSON)")
-                json_3d_output = gr.Json(label="3D Generation Details")
-                gr.Markdown("### 3D Model Link")
-                model_link_output = gr.HTML(label="3D Model Link")
-
-            database_dropdown.change(
-                fn=update_collections_dropdown,
-                inputs=[database_dropdown],
-                outputs=[collection_dropdown]
-            )
-            collection_dropdown.change(
-                fn=update_biomes_dropdown,
-                inputs=[database_dropdown, collection_dropdown],
-                outputs=[biome_dropdown, biome_choices_list]
-            )
-            refresh_button.click(
-                fn=update_biomes_dropdown,
-                inputs=[database_dropdown, collection_dropdown],
-                outputs=[biome_dropdown, biome_choices_list]
-            )
-
-
-            biome_dropdown.change(
-                fn=load_biome_pipeline_live,
-                inputs=[biome_dropdown, biome_choices_list, database_dropdown, collection_dropdown],
-                outputs=[current_biome_id, status_2d_output, json_2d_output, images_2d_gallery, status_3d_output, json_3d_output, model_link_output]
-            )
-
-            submit_image_tasks_btn.click(
-                fn=lambda biome_name, biome_choices: submit_image_tasks_api(next((_id for name, _id in biome_choices if name == biome_name), None)) if biome_name else "No biome selected.",
-                inputs=[biome_dropdown, biome_choices_list],
-                outputs=[orchestrator_api_result]
-            )
-            submit_3d_tasks_btn.click(
-                fn=lambda biome_name, biome_choices: submit_3d_tasks_api(next((_id for name, _id in biome_choices if name == biome_name), None)) if biome_name else "No biome selected.",
-                inputs=[biome_dropdown, biome_choices_list],
-                outputs=[orchestrator_api_result]
-            )
-
-        # Text to Image Tab
-        with gr.TabItem("Text to Image"):
-            gr.Markdown("## Text-to-Image Generation")
-            gr.Markdown("Generate 2D images based on a text prompt for a new or existing biome.")
-            
-            with gr.Row():
-                text_to_image_db = gr.Dropdown(label="Select Database", choices=get_database_names(), interactive=True)
-                text_to_image_collection = gr.Dropdown(label="Select Collection", choices=[], interactive=True)
-            
-            with gr.Row():
-                biome_action_type_txt2img = gr.Radio(choices=["Create New Biome", "Select Existing Biome"], value="Create New Biome", label="Biome Action")
-            
-            with gr.Column(visible=True) as new_biome_col_txt2img:
-                new_biome_name_txt2img = gr.Textbox(label="New Biome Name")
-            
-            with gr.Column(visible=False) as existing_biome_col_txt2img:
-                existing_biome_dropdown_txt2img = gr.Dropdown(label="Select Biome", choices=[], interactive=True)
-            
-            task_status_2d = gr.Textbox(label="Task Status", interactive=False)
-            task_id_2d = gr.State(None)
-            
-            text_to_image_prompt = gr.Textbox(label="Text Prompt", placeholder="Describe the biome, e.g., 'a serene crystal cave with luminous flora'")
-            generate_image_button = gr.Button("🚀 Generate Image from Text")
-            
-            with gr.Row():
-                # Corrected: Now calls load_biome_pipeline_live to poll the database
-                check_2d_status_button = gr.Button("Refresh Status")
-                
-            json_2d_results = gr.Json(label="Generation Results")
-            images_2d_results = gr.Gallery(label="Generated Images")
-            
-            text_to_image_db.change(fn=update_collections_dropdown, inputs=[text_to_image_db], outputs=[text_to_image_collection])
-            text_to_image_collection.change(fn=update_biomes_dropdown, inputs=[text_to_image_db, text_to_image_collection], outputs=[existing_biome_dropdown_txt2img, biome_choices_list])
-            biome_action_type_txt2img.change(
-                fn=lambda x: (gr.Column(visible=x=="Create New Biome"), gr.Column(visible=x=="Select Existing Biome")),
-                inputs=biome_action_type_txt2img,
-                outputs=[new_biome_col_txt2img, existing_biome_col_txt2img]
-            )
-            generate_image_button.click(
-                fn=_start_2d_task,
-                inputs=[text_to_image_db, text_to_image_collection, biome_action_type_txt2img, new_biome_name_txt2img, existing_biome_dropdown_txt2img, biome_choices_list, text_to_image_prompt],
-                outputs=[task_id_2d, task_status_2d, json_2d_results]
-            )
-            check_2d_status_button.click(
-                fn=load_biome_pipeline_live,
-                inputs=[existing_biome_dropdown_txt2img, biome_choices_list, text_to_image_db, text_to_image_collection],
-                outputs=[task_id_2d, task_status_2d, json_2d_results, images_2d_results, gr.Textbox(), gr.Json(), gr.HTML()] # Outputs for all tabs, some are placeholders
-            )
-
-        # Grid to Image Tab
-        with gr.TabItem("Grid to Image"):
-            gr.Markdown("## Grid-to-Image Generation")
-            gr.Markdown("Generate 2D images from a grid for a new or existing biome.")
-            
-            with gr.Row():
-                grid_to_image_db = gr.Dropdown(label="Select Database", choices=get_database_names(), interactive=True)
-                grid_to_image_collection = gr.Dropdown(label="Select Collection", choices=[], interactive=True)
-
-            with gr.Row():
-                biome_action_type_grid2img = gr.Radio(choices=["Create New Biome", "Select Existing Biome"], value="Create New Biome", label="Biome Action")
-
-            with gr.Column(visible=True) as new_biome_col_grid2img:
-                new_biome_name_grid2img = gr.Textbox(label="New Biome Name")
-
-            with gr.Column(visible=False) as existing_biome_col_grid2img:
-                existing_biome_dropdown_grid2img = gr.Dropdown(label="Select Biome", choices=[], interactive=True)
-                
-            task_status_grid = gr.Textbox(label="Task Status", interactive=False)
-            task_id_grid = gr.State(None)
-
-            grid_data_input = gr.Textbox(label="Grid Data (JSON array of arrays)", lines=10, placeholder="Example: [[0,0,1,1],[0,1,1,0]]")
-            generate_grid_image_button = gr.Button("Generate Image from Grid")
-            
-            with gr.Row():
-                # Corrected: Now calls load_biome_pipeline_live to poll the database
-                check_grid_status_button = gr.Button("Refresh Status")
-
-            json_grid_results = gr.Json(label="Generation Results")
-            images_grid_results = gr.Gallery(label="Generated Images")
-
-            grid_to_image_db.change(fn=update_collections_dropdown, inputs=[grid_to_image_db], outputs=[grid_to_image_collection])
-            grid_to_image_collection.change(fn=update_biomes_dropdown, inputs=[grid_to_image_db, grid_to_image_collection], outputs=[existing_biome_dropdown_grid2img, biome_choices_list])
-            biome_action_type_grid2img.change(
-                fn=lambda x: (gr.Column(visible=x=="Create New Biome"), gr.Column(visible=x=="Select Existing Biome")),
-                inputs=biome_action_type_grid2img,
-                outputs=[new_biome_col_grid2img, existing_biome_col_grid2img]
-            )
-            generate_grid_image_button.click(
-                fn=_start_grid_task,
-                inputs=[grid_to_image_db, grid_to_image_collection, biome_action_type_grid2img, new_biome_name_grid2img, existing_biome_dropdown_grid2img, biome_choices_list, grid_data_input],
-                outputs=[task_id_grid, task_status_grid, json_grid_results]
-            )
-            check_grid_status_button.click(
-                fn=load_biome_pipeline_live,
-                inputs=[existing_biome_dropdown_grid2img, biome_choices_list, grid_to_image_db, grid_to_image_collection],
-                outputs=[task_id_grid, gr.Textbox(), gr.Json(), images_grid_results, gr.Textbox(), gr.Json(), gr.HTML()] # Outputs for all tabs, some are placeholders
-            )
-
-        # 3D Generation Tab
-        with gr.TabItem("3D Generation"):
-            gr.Markdown("## 3D Model Generation from 2D Image")
-            gr.Markdown("Upload or select a 2D image to generate a 3D GLB model for a new or existing biome.")
-            
-            with gr.Row():
-                _3d_gen_db = gr.Dropdown(label="Select Database", choices=get_database_names(), interactive=True)
-                _3d_gen_collection = gr.Dropdown(label="Select Collection", choices=[], interactive=True)
-
-            with gr.Row():
-                biome_action_type_3d = gr.Radio(choices=["Create New Biome", "Select Existing Biome"], value="Create New Biome", label="Biome Action")
-
-            with gr.Column(visible=True) as new_biome_col_3d:
-                new_biome_name_3d = gr.Textbox(label="New Biome Name")
-
-            with gr.Column(visible=False) as existing_biome_col_3d:
-                existing_biome_dropdown_3d = gr.Dropdown(label="Select Biome", choices=[], interactive=True)
-                
-            task_status_3d = gr.Textbox(label="Task Status", interactive=False)
-            task_id_3d = gr.State(None)
-
-            input_2d_image_for_3d = gr.Image(label="Upload 2D Image", type="pil")
-            generate_3d_button = gr.Button("Generate 3D Model")
-
-            with gr.Row():
-                # Corrected: Now calls load_biome_pipeline_live to poll the database
-                check_3d_status_button = gr.Button("Refresh Status")
-
-            model_link_3d_results = gr.HTML(label="3D Model Link")
-            
-            _3d_gen_db.change(fn=update_collections_dropdown, inputs=[_3d_gen_db], outputs=[_3d_gen_collection])
-            _3d_gen_collection.change(fn=update_biomes_dropdown, inputs=[_3d_gen_db, _3d_gen_collection], outputs=[existing_biome_dropdown_3d, biome_choices_list])
-            biome_action_type_3d.change(
-                fn=lambda x: (gr.Column(visible=x=="Create New Biome"), gr.Column(visible=x=="Select Existing Biome")),
-                inputs=biome_action_type_3d,
-                outputs=[new_biome_col_3d, existing_biome_col_3d]
-            )
-            generate_3d_button.click(
-                fn=_start_3d_task,
-                inputs=[_3d_gen_db, _3d_gen_collection, biome_action_type_3d, new_biome_name_3d, existing_biome_dropdown_3d, biome_choices_list, input_2d_image_for_3d],
-                outputs=[task_id_3d, task_status_3d, model_link_3d_results]
-            )
-            check_3d_status_button.click(
-                fn=load_biome_pipeline_live,
-                inputs=[existing_biome_dropdown_3d, biome_choices_list, _3d_gen_db, _3d_gen_collection],
-                outputs=[task_id_3d, gr.Textbox(), gr.Json(), gr.Gallery(), task_status_3d, gr.Json(), model_link_3d_results] # Outputs for all tabs
-            )
 
         # Asset Decimation Tab
         with gr.TabItem("Asset Decimation"):
