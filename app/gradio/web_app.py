@@ -78,7 +78,6 @@ def fetch_live_biome_details(database_name, collection_name, doc_id):
         return None
     try:
         collection = db[collection_name]
-        # Try ObjectId, else fallback to string/UUID
         try:
             query_id = ObjectId(doc_id)
         except Exception:
@@ -149,6 +148,16 @@ def update_biomes_dropdown(database_name, collection_name):
         gr.Dropdown(choices=biome_names, value=biome_names[0] if biome_names else None),
         biome_choices
     )
+
+def refresh_orchestrate_biomes(database_name):
+    """Reload choices from the 'biomes' collection and return a Dropdown.update and the choices list."""
+    try:
+        choices = get_biome_choices_live(database_name, "biomes")
+        if not choices:
+            return gr.Dropdown.update(choices=[], value=None), []
+        return gr.Dropdown.update(choices=[(name, _id) for name, _id in choices], value=choices[0][1]), choices
+    except Exception:
+        return gr.Dropdown.update(choices=[], value=None), []
 
 # --- ORCHESTRATOR ENDPOINT CALLERS ---
 def submit_image_tasks_api(biome_id):
@@ -241,7 +250,6 @@ def get_or_create_biome_doc(biome_action_type, new_biome_name, selected_biome_na
         if not doc_id:
             return None, "Selected biome not found."
     return doc_id, None
-
 def _start_2d_task(database_name, collection_name, biome_action_type, new_biome_name, selected_biome_name, biome_choices, prompt):
     """Submits a 2D generation task to the Redis queue."""
     # ... (existing code to get doc_id)
@@ -392,8 +400,13 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
     initial_biome_names = []
     initial_biome_value = None
     initial_biome_choices_val = []
-    if default_db and default_coll:
-        initial_biome_choices_val = get_biome_choices_live(default_db, default_coll)
+    # Prefer explicitly loading from the 'biomes' collection for the Orchestrate tab
+    if default_db:
+        # Try the explicit 'biomes' collection first
+        initial_biome_choices_val = get_biome_choices_live(default_db, "biomes")
+        # Fallback to the default collection if 'biomes' is empty or not present
+        if not initial_biome_choices_val and default_coll:
+            initial_biome_choices_val = get_biome_choices_live(default_db, default_coll)
         initial_biome_names = [name for name, _ in initial_biome_choices_val]
         initial_biome_value = initial_biome_names[0] if initial_biome_names else None
 
@@ -407,76 +420,46 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
             gr.Markdown("## Orchestrate Biome Tasks")
             gr.Markdown("Submit image and 3D generation tasks for a biome using backend orchestration API.")
 
-            with gr.Row():
-                database_dropdown_orch = gr.Dropdown(
-                    choices=dbs,
-                    value=default_db,
-                    label="Database",
-                    interactive=True
-                )
-                collection_dropdown_orch = gr.Dropdown(
-                    choices=colls,
-                    value=default_coll,
-                    label="Collection", 
-                    interactive=True
-                )
-                biome_dropdown_orch = gr.Dropdown(
-                    choices=initial_biome_names,
-                    value=initial_biome_value,
+            # Biome selection dropdown: show name but value is document id (choices are (label, value))
+            if initial_biome_choices_val:
+                orchestrate_biome_dropdown = gr.Dropdown(
                     label="Select Biome",
+                    choices=[(name, _id) for name, _id in initial_biome_choices_val],
+                    value=initial_biome_choices_val[0][1],
                     interactive=True
                 )
-                biome_choices_orch = gr.State(initial_biome_choices_val)
-
-            # Update collections when database changes
-            database_dropdown_orch.change(
-                fn=update_collections_dropdown,
-                inputs=[database_dropdown_orch],
-                outputs=[collection_dropdown_orch]
-            )
-
-            # Update biomes when collection changes  
-            collection_dropdown_orch.change(
-                fn=update_biomes_dropdown,
-                inputs=[database_dropdown_orch, collection_dropdown_orch],
-                outputs=[biome_dropdown_orch, biome_choices_orch]
-            )
+            else:
+                orchestrate_biome_dropdown = gr.Dropdown(label="Select Biome", choices=[], value=None, interactive=False)
 
             submit_image_btn = gr.Button("Submit Image Tasks")
             submit_3d_btn = gr.Button("Submit 3D Tasks")
             orchestration_result = gr.Json(label="Orchestration Result")
+            refresh_biomes_btn = gr.Button("Refresh Biomes")
 
-            def submit_image_tasks_gradio(database_name, collection_name, biome_name, biome_choices):
-                doc_id = next((_id for name, _id in biome_choices if name == biome_name), None)
-                if not doc_id:
-                    return {"error": "Selected biome not found"}
+            def submit_image_tasks_gradio(biome_id):
                 try:
-                    resp = requests.post(f"{API_BASE_URL}/submit_image_task/", params={"biome_id": doc_id})
+                    resp = requests.post(f"http://localhost:8000/submit_image_tasks/", params={"biome_id": biome_id})
                     return resp.json()
                 except Exception as e:
                     return {"error": str(e)}
 
-            def submit_3d_tasks_gradio(database_name, collection_name, biome_name, biome_choices):
-                doc_id = next((_id for name, _id in biome_choices if name == biome_name), None)
-                if not doc_id:
-                    return {"error": "Selected biome not found"}
+            def submit_3d_tasks_gradio(biome_id):
                 try:
-                    resp = requests.post(f"{API_BASE_URL}/submit_3d_task/", params={"biome_id": doc_id})
+                    resp = requests.post(f"http://localhost:8000/submit_3d_tasks/", params={"biome_id": biome_id})
                     return resp.json()
                 except Exception as e:
                     return {"error": str(e)}
 
-            submit_image_btn.click(
-                fn=submit_image_tasks_gradio, 
-                inputs=[database_dropdown_orch, collection_dropdown_orch, biome_dropdown_orch, biome_choices_orch], 
-                outputs=[orchestration_result]
-            )
-            submit_3d_btn.click(
-                fn=submit_3d_tasks_gradio, 
-                inputs=[database_dropdown_orch, collection_dropdown_orch, biome_dropdown_orch, biome_choices_orch], 
-                outputs=[orchestration_result]
-            )
-        # Asset Decimation Tab 
+            # Bind clicks: pass the dropdown value (document id) directly to the handlers
+            submit_image_btn.click(fn=submit_image_tasks_gradio, inputs=[orchestrate_biome_dropdown], outputs=[orchestration_result])
+            submit_3d_btn.click(fn=submit_3d_tasks_gradio, inputs=[orchestrate_biome_dropdown], outputs=[orchestration_result])
+            refresh_biomes_btn.click(fn=refresh_orchestrate_biomes, inputs=[gr.State(default_db)], outputs=[orchestrate_biome_dropdown, biome_choices_list])
+        
+        # S3 Asset Viewer Tab
+        with gr.TabItem("S3 Asset Viewer"):
+            s3_asset_viewer_ui()
+
+        # Asset Decimation Tab
         with gr.TabItem("Asset Decimation"):
             decimation_page_ui()
             

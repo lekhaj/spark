@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime
 from bson import ObjectId
-from asyncssh import logger
+# from asyncssh import logger
 from pymongo import MongoClient
 from pymongo.database import Database
 from pymongo.errors import PyMongoError
@@ -43,25 +43,54 @@ def biome_assets_for_task(biome_id: str, status_filter: str = "not complete"):
             for asset_name, asset in assets.items():
                 # If asset is a dict and has a status field
                 if isinstance(asset, dict) and asset.get("status") == status_filter:
-                    # Try to get s3_3d_url and image_url from top level or from attributes
-                    s3_3d_url = asset.get("s3_3d_url")
-                    image_url = asset.get("image_url")
-                    # If not found at top level, check attributes
-                    if not s3_3d_url and isinstance(asset.get("attributes"), dict):
-                        s3_3d_url = asset["attributes"].get("s3_3d_url")
-                    if not image_url and isinstance(asset.get("attributes"), dict):
-                        image_url = asset["attributes"].get("image_url")
-                    result[asset_name] = {
-                        "name": asset_name,
-                        "description": asset.get("description", ""),
-                        "status": asset.get("status", ""),
-                        "type": asset.get("type", ""),
-                        "background_prompt": asset.get("background_prompt", ""),
-                        "attributes": asset.get("attributes", {}),
-                        "id": asset.get("id", None),
-                        "s3_3d_url": s3_3d_url,
-                        "image_url": image_url
-                    }
+                    # Try to get 3D S3 URL and image S3 URL from several possible key names
+                        # possible keys for image URL (top-level or within attributes)
+                        image_keys = ["image_s3_url", "image_url", "s3_image_url", "s3_image_uri"]
+                        s3_3d_keys = ["s3_3d_url", "s3_3d_uri", "3d_s3_url", "s3_model_url"]
+
+                        image_url = None
+                        s3_3d_url = None
+
+                        # check top-level keys first
+                        for k in image_keys:
+                            if k in asset and asset.get(k):
+                                image_url = asset.get(k)
+                                break
+                        for k in s3_3d_keys:
+                            if k in asset and asset.get(k):
+                                s3_3d_url = asset.get(k)
+                                break
+
+                        # then check inside attributes dict if present
+                        attrs = asset.get("attributes") if isinstance(asset.get("attributes"), dict) else {}
+                        if not image_url:
+                            for k in image_keys:
+                                if k in attrs and attrs.get(k):
+                                    image_url = attrs.get(k)
+                                    break
+                        if not s3_3d_url:
+                            for k in s3_3d_keys:
+                                if k in attrs and attrs.get(k):
+                                    s3_3d_url = attrs.get(k)
+                                    break
+
+                        # Fallback: if still no image_url but attributes contains 'image_url' or 's3_image_url' as nested
+                        if not image_url and isinstance(asset.get("attributes"), dict):
+                            image_url = asset["attributes"].get("image_url") or asset["attributes"].get("s3_image_url")
+
+                        result[asset_name] = {
+                            "name": asset_name,
+                            "description": asset.get("description", ""),
+                            "status": asset.get("status", ""),
+                            "type": asset.get("type", ""),
+                            "background_prompt": asset.get("background_prompt", ""),
+                            "attributes": asset.get("attributes", {}),
+                            "id": asset.get("id", None),
+                            "s3_3d_url": s3_3d_url,
+                            # provide both fields for compatibility: 'image_url' (legacy) and 'image_s3_url' (preferred)
+                            "image_url": image_url,
+                            "image_s3_url": image_url,
+                        }
         return result
     except Exception as e:
         return {"error": str(e)}
@@ -237,19 +266,19 @@ def get_biome_choices_live(database_name, collection_name):
         logger_db.error(f"Failed to fetch biomes from collection '{collection_name}': {e}")
         return []
     # Fix: Use sort properly, not as projection
-    biome = biome_collection.find_one({"_id": biome_id})
-    return biome#serialize_mongo_doc(biome)
+    # biome = biome_collection.find_one({"_id": biome_id})
+    # return serialize_mongo_doc(biome)
 
-# def get_data(collection_name: str, limit: int = 20):
-#     db = get_db()                     
-#     if db is None:
-#         logger_db.error("Database not connected.")
-#         return []
+def get_data(collection_name: str, limit: int = 5):
+    db = get_db()                     
+    if db is None:
+        logger_db.error("Database not connected.")
+        return []
     
-#     collection = db[collection_name]
-#     # Get documents and serialize them
-#     documents = list(collection.find({}).limit(limit))
-#     return [serialize_mongo_doc(doc) for doc in documents]
+    collection = db[collection_name]
+    # Get documents and serialize them
+    documents = list(collection.find({}).limit(limit))
+    return [json_util.loads(json_util.dumps(doc)) for doc in documents]
 
     
 def get_assets_by_biome(biome_id: str):
@@ -267,70 +296,3 @@ def get_assets_by_biome(biome_id: str):
             asset['_id'] = str(asset['_id'])
     
     return assets_list
-# def get_all_biomes_with_images() -> List[Dict[str, Any]]:
-#     """Retrieve all biomes that have at least one image"""
-#     db = get_db()
-#     if db is None:
-#         logger_db.error("Database connection is not available.")
-#         return []
-    
-#     # Search for biomes with any image field
-#     biomes = list(db["biomes"].find({
-#         "$or": [
-#             {"possible_structures.buildings.image_url": {"$exists": True}},
-#             {"possible_structures.props.image_url": {"$exists": True}},
-#             {"possible_structures.creatures.image_url": {"$exists": True}},
-#             {"possible_structures.terrain.image_url": {"$exists": True}},
-#             {"possible_structures.buildings.s3_image_uri": {"$exists": True}},
-#             {"possible_structures.props.s3_image_uri": {"$exists": True}},
-#             {"possible_structures.creatures.s3_image_uri": {"$exists": True}},
-#             {"possible_structures.terrain.s3_image_uri": {"$exists": True}}
-#         ]
-#     }))
-    
-#     return [serialize_mongo_doc(biome) for biome in biomes]
-from typing import List, Dict, Any
-
-def extract_all_images_from_biome(biome_id: str) -> List[Dict[str, Any]]:
-    """Extract all images from a specific biome"""
-    db = get_db()
-    if db is None:
-        logger_db.error("Database connection is not available.")
-        return []
-    
-    biome = db["biomes"].find_one({"_id": biome_id})
-    if not biome:
-        return []
-    
-    images = []
-    image_fields = ['image_url', 's3_image_uri']
-    
-    def find_images(obj, category=""):
-        if isinstance(obj, dict):
-            # Check if this object has an image
-            for field in image_fields:
-                if field in obj and obj[field]:
-                    images.append({
-                        "url": obj[field],
-                        "name": obj.get('description', 'Unnamed'),
-                        "type": category,
-                        "status": obj.get('status', 'unknown')
-                    })
-                    break
-            
-            # Search nested objects
-            for key, value in obj.items():
-                find_images(value, category or key)
-                
-        elif isinstance(obj, list):
-            for item in obj:
-                find_images(item, category)
-    
-    # Search through all structures
-    structures = biome.get('possible_structures', {})
-    for category, items in structures.items():
-        if isinstance(items, dict):
-            for name, details in items.items():
-                find_images(details, category)
-    
-    return images
