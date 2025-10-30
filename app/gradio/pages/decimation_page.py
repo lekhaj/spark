@@ -32,7 +32,7 @@ def start_decimation_process(database_name: str, collection_name: str, biome_nam
         return "Selected biome not found."
     try:
         if asset_name == "All Assets":
-            result = f"_ing decimation for ALL assets in biome '{biome_name}' (ID: {biome_id})\n"
+            result = f"Starting decimation for ALL assets in biome '{biome_name}' (ID: {biome_id})\n"
             result += "This would normally trigger the full biome decimation process.\n"
             result += "Note: Full biome processing should be run on the GPU server with Blender."
         else:
@@ -108,7 +108,8 @@ def decimation_page_ui():
         asset_choices = [("All Assets", "all")]
         if default_biome:
             # biome_assets_for_task returns dict of asset_name: asset_dict
-            assets_dict = biome_assets_for_task(default_biome, status_filter="3d asset generated")
+            # Use the normalized status token '3d_generated' (matches asset.status)
+            assets_dict = biome_assets_for_task(default_biome, status_filter="3d_generated")
             if isinstance(assets_dict, dict):
                 asset_choices += [
                     (f"{v.get('type','').title() if isinstance(v, dict) else 'Asset'}: {k}", k)
@@ -140,7 +141,8 @@ def decimation_page_ui():
             if not biome_id:
                 return gr.Dropdown(choices=[("All Assets", "all")], value="all")
             try:
-                assets_dict = biome_assets_for_task(biome_id, status_filter="3d asset generated")
+                # Use normalized status token so assets with status == '3d_generated' are returned
+                assets_dict = biome_assets_for_task(biome_id, status_filter="3d_generated")
                 asset_choices = [("All Assets", "all")]
                 if isinstance(assets_dict, dict):
                     asset_choices += [
@@ -158,7 +160,7 @@ def decimation_page_ui():
             import subprocess, json
             db_name = settings.MONGODB_DB_NAME
             biome_name_display = next((name for name, _id in biome_choices if _id == biome_id), biome_id)
-            assets_dict = biome_assets_for_task(biome_id, status_filter="3d asset generated")
+            assets_dict = biome_assets_for_task(biome_id, status_filter="3d_generated")
             if not isinstance(assets_dict, dict) or not assets_dict:
                 yield "No assets ready for decimation."
                 return
@@ -182,20 +184,44 @@ def decimation_page_ui():
             os.makedirs(models_folder, exist_ok=True)
             os.makedirs(output_folder, exist_ok=True)
 
+            # Ensure log accumulator exists even if no Blender run occurs or all assets are skipped
+            log_accum = ""
+
             for category, asset_name, asset in assets_to_decimate:
                 update_key = get_biome_asset_update_key(biome_id, asset_name)
-                s3_3d_url = asset.get('s3_3d_url')
-                if not s3_3d_url:
-                    yield f"[ERROR] Asset '{asset_name}' has no s3_3d_url, skipping."
+                # Inline priority selection: painted -> mesh -> s3_3d_url (only if status == '3d_generated')
+                input_url = None
+                if isinstance(asset, dict):
+                    attrs = asset.get("attributes") if isinstance(asset.get("attributes"), dict) else {}
+                    # painted first
+                    if asset.get("painted_url"):
+                        input_url = asset.get("painted_url")
+                    elif attrs.get("painted_url"):
+                        input_url = attrs.get("painted_url")
+                    # then mesh
+                    if not input_url:
+                        if asset.get("mesh_url"):
+                            input_url = asset.get("mesh_url")
+                        elif attrs.get("mesh_url"):
+                            input_url = attrs.get("mesh_url")
+                    # finally s3_3d_url only if status indicates generated
+                    if not input_url and asset.get("status") == "3d_generated":
+                        if attrs.get("s3_3d_url"):
+                            input_url = attrs.get("s3_3d_url")
+                        elif asset.get("s3_3d_url"):
+                            input_url = asset.get("s3_3d_url")
+
+                if not input_url:
+                    yield f"[ERROR] Asset '{asset_name}' has no usable input URL (painted/mesh/s3_3d_url with status=3d_generated), skipping."
                     continue
                 try:
-                    parsed = urlparse(s3_3d_url)
+                    parsed = urlparse(input_url)
                     bucket = parsed.netloc.split('.')[0] if parsed.netloc else bucket_name
                     key = parsed.path.lstrip('/')
                     s3_filename = os.path.basename(key)
                     local_file = os.path.abspath(os.path.join(models_folder, s3_filename))
                     download_from_s3(bucket, key, local_file)
-                    yield f"[S3] Downloaded {s3_3d_url} to {local_file}"
+                    yield f"[S3] Downloaded {input_url} to {local_file}"
                 except Exception as e:
                     yield f"[ERROR] Failed to download s3_3d_url for {asset_name}: {e}"
                     if update_key:
@@ -205,7 +231,21 @@ def decimation_page_ui():
                     update_or_add_biome_asset(biome_id, update_key, {"decimation_status": "queued"})
                 decimated_assets = {}
                 success_count = 0
-                blender_path = r"C:\\Program Files\\Blender Foundation\\Blender 4.5\\blender.exe"
+                # Resolve blender binary using config, PATH, or common locations
+                import shutil
+                blender_path = getattr(settings, "BLENDER_PATH", None)
+                if not blender_path:
+                    blender_path = shutil.which("blender")
+                if not blender_path:
+                    p = "/usr/bin/blender"
+                    if os.path.exists(p) and os.access(p, os.X_OK):
+                        blender_path = p
+                if not blender_path:
+                    # Inform user and mark asset as error in Mongo if possible
+                    yield f"[ERROR] Blender executable not found. Set BLENDER_PATH in .env or install blender on PATH on this host."
+                    if update_key:
+                        update_or_add_biome_asset(biome_id, update_key, {"decimation_status": "error", "decimation_error": "Blender executable not found"})
+                    continue
                 decimation_script = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'decimate_only.py'))
                 blender_cmd = [
                     blender_path,
@@ -215,9 +255,47 @@ def decimation_page_ui():
                     asset_name,
                     local_file
                 ]
-                yield f"[INFO] Running Blender command: {' '.join(blender_cmd)}"
+                yield f"[INFO] Using Blender binary: {blender_path}\n[INFO] Running Blender command: {' '.join(blender_cmd)}"
                 try:
-                    process = subprocess.Popen(blender_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+                    # Prepare a constrained environment for Blender to reduce CPU/RAM/IO pressure
+                    env = os.environ.copy()
+                    # Allow overrides from settings, default to 2 threads for BLAS/OMP
+                    env.update({
+                        "OMP_NUM_THREADS": str(getattr(settings, "BLENDER_OMP_THREADS", 2)),
+                        "MKL_NUM_THREADS": str(getattr(settings, "BLENDER_MKL_THREADS", 2)),
+                        "OPENBLAS_NUM_THREADS": str(getattr(settings, "BLENDER_OPENBLAS_THREADS", 2)),
+                        "BLIS_NUM_THREADS": str(getattr(settings, "BLENDER_BLIS_THREADS", 2)),
+                    })
+
+                    # On POSIX, lower niceness and ignore SIGINT in the child via preexec_fn
+                    preexec = None
+                    try:
+                        if os.name != 'nt':
+                            def _preexec():
+                                try:
+                                    # lower CPU priority (use configured niceness)
+                                    os.nice(getattr(settings, "BLENDER_NICE", 10))
+                                except Exception:
+                                    pass
+                                # ignore Ctrl-C in child so parent handles termination
+                                try:
+                                    import signal
+                                    signal.signal(signal.SIGINT, signal.SIG_IGN)
+                                except Exception:
+                                    pass
+                            preexec = _preexec
+                    except Exception:
+                        preexec = None
+
+                    process = subprocess.Popen(
+                        blender_cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        bufsize=1,
+                        env=env,
+                        preexec_fn=preexec
+                    )
                     output_lines = []
                     output_json = None
                     log_accum = ""
