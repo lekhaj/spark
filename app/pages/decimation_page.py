@@ -159,6 +159,15 @@ def decimation_page_ui():
             db_name = settings.MONGODB_DB_NAME
             biome_name_display = next((name for name, _id in biome_choices if _id == biome_id), biome_id)
             assets_dict = biome_assets_for_task(biome_id, status_filter="3d asset generated")
+            # --- DEBUG MARKER: write a small log file so we can confirm the handler was invoked
+            try:
+                debug_log = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../decimation_handler_debug.log'))
+                with open(debug_log, 'a', encoding='utf-8') as _df:
+                    _df.write(f"HANDLER_INVOKED {time.strftime('%Y-%m-%d %H:%M:%S')} coll={coll_name} biome={biome_id} asset={asset_id}\n")
+                yield f"[HANDLER] invoked; debug marker written to {debug_log}"
+            except Exception:
+                # best-effort debug write; don't break main flow if it fails
+                yield "[HANDLER] invoked; could not write debug marker (permission/error)"
             if not isinstance(assets_dict, dict) or not assets_dict:
                 yield "No assets ready for decimation."
                 return
@@ -205,8 +214,44 @@ def decimation_page_ui():
                     update_or_add_biome_asset(biome_id, update_key, {"decimation_status": "queued"})
                 decimated_assets = {}
                 success_count = 0
-                blender_path = r"C:\\Program Files\\Blender Foundation\\Blender 4.5\\blender.exe"
+                # Resolve blender executable:
+                # priority: settings.BLENDER_PATH -> executable on PATH -> Windows default
+                import shutil, platform
+                blender_path = None
+                try:
+                    if getattr(settings, 'BLENDER_PATH', None):
+                        cand = settings.BLENDER_PATH
+                        # allow either absolute path or a name resolvable via PATH
+                        if os.path.isabs(cand) and os.path.exists(cand):
+                            blender_path = cand
+                        else:
+                            # try resolving via PATH
+                            found = shutil.which(cand)
+                            if found:
+                                blender_path = found
+                    if not blender_path:
+                        # try to find 'blender' on PATH
+                        found = shutil.which('blender')
+                        if found:
+                            blender_path = found
+                    if not blender_path and platform.system() == 'Windows':
+                        win_default = r"C:\\Program Files\\Blender Foundation\\Blender 4.5\\blender.exe"
+                        if os.path.exists(win_default):
+                            blender_path = win_default
+                except Exception:
+                    blender_path = None
+
                 decimation_script = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../decimate_only.py'))
+                # If we still don't have blender, emit a helpful message instead of crashing
+                if not blender_path:
+                    msg = (f"[ERROR] Blender executable not found. Set BLENDER_PATH in your environment to the correct "
+                           f"binary, or install Blender on PATH. Attempted to resolve via settings and PATH.")
+                    yield msg
+                    if update_key:
+                        update_or_add_biome_asset(biome_id, update_key, {"decimation_status": "error", "decimation_error": msg})
+                    continue
+                else:
+                    yield f"[INFO] Using Blender executable: {blender_path}"
                 blender_cmd = [
                     blender_path,
                     "--background",
