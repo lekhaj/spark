@@ -1,7 +1,13 @@
 
 import logging
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from contextlib import asynccontextmanager
+from datetime import datetime
+from typing import Any, Optional, List
+
+from fastapi import FastAPI, HTTPException, Request
+from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
+
 import redis, json, uuid
 import time
 from enum import Enum
@@ -13,6 +19,10 @@ from app.config import settings
 from app.routes.mongo_routes import router as mongo_router
 from app.routes.aws_routes import router as aws_router
 from app.routes.orchestrator_router import router as orchestrator_router
+
+# Bring in the generator and DB helpers from the biome package
+from app.src_biome_gen import database as db_module
+from app.src_biome_gen.biome_generator import create_new_biome
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("app")
@@ -95,6 +105,152 @@ async def start_background():
 @app.get("/")
 def home():
     return {"message": "Dual model generation API - Image prompts & 3D model tasks"}
+
+
+# --- Biome generation endpoints (moved from c_main.py) ---
+# In-memory background task store for lightweight single-node async tasks
+_BG_TASKS: dict[str, dict | None] = {}
+
+
+class BiomeGenerationRequest(BaseModel):
+    theme_prompt: Any = Field(
+        ...,
+        example="A sun-scorched desert planet where giant crystalline cacti harvest lightning."
+    )
+    system_prompt: Any | None = None
+
+
+class BiomeGenerationResponse(BaseModel):
+    success: bool
+    message: Optional[str] = None
+    biome_name: Optional[str] = None
+    biome_document: Optional[dict] = None
+
+
+class BiomeListResponse(BaseModel):
+    biome_names: List[str]
+
+
+@app.post("/biomes/async/", tags=["Generation"])
+async def generate_biome_async(request: BiomeGenerationRequest):
+    """Schedule generation in a thread and return a task id immediately."""
+    prompt_raw = request.theme_prompt
+    system_raw = request.system_prompt
+    try:
+        if not isinstance(prompt_raw, str):
+            import json as _json
+
+            prompt_text = _json.dumps(prompt_raw, ensure_ascii=False)
+        else:
+            prompt_text = prompt_raw
+    except Exception:
+        prompt_text = str(prompt_raw)
+
+    task_id = str(uuid.uuid4())
+    _BG_TASKS[task_id] = None
+
+    async def _run_and_store():
+        try:
+            res = await run_in_threadpool(create_new_biome, prompt_text, system_raw)
+            _BG_TASKS[task_id] = {
+                "success": res.success,
+                "message": res.message,
+                "biome_name": res.biome_name,
+                "biome_document": getattr(res, "biome_document", None),
+            }
+        except Exception as e:
+            _BG_TASKS[task_id] = {"success": False, "message": f"Task failed: {e}"}
+
+    asyncio.create_task(_run_and_store())
+    return {"task_id": task_id, "status": "queued"}
+
+
+@app.get("/biomes/result/{task_id}", tags=["Generation"])
+async def get_biome_result(task_id: str):
+    if task_id not in _BG_TASKS:
+        raise HTTPException(status_code=404, detail="Task id not found")
+    value = _BG_TASKS[task_id]
+    if value is None:
+        return {"status": "pending"}
+    return {"status": "success", "result": value}
+
+
+@app.post("/biomes/", response_model=BiomeGenerationResponse, status_code=201, tags=["Generation"])
+async def generate_biome_endpoint(request: BiomeGenerationRequest):
+    """Generates a new biome based on a creative theme prompt."""
+    try:
+        start_time = datetime.now().isoformat()
+        prompt_raw = request.theme_prompt
+        try:
+            if not isinstance(prompt_raw, str):
+                import json as _json
+                prompt_text = _json.dumps(prompt_raw, ensure_ascii=False)
+            else:
+                prompt_text = prompt_raw
+        except Exception:
+            prompt_text = str(prompt_raw)
+
+        logging.info(f"Starting biome inference at {start_time} for theme: '{prompt_text}'")
+        result = await run_in_threadpool(create_new_biome, prompt_text, request.system_prompt)
+
+        try:
+            import re
+            match = re.search(r"'_id': '([a-f0-9\-]+)'", result.message)
+            inference_uid = match.group(1) if match else "unknown"
+        except Exception:
+            inference_uid = "unknown"
+
+        logging.info(f"[INFER-{inference_uid}] Started at {start_time}")
+        logging.info(f"[INFER-{inference_uid}] Biome generation result: {result.message}")
+        logging.info(f"[INFER-{inference_uid}] Finished at {datetime.now().isoformat()}")
+        return {
+            "success": result.success,
+            "message": result.message,
+            "biome_name": result.biome_name,
+            "biome_document": getattr(result, "biome_document", None)
+        }
+    except Exception as e:
+        logging.error(f"Exception during inference: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="An unexpected internal server error occurred.")
+
+
+@app.post("/biomes/raw", response_model=BiomeGenerationResponse, status_code=201, tags=["Generation"])
+async def generate_biome_raw(request: Request):
+    try:
+        body_bytes = await request.body()
+        if not body_bytes:
+            raise HTTPException(status_code=400, detail="Empty request body")
+        prompt_text = body_bytes.decode("utf-8", errors="replace")
+        start_time = datetime.now().isoformat()
+        logging.info(f"Starting biome inference (raw) at {start_time} for theme: '{prompt_text}'")
+        result = await run_in_threadpool(create_new_biome, prompt_text, None)
+        return {
+            "success": result.success,
+            "message": result.message,
+            "biome_name": result.biome_name,
+            "biome_document": getattr(result, "biome_document", None),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error("Exception during raw inference: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="An unexpected internal server error occurred.")
+
+
+@app.get("/biomes/", response_model=BiomeListResponse, tags=["Retrieval"])
+async def list_biomes_endpoint():
+    biome_names = await run_in_threadpool(db_module.get_all_biome_names)
+    if biome_names is None:
+        raise HTTPException(status_code=500, detail="Failed to retrieve biome list from the database.")
+    return {"biome_names": biome_names}
+
+
+@app.get("/biomes/{biome_name}", tags=["Retrieval"])
+async def get_biome_endpoint(biome_name: str):
+    biome_data = await run_in_threadpool(db_module.get_biome_by_name, biome_name)
+    if biome_data is None:
+        raise HTTPException(status_code=404, detail=f"Biome '{biome_name}' not found.")
+    return biome_data
 
 @app.post("/submit_image_task/")
 async def submit_image_task(image_request: ImagePromptRequest):

@@ -11,6 +11,7 @@ from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure, OperationFailure
 from app.gradio.pages.s3_asset_viewer_page import s3_asset_viewer_ui
 from app.gradio.pages.decimation_page import decimation_page_ui
+from app.gradio.pages.biome_generation_page import mount_into as mount_generator_ui
 from app.services.mongo_service import get_db, get_biome_choices_live
 
 # Load environment variables from .env file
@@ -385,7 +386,15 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
         initial_biome_value = initial_biome_names[0] if initial_biome_names else None
 
     with gr.Tabs() as tabs:
-    # Orchestrate Biome Tab (now first)
+        # Generator Tab (now first)
+        with gr.TabItem("Generate Biome"):
+            mount_generator_ui()
+
+        # S3 Asset Viewer Tab
+        with gr.TabItem("S3 Asset Viewer"):
+            s3_asset_viewer_ui()
+
+        # Orchestrate Biome Tab
         with gr.TabItem("Orchestrate Biome"):
             gr.Markdown("## Orchestrate Biome Tasks")
             gr.Markdown("Submit image and 3D generation tasks for a biome using backend orchestration API.")
@@ -424,30 +433,26 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
             submit_image_btn.click(fn=submit_image_tasks_gradio, inputs=[orchestrate_biome_dropdown], outputs=[orchestration_result])
             submit_3d_btn.click(fn=submit_3d_tasks_gradio, inputs=[orchestrate_biome_dropdown], outputs=[orchestration_result])
             refresh_biomes_btn.click(fn=refresh_orchestrate_biomes, inputs=[], outputs=[orchestrate_biome_dropdown])
-        
-        # S3 Asset Viewer Tab
-        with gr.TabItem("S3 Asset Viewer"):
-            s3_asset_viewer_ui()
 
         # Asset Decimation Tab
         with gr.TabItem("Asset Decimation"):
             decimation_page_ui()
-            
+
         # New Tab for AWS Control
         with gr.TabItem("AWS Control"):
             gr.Markdown("## 🚀 AWS EC2 Instance Control")
             gr.Markdown("Control the GPU and CPU instances directly from this interface.")
-            
+
             status_output = gr.Textbox(label="Status", interactive=False)
-            
+
             with gr.Row():
                 start_gpu_button = gr.Button("Start GPU Instance")
                 stop_gpu_button = gr.Button("Stop GPU Instance")
-            
+
             with gr.Row():
                 start_cpu_button = gr.Button("Start CPU Instance")
                 stop_cpu_button = gr.Button("Stop CPU Instance")
-            
+
             # Button actions
             start_gpu_button.click(
                 fn=lambda: control_aws_instance(instance_type="gpu", action="start"),
@@ -459,7 +464,7 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
                 inputs=[],
                 outputs=[status_output]
             )
-            
+
             start_cpu_button.click(
                 fn=lambda: control_aws_instance(instance_type="cpu", action="start"),
                 inputs=[],

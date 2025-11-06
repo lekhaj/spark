@@ -1,6 +1,7 @@
 
 import gradio as gr
 import json
+import urllib.parse
 from bson.objectid import ObjectId
 from app.services.mongo_service import (
     get_db,
@@ -54,7 +55,10 @@ def s3_asset_viewer_ui():
         with gr.Accordion("3D Assets (status = 3d_generated)", open=False):
             fetch_3d_btn = gr.Button("Fetch 3D Asset URLs")
             three_d_list_output = gr.Markdown("#### 3D Asset URLs")
-            # three_d_gallery = gr.Gallery(label="3D Previews", show_label=True, allow_preview=True, columns=3, rows=2, height=400)
+            # Selector for choosing a model to preview
+            model_select = gr.Dropdown(label="Select 3D Model to Preview", choices=[], value=None, interactive=True)
+            # Area to render action buttons (Open in 3D Viewer, Download)
+            model_action_html = gr.HTML(value="", elem_id="model-action-area")
 
         def s3_to_https(uri):
             if isinstance(uri, str) and uri.startswith("s3://"):
@@ -113,7 +117,7 @@ def s3_asset_viewer_ui():
                     return s3_to_https(attrs.get(k))
 
             # check some other common keys that might store outputs
-            EXTRA_MODEL_KEYS = ("output_key", "output", "output_url", "s3_path", "s3_obj", "s3_key", "result_url", "url")
+            EXTRA_MODEL_KEYS = ("output_url", "s3_path", "s3_key", "result_url", "url")
             for k in EXTRA_MODEL_KEYS:
                 if k in asset and asset.get(k):
                     val = asset.get(k)
@@ -397,7 +401,11 @@ def s3_asset_viewer_ui():
                     md_lines.append(f"- [{label}]({u})")
 
                 md = "\n".join(md_lines)
-                return md
+                # also return the list of choices for model_select as tuples (label, url)
+                choices = [(label_for_url(u), u) for u in unique_urls]
+                # Provide a Dropdown update so Gradio receives choices + an initial value
+                default_value = choices[0][1] if choices else None
+                return md, gr.update(choices=choices, value=default_value)
             except Exception as e:
                 return (f"Error: {e}", [])
 
@@ -413,10 +421,36 @@ def s3_asset_viewer_ui():
             outputs=[biome_json_structured]
         )
 
+        def show_model_actions(model_url):
+            """Return HTML containing an 'Open in 3D Viewer' link (opens new tab) and a download button."""
+            if not model_url:
+                return ""
+            # URL-encode model url safely
+            encoded = urllib.parse.quote(model_url, safe=':/')
+            viewer_url = f"https://3dviewer.net/#model={encoded}"
+            # Build HTML with two buttons/links side-by-side
+            html = (
+                f'<div style="display:flex;gap:12px;align-items:center">'
+                f'<a href="{viewer_url}" target="_blank" rel="noopener noreferrer" '
+                f'style="padding:8px 12px;background:#0b5fff;color:#fff;border-radius:6px;text-decoration:none;">🔍 Open in 3D Viewer</a>'
+                f'<a href="{model_url}" target="_blank" rel="noopener noreferrer" download '
+                f'style="padding:8px 12px;background:#1f7f46;color:#fff;border-radius:6px;text-decoration:none;">⬇️ Download</a>'
+                f'</div>'
+            )
+            return html
+
+        # When fetching 3D assets, populate the markdown list AND the dropdown choices
         fetch_3d_btn.click(
             fn=fetch_3d_assets,
-            inputs=[biome_dropdown],
-            outputs=[three_d_list_output]
+            inputs=[biome_dropdown, asset_name_box],
+            outputs=[three_d_list_output, model_select]
+        )
+
+        # When user selects a model from the dropdown, render action links/buttons
+        model_select.change(
+            fn=show_model_actions,
+            inputs=[model_select],
+            outputs=[model_action_html]
         )
 
         def refresh_biome_choices():
