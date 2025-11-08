@@ -1,8 +1,15 @@
 
 import gradio as gr
 import json
+import urllib.parse
 from bson.objectid import ObjectId
-from app.services.mongo_service import get_db, get_biome_choices_live, get_biome_asset_update_key, get_biome
+from app.services.mongo_service import (
+    get_db,
+    get_biome_choices_live,
+    get_biome_asset_update_key,
+    get_biome,
+    biome_assets_for_task,
+)
 try:
     from app.config import settings
 except ModuleNotFoundError:
@@ -50,8 +57,11 @@ def s3_asset_viewer_ui():
         # 3D Assets Accordion
         with gr.Accordion("3D Assets (status = 3d_generated)", open=False):
             fetch_3d_btn = gr.Button("Fetch 3D Asset URLs")
-            three_d_list_output = gr.Textbox(label="3D Asset URLs", interactive=False)
-            # three_d_gallery = gr.Gallery(label="3D Previews", show_label=True, allow_preview=True, columns=3, rows=2, height=400)
+            three_d_list_output = gr.Markdown("#### 3D Asset URLs")
+            # Selector for choosing a model to preview
+            model_select = gr.Dropdown(label="Select 3D Model to Preview", choices=[], value=None, interactive=True)
+            # Area to render action buttons (Open in 3D Viewer, Download)
+            model_action_html = gr.HTML(value="", elem_id="model-action-area")
 
         def s3_to_https(uri):
             if isinstance(uri, str) and uri.startswith("s3://"):
@@ -61,56 +71,171 @@ def s3_asset_viewer_ui():
                     return f"https://{bucket}.s3.amazonaws.com/{key}"
             return uri
 
-        def find_all_s3_uris(obj, asset_name=None, parent_key=None):
-            uris = []
-            # consider multiple common key names for image URLs stored in documents
-            keys = [
-                "image_s3_url",
-                "image_url",
-                "s3_image_url",
-            ]
+        # Centralized key lists and small helpers to extract urls from asset dicts.
+        IMAGE_KEYS = ("image_s3_url", "image_url", "s3_image_url", "image_s3_uri")
+        MODEL_KEYS = ("s3_3d_url", "s3_3d_uri", "3d_s3_url", "s3_model_url", "3d_url", "model_url", "mesh_url", "painted_url", "glb_url")
 
-            def collect_all_images(subtree):
-                images = []
-                if isinstance(subtree, dict):
-                    for k, v in subtree.items():
-                        if k in keys and isinstance(v, str) and v:
-                            images.append(s3_to_https(v))
-                        else:
-                            images.extend(collect_all_images(v))
-                elif isinstance(subtree, list):
-                    for item in subtree:
-                        images.extend(collect_all_images(item))
-                return images
+        def _recursive_find_by_ext(o, exts):
+            if isinstance(o, dict):
+                for vk, vv in o.items():
+                    if isinstance(vv, str) and vv.lower().endswith(exts):
+                        return vv
+                    res = _recursive_find_by_ext(vv, exts)
+                    if res:
+                        return res
+            elif isinstance(o, list):
+                for item in o:
+                    res = _recursive_find_by_ext(item, exts)
+                    if res:
+                        return res
+            return None
 
-            if isinstance(obj, dict):
-                for k, v in obj.items():
-                    # If asset_name is provided and matches this key (case-insensitive, stripped), collect all images under this dict (recursively)
-                    if asset_name and asset_name.strip() and str(k).strip().lower() == asset_name.strip().lower():
-                        uris.extend(collect_all_images(v))
-                        continue
-                    # Otherwise, keep searching
-                    if k in keys and isinstance(v, str) and v:
-                        uris.append(s3_to_https(v))
-                    else:
-                        uris.extend(find_all_s3_uris(v, asset_name, k))
-            elif isinstance(obj, list):
-                for item in obj:
-                    uris.extend(find_all_s3_uris(item, asset_name, parent_key))
-            return uris
+        def get_image_url_from_asset(asset):
+            if not isinstance(asset, dict):
+                return None
+            # top-level
+            for k in IMAGE_KEYS:
+                if k in asset and asset.get(k):
+                    return s3_to_https(asset.get(k))
+            # attributes
+            attrs = asset.get("attributes") if isinstance(asset.get("attributes"), dict) else {}
+            for k in IMAGE_KEYS:
+                if k in attrs and attrs.get(k):
+                    return s3_to_https(attrs.get(k))
+            # fallback: find any image-like url
+            img = _recursive_find_by_ext(asset, (".png", ".jpg", ".jpeg", ".webp"))
+            return s3_to_https(img) if img else None
+
+        def get_model_url_from_asset(asset):
+            if not isinstance(asset, dict):
+                return None
+            # check canonical model keys first
+            for k in MODEL_KEYS:
+                if k in asset and asset.get(k):
+                    return s3_to_https(asset.get(k))
+            # check attributes block
+            attrs = asset.get("attributes") if isinstance(asset.get("attributes"), dict) else {}
+            for k in MODEL_KEYS:
+                if k in attrs and attrs.get(k):
+                    return s3_to_https(attrs.get(k))
+
+            # check some other common keys that might store outputs
+            EXTRA_MODEL_KEYS = ("output_url", "s3_path", "s3_key", "result_url", "url")
+            for k in EXTRA_MODEL_KEYS:
+                if k in asset and asset.get(k):
+                    val = asset.get(k)
+                    # if it's an s3 path like generated-images/... or starts with s3://, normalize
+                    if isinstance(val, str):
+                        return s3_to_https(val)
+                    # if it's a dict with a url field, try that
+                    if isinstance(val, dict) and val.get("url"):
+                        return s3_to_https(val.get("url"))
+            for k in EXTRA_MODEL_KEYS:
+                if k in attrs and attrs.get(k):
+                    val = attrs.get(k)
+                    if isinstance(val, str):
+                        return s3_to_https(val)
+                    if isinstance(val, dict) and val.get("url"):
+                        return s3_to_https(val.get("url"))
+
+            # check decimated profiles for a glb/obj url (prefer finished decimation)
+            dec_obj = asset.get("decimated_assets") or asset.get("decimated")
+            if isinstance(dec_obj, dict):
+                # prefer profiles with explicit 'url' or 'glb_url'
+                for prof, prof_val in dec_obj.items():
+                    if isinstance(prof_val, dict):
+                        durl = prof_val.get("url") or prof_val.get("glb_url") or prof_val.get("model_url")
+                        if durl:
+                            return s3_to_https(durl)
+
+            # fallback: search recursively for any string value that ends with a 3D extension
+            found = _recursive_find_by_ext(asset, (".glb", ".gltf", ".fbx", ".obj"))
+            if found:
+                return s3_to_https(found)
+
+            # lastly, if any nested dict has a 'url' that looks like an s3 path, use it
+            def _find_url_field(o):
+                if isinstance(o, dict):
+                    for vk, vv in o.items():
+                        if isinstance(vv, str) and (vv.startswith("s3://") or vv.startswith("http")) and any(vv.lower().endswith(ext) for ext in (".glb", ".gltf", ".fbx", ".obj")):
+                            return vv
+                        if isinstance(vv, dict) and vv.get("url"):
+                            u = vv.get("url")
+                            if isinstance(u, str) and any(u.lower().endswith(ext) for ext in (".glb", ".gltf", ".fbx", ".obj")):
+                                return u
+                        res = _find_url_field(vv)
+                        if res:
+                            return res
+                elif isinstance(o, list):
+                    for item in o:
+                        res = _find_url_field(item)
+                        if res:
+                            return res
+                return None
+
+            last = _find_url_field(asset)
+            return s3_to_https(last) if last else None
+
+        def get_decimated_info_from_asset(asset):
+            dec_obj = asset.get("decimated_assets") or asset.get("decimated")
+            if not isinstance(dec_obj, dict):
+                return None
+            # determine if decimation is done (top-level flag or any profile marked complete)
+            decimation_done = False
+            top_status = asset.get("decimation_status")
+            if isinstance(top_status, str) and top_status.lower() in ("complete", "completed", "done"):
+                decimation_done = True
+            for prof_val in dec_obj.values():
+                if isinstance(prof_val, dict) and prof_val.get("status") and str(prof_val.get("status")).lower() in ("complete", "completed", "done"):
+                    decimation_done = True
+                    break
+            if not decimation_done:
+                return None
+            out = {}
+            for prof_name, prof_val in dec_obj.items():
+                if not isinstance(prof_val, dict):
+                    continue
+                durl = prof_val.get("url") or prof_val.get("glb_url")
+                if not durl:
+                    continue
+                out[prof_name] = {
+                    "url": s3_to_https(durl),
+                    "poly_before": prof_val.get("poly_before"),
+                    "poly_after": prof_val.get("poly_after"),
+                    "reduction_ratio": prof_val.get("reduction_ratio"),
+                }
+            return out if out else None
+
+        # legacy recursive search removed — use get_image_url_from_asset / get_model_url_from_asset helpers instead
+
+        def collect_possible_structure_assets(biome_doc):
+            """Collect all assets from possible_structures categories and return list of (name, asset)."""
+            target = []
+            if not isinstance(biome_doc, dict):
+                return target
+            possible_structures = biome_doc.get("possible_structures", {})
+            for category in ["buildings", "creatures", "props", "terrain"]:
+                assets = possible_structures.get(category, {})
+                if isinstance(assets, dict):
+                    for name, asset in assets.items():
+                        target.append((name, asset))
+            return target
 
         def fetch_images(biome_id, asset_name):
             try:
                 db = get_db()
                 if db is None or not biome_id or biome_id == "none":
                     return ("No biome selected or DB unavailable.", None)
+                all_uris = []
+                biome_doc = None
                 # If asset_name is provided, try to get only that asset dict
                 if asset_name and asset_name.strip():
                     update_key = get_biome_asset_update_key(biome_id, asset_name.strip())
                     if not update_key:
                         return (f"Asset '{asset_name}' not found in biome.", None)
-                    # Fetch the asset dict directly
                     biome_doc = get_biome(biome_id)
+                    if not biome_doc:
+                        return ("Biome not found", None)
                     # Traverse to the asset dict using the update_key
                     def get_nested(d, path):
                         for k in path:
@@ -124,14 +249,40 @@ def s3_asset_viewer_ui():
                     asset_dict = get_nested(biome_doc, asset_path)
                     if not asset_dict:
                         return (f"Asset '{asset_name}' not found in biome.", None)
-                    all_uris = find_all_s3_uris(asset_dict)
+                    # asset_dict may be a mapping of assets or single asset
+                    if isinstance(asset_dict, dict) and any(k in asset_dict for k in ("status", "attributes", "image_url", "image_s3_url")):
+                        url = get_image_url_from_asset(asset_dict)
+                        if url:
+                            all_uris.append(url)
+                    elif isinstance(asset_dict, dict):
+                        for n, a in asset_dict.items():
+                            if not isinstance(a, dict):
+                                continue
+                            url = get_image_url_from_asset(a)
+                            if url:
+                                all_uris.append(url)
                 else:
-                    # No asset name: search whole biome
-                    collection = db["biomes"]
-                    biome_doc = collection.find_one({"_id": biome_id})
-                    if not biome_doc:
-                        return ("Biome not found", None)
-                    all_uris = find_all_s3_uris(biome_doc)
+                    # No asset name: prefer using helper that returns normalized asset map
+                    try:
+                        assets_map = biome_assets_for_task(biome_id, status_filter="")
+                    except Exception:
+                        assets_map = {}
+                    if assets_map and isinstance(assets_map, dict):
+                        for a in assets_map.values():
+                            url = get_image_url_from_asset(a)
+                            if url:
+                                all_uris.append(url)
+                    else:
+                        biome_doc = get_biome(biome_id)
+                        if not biome_doc:
+                            return ("Biome not found", None)
+                        target_assets = collect_possible_structure_assets(biome_doc)
+                        for name, a in target_assets:
+                            if not isinstance(a, dict):
+                                continue
+                            url = get_image_url_from_asset(a)
+                            if url:
+                                all_uris.append(url)
                 if all_uris:
                     return ("\n".join(all_uris), all_uris)
                 else:
@@ -165,7 +316,7 @@ def s3_asset_viewer_ui():
                 if not biome_doc:
                     return ("Biome not found", [])
 
-                # If asset_name provided, try to resolve the specific asset dict similar to fetch_images
+                # Resolve target assets (either single asset or whole biome)
                 target_assets = []
                 if asset_name and asset_name.strip():
                     update_key = get_biome_asset_update_key(biome_id, asset_name.strip())
@@ -185,62 +336,79 @@ def s3_asset_viewer_ui():
                     if not asset_dict:
                         return (f"Asset '{asset_name}' not found in biome.", [])
 
-                    # asset_dict could be a dict of assets or a single asset
-                    if isinstance(asset_dict, dict):
-                        # If it looks like a single asset (has status or attributes), treat it directly
-                        if any(k in asset_dict for k in ("status", "attributes", "image_s3_url", "model_url")):
-                            target_assets.append((asset_name, asset_dict))
-                        else:
-                            # treat as mapping of many assets
-                            for n, a in asset_dict.items():
-                                target_assets.append((n, a))
+                    if isinstance(asset_dict, dict) and any(k in asset_dict for k in ("status", "attributes", "image_url", "model_url")):
+                        target_assets.append((asset_name, asset_dict))
+                    elif isinstance(asset_dict, dict):
+                        for n, a in asset_dict.items():
+                            target_assets.append((n, a))
                 else:
-                    # No asset filter: scan possible_structures categories
-                    possible_structures = biome_doc.get("possible_structures", {})
-                    for category in ["buildings", "creatures", "props", "terrain"]:
-                        assets = possible_structures.get(category, {})
-                        for name, asset in assets.items():
-                            target_assets.append((name, asset))
-
-                keys_3d = ["s3_3d_url", "3d_url", "model_url", "s3_model_url"]
+                    try:
+                        # fetch all assets (don't filter by status) so we can return every model URL
+                        assets_map = biome_assets_for_task(biome_id, status_filter="")
+                    except Exception:
+                        assets_map = {}
+                    if assets_map and isinstance(assets_map, dict):
+                        for name, a in assets_map.items():
+                            target_assets.append((name, a))
+                    else:
+                        target_assets = collect_possible_structure_assets(biome_doc)
                 urls = []
-                gallery_previews = []
                 for name, asset in target_assets:
                     if not isinstance(asset, dict):
                         continue
-                    # only consider assets marked 3d_generated
-                    if asset.get("status") != "3d_generated":
-                        continue
-                    found = None
-                    for k in keys_3d:
-                        if k in asset and asset.get(k):
-                            found = asset.get(k)
-                            break
-                    if not found and isinstance(asset.get("attributes"), dict):
-                        for k in keys_3d:
-                            if k in asset["attributes"] and asset["attributes"].get(k):
-                                found = asset["attributes"].get(k)
-                                break
-                    if found:
-                        urls.append(s3_to_https(found))
-                        # preview image
-                        preview = None
-                        for img_key in ["image_s3_url", "image_url", "s3_image_url"]:
-                            if img_key in asset and asset.get(img_key):
-                                preview = s3_to_https(asset.get(img_key))
-                                break
-                        if not preview and isinstance(asset.get("attributes"), dict):
-                            for img_key in ["image_s3_url", "image_url", "s3_image_url"]:
-                                if img_key in asset["attributes"] and asset["attributes"].get(img_key):
-                                    preview = s3_to_https(asset["attributes"].get(img_key))
-                                    break
-                        if preview:
-                            gallery_previews.append(preview)
+                    # primary model url (mesh / glb / model_url)
+                    model_url = get_model_url_from_asset(asset)
+                    if model_url:
+                        urls.append(model_url)
 
-                if urls:
-                    gallery = gallery_previews if gallery_previews else urls
-                    return ("\n".join(urls), gallery)
-                return ("No 3D assets with status '3d_generated' found.", [])
+                    # painted mesh (commonly in attributes.paint* or painted_url)
+                    painted = None
+                    if isinstance(asset.get("attributes"), dict):
+                        painted = asset["attributes"].get("painted_url") or asset["attributes"].get("painted_s3_url")
+                    painted = painted or asset.get("painted_url") or asset.get("painted_s3_url")
+                    if painted:
+                        urls.append(s3_to_https(painted))
+
+                    # include any decimated profile urls (only if present)
+                    dec_info = get_decimated_info_from_asset(asset)
+                    if isinstance(dec_info, dict):
+                        for prof, info in dec_info.items():
+                            if isinstance(info, dict) and info.get("url"):
+                                urls.append(info.get("url"))
+
+                # deduplicate while preserving order
+                seen = set()
+                unique_urls = []
+                for u in urls:
+                    if not u:
+                        continue
+                    if u not in seen:
+                        seen.add(u)
+                        unique_urls.append(u)
+
+                # Build a Markdown-formatted, labeled list of links for nicer display
+                import os
+                def label_for_url(u):
+                    ln = os.path.basename(u)
+                    lower = u.lower()
+                    if "painted" in lower:
+                        return f"Painted — {ln}"
+                    if "decimated" in lower or "decimate" in lower:
+                        return f"Decimated — {ln}"
+                    return f"Model — {ln}"
+
+                md_lines = [f"### 3D Assets ({len(unique_urls)})\n"]
+                for u in unique_urls:
+                    label = label_for_url(u)
+                    # Markdown link
+                    md_lines.append(f"- [{label}]({u})")
+
+                md = "\n".join(md_lines)
+                # also return the list of choices for model_select as tuples (label, url)
+                choices = [(label_for_url(u), u) for u in unique_urls]
+                # Provide a Dropdown update so Gradio receives choices + an initial value
+                default_value = choices[0][1] if choices else None
+                return md, gr.update(choices=choices, value=default_value)
             except Exception as e:
                 return (f"Error: {e}", [])
 
@@ -256,10 +424,36 @@ def s3_asset_viewer_ui():
             outputs=[biome_json_structured]
         )
 
+        def show_model_actions(model_url):
+            """Return HTML containing an 'Open in 3D Viewer' link (opens new tab) and a download button."""
+            if not model_url:
+                return ""
+            # URL-encode model url safely
+            encoded = urllib.parse.quote(model_url, safe=':/')
+            viewer_url = f"https://3dviewer.net/#model={encoded}"
+            # Build HTML with two buttons/links side-by-side
+            html = (
+                f'<div style="display:flex;gap:12px;align-items:center">'
+                f'<a href="{viewer_url}" target="_blank" rel="noopener noreferrer" '
+                f'style="padding:8px 12px;background:#0b5fff;color:#fff;border-radius:6px;text-decoration:none;">🔍 Open in 3D Viewer</a>'
+                f'<a href="{model_url}" target="_blank" rel="noopener noreferrer" download '
+                f'style="padding:8px 12px;background:#1f7f46;color:#fff;border-radius:6px;text-decoration:none;">⬇️ Download</a>'
+                f'</div>'
+            )
+            return html
+
+        # When fetching 3D assets, populate the markdown list AND the dropdown choices
         fetch_3d_btn.click(
             fn=fetch_3d_assets,
-            inputs=[biome_dropdown],
-            outputs=[three_d_list_output]
+            inputs=[biome_dropdown, asset_name_box],
+            outputs=[three_d_list_output, model_select]
+        )
+
+        # When user selects a model from the dropdown, render action links/buttons
+        model_select.change(
+            fn=show_model_actions,
+            inputs=[model_select],
+            outputs=[model_action_html]
         )
 
         def refresh_biome_choices():

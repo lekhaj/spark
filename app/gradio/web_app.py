@@ -11,6 +11,7 @@ from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure, OperationFailure
 from app.gradio.pages.s3_asset_viewer_page import s3_asset_viewer_ui
 from app.gradio.pages.decimation_page import decimation_page_ui
+from app.gradio.pages.biome_generation_page import mount_into as mount_generator_ui
 from app.services.mongo_service import get_db, get_biome_choices_live
 
 # Load environment variables from .env file
@@ -149,15 +150,10 @@ def update_biomes_dropdown(database_name, collection_name):
         biome_choices
     )
 
-def refresh_orchestrate_biomes(database_name):
-    """Reload choices from the 'biomes' collection and return a Dropdown.update and the choices list."""
-    try:
-        choices = get_biome_choices_live(database_name, "biomes")
-        if not choices:
-            return gr.Dropdown.update(choices=[], value=None), []
-        return gr.Dropdown.update(choices=[(name, _id) for name, _id in choices], value=choices[0][1]), choices
-    except Exception:
-        return gr.Dropdown.update(choices=[], value=None), []
+def refresh_orchestrate_biomes():
+    from app.config import settings
+    biome_choices = get_biome_choices_live(settings.MONGODB_DB_NAME, "biomes")
+    return gr.update(choices=[(name, _id) for name, _id in biome_choices], value=biome_choices[0][1] if biome_choices else None)
 
 # --- ORCHESTRATOR ENDPOINT CALLERS ---
 def submit_image_tasks_api(biome_id):
@@ -283,28 +279,6 @@ def _start_2d_task(database_name, collection_name, biome_action_type, new_biome_
     
     return (gr.State(doc_id), status_message, initial_data)
 
-def _start_grid_task(database_name, collection_name, biome_action_type, new_biome_name, selected_biome_name, biome_choices, grid_data_str):
-    """Simulates starting a Grid to Image generation task."""
-    doc_id, msg = get_or_create_biome_doc(biome_action_type, new_biome_name, selected_biome_name, biome_choices, database_name, collection_name)
-    if not doc_id:
-        return (None, "Failed to submit task.", "{}")
-        
-    task_id = f"task-grid-{doc_id}-{int(time.time())}"
-
-    initial_data = {
-        "status": "PENDING",
-        "grid_data": json.loads(grid_data_str),
-        "model_used": "Simulated Grid Model",
-        "generated_images": [],
-        "timestamp": time.time()
-    }
-    update_live_biome_details(database_name, collection_name, doc_id, "grid_generation_details", initial_data)
-    
-    print(f"Task {task_id} for Grid generation submitted. Status: PENDING")
-    
-    return (gr.State(task_id), "Task submitted: PENDING", initial_data)
-
-
 def _start_3d_task(database_name, collection_name, biome_action_type, new_biome_name, selected_biome_name, biome_choices, input_2d_image):
     """Submits a 3D generation task to the Redis queue."""
     # ... (existing code)
@@ -411,11 +385,15 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
         initial_biome_value = initial_biome_names[0] if initial_biome_names else None
 
     with gr.Tabs() as tabs:
-        # S3 Asset Viewer Tab 
+        # Generator Tab (now first)
+        with gr.TabItem("Generate Biome"):
+            mount_generator_ui()
+
+        # S3 Asset Viewer Tab
         with gr.TabItem("S3 Asset Viewer"):
             s3_asset_viewer_ui()
-            
-        # Orchestrate Biome Tab 
+
+        # Orchestrate Biome Tab
         with gr.TabItem("Orchestrate Biome"):
             gr.Markdown("## Orchestrate Biome Tasks")
             gr.Markdown("Submit image and 3D generation tasks for a biome using backend orchestration API.")
@@ -453,31 +431,27 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
             # Bind clicks: pass the dropdown value (document id) directly to the handlers
             submit_image_btn.click(fn=submit_image_tasks_gradio, inputs=[orchestrate_biome_dropdown], outputs=[orchestration_result])
             submit_3d_btn.click(fn=submit_3d_tasks_gradio, inputs=[orchestrate_biome_dropdown], outputs=[orchestration_result])
-            refresh_biomes_btn.click(fn=refresh_orchestrate_biomes, inputs=[gr.State(default_db)], outputs=[orchestrate_biome_dropdown, biome_choices_list])
-        
-        # S3 Asset Viewer Tab
-        with gr.TabItem("S3 Asset Viewer"):
-            s3_asset_viewer_ui()
+            refresh_biomes_btn.click(fn=refresh_orchestrate_biomes, inputs=[], outputs=[orchestrate_biome_dropdown])
 
         # Asset Decimation Tab
         with gr.TabItem("Asset Decimation"):
             decimation_page_ui()
-            
-        # New Tab for AWS Control 
+
+        # New Tab for AWS Control
         with gr.TabItem("AWS Control"):
             gr.Markdown("## 🚀 AWS EC2 Instance Control")
             gr.Markdown("Control the GPU and CPU instances directly from this interface.")
-            
+
             status_output = gr.Textbox(label="Status", interactive=False)
-            
+
             with gr.Row():
                 start_gpu_button = gr.Button("Start GPU Instance")
                 stop_gpu_button = gr.Button("Stop GPU Instance")
-            
+
             with gr.Row():
                 start_cpu_button = gr.Button("Start CPU Instance")
                 stop_cpu_button = gr.Button("Stop CPU Instance")
-            
+
             # Button actions
             start_gpu_button.click(
                 fn=lambda: control_aws_instance(instance_type="gpu", action="start"),
@@ -489,7 +463,7 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
                 inputs=[],
                 outputs=[status_output]
             )
-            
+
             start_cpu_button.click(
                 fn=lambda: control_aws_instance(instance_type="cpu", action="start"),
                 inputs=[],

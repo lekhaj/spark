@@ -33,6 +33,16 @@ class Settings(BaseSettings):
     
     GPU_SSH_USER: str
     GPU_PUBLIC_IP:str
+    # Optional explicit blender executable path (set in .env on the host that will run Blender)
+    BLENDER_PATH: str | None = None
+    # Resource tuning for Blender worker (controls threaded libraries)
+    # These defaults are conservative for small EC2 instances. Override in .env per host.
+    BLENDER_OMP_THREADS: int = 2
+    BLENDER_MKL_THREADS: int = 2
+    BLENDER_OPENBLAS_THREADS: int = 2
+    BLENDER_BLIS_THREADS: int = 2
+    # Niceness to apply when launching Blender on POSIX systems (higher is lower priority)
+    BLENDER_NICE: int = 10
 
   
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding='utf-8',extra="ignore" )

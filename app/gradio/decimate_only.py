@@ -1,465 +1,331 @@
 import bpy
 import os
 import sys
-import bmesh
-
 import json
-from mathutils import Vector
+import time
 
+# ---------------- CONFIGURATION PARAMETERS ----------------
 
+# --- Quality & Stability ---
+# Controls the poly count of the master bake mesh. Smaller values are higher quality
+# but use more memory. Aim for a base mesh higher than your highest LOD target.
+VOXEL_SIZE = 0.015 
 
+# Detail level for baking. 3 is stable, 4 is high quality.
+MULTIRES_LEVELS = 4 
 
+# --- Baking & Seam Fix ---
+BAKE_RESOLUTION = 2048
+BAKE_MARGIN = 16
+CAGE_EXTRUSION = 0.1
+MAX_RAY_DISTANCE = 0.1
 
+# --- Decimation Profiles ---
+# IMPORTANT: List from HIGHEST poly count to LOWEST for progressive decimation.
 DECIMATION_PROFILES = [
-    ("5k", 5000, "COLLAPSE", None),
-    ("6k", 6000, "COLLAPSE", None),
-    ("8k", 8000, "COLLAPSE", None),
-    ("10k", 10000, "COLLAPSE", None),
+    ("10k", 10000),
+    ("8k", 8000),
+    ("5k", 5000),
 ]
 
 # ---------------- BLENDER OPERATIONS ----------------
-import time
-def preprocess_mesh(obj):
-    """
-    Preprocess the mesh to reduce complexity and clean geometry.
-    This step is modular and can be removed or commented out if not needed.
-    """
-    bpy.ops.object.select_all(action='DESELECT')
-    obj.select_set(True)
-    bpy.context.view_layer.objects.active = obj
-    bpy.ops.object.mode_set(mode='EDIT')
-    bpy.ops.mesh.select_all(action='SELECT')
-    # Merge by distance (remove doubles)
-    try:
-        bpy.ops.mesh.remove_doubles()
-    except Exception as e:
-        print(f"[WARN] remove_doubles failed: {e}")
-    # Remove loose geometry
-    try:
-        bpy.ops.mesh.delete_loose()
-    except Exception as e:
-        print(f"[WARN] delete_loose failed: {e}")
-    bpy.ops.object.mode_set(mode='OBJECT')
-    
+
+def log(message):
+    """Prints a message to the console (standard output) with a timestamp."""
+    print(f"[{time.strftime('%H:%M:%S')}] {message}")
+
 def clear_scene():
+    log("INFO: Clearing scene...")
     bpy.ops.object.select_all(action='SELECT')
     bpy.ops.object.delete(use_global=False)
-    if hasattr(bpy.ops.outliner, "orphans_purge"):
-        bpy.ops.outliner.orphans_purge(do_local_ids=True, do_linked_ids=True, do_recursive=True)
+    for block in bpy.data.meshes: bpy.data.meshes.remove(block)
+    for block in bpy.data.materials: bpy.data.materials.remove(block)
+    for block in bpy.data.textures: bpy.data.textures.remove(block)
+    for block in bpy.data.images: bpy.data.images.remove(block)
+    log("INFO: Scene cleared.")
 
-def import_glb(filepath):
-    bpy.ops.import_scene.gltf(filepath=filepath)
+def import_model(filepath):
+    log(f"INFO: Importing model from: {filepath}")
+    if not os.path.exists(filepath):
+        raise FileNotFoundError(f"File not found: {filepath}")
+    
+    ext = os.path.splitext(filepath)[1].lower()
+    if ext in ['.glb', '.gltf']:
+        bpy.ops.import_scene.gltf(filepath=filepath)
+    elif ext == '.obj':
+        bpy.ops.import_scene.obj(filepath=filepath)
+    else:
+        raise NotImplementedError(f"Unsupported file type: {ext}")
+    
     for obj in bpy.context.selected_objects:
         if obj.type == 'MESH':
             bpy.context.view_layer.objects.active = obj
+            log(f"INFO: Imported mesh object: {obj.name} with {len(obj.data.polygons)} polygons.")
             return obj
-    return None
+    raise TypeError("No mesh object found in the imported file.")
 
-def remesh_mesh(obj, voxel_size=0.001):
-    bpy.ops.object.select_all(action='DESELECT')
-    obj.select_set(True)
-    bpy.context.view_layer.objects.active = obj
-    remesh = obj.modifiers.new("Remesh", 'REMESH')
-    remesh.mode = 'VOXEL'
-    remesh.voxel_size = voxel_size
-    remesh.use_smooth_shade = True
-    bpy.ops.object.modifier_apply(modifier=remesh.name)
-
-def quadify_mesh(obj):
-    bpy.ops.object.select_all(action='DESELECT')
-    obj.select_set(True)
+def preprocess_mesh(obj):
+    log(f"INFO: Preprocessing mesh: {obj.name}")
     bpy.context.view_layer.objects.active = obj
     bpy.ops.object.mode_set(mode='EDIT')
     bpy.ops.mesh.select_all(action='SELECT')
-    bpy.ops.mesh.tris_convert_to_quads()
+    bpy.ops.mesh.remove_doubles(threshold=0.001)
+    bpy.ops.mesh.delete_loose()
     bpy.ops.object.mode_set(mode='OBJECT')
+    log("INFO: Preprocessing complete.")
 
-def decimate_mesh(obj, threshold, mode, param):
-    face_count = len(obj.data.polygons)
-    if face_count <= threshold:
-        return
+def create_retopo_mesh(source_obj, voxel_size, multires_levels):
+    log("INFO: Creating projected master LOD for baking...")
+    
     bpy.ops.object.select_all(action='DESELECT')
-    obj.select_set(True)
-    bpy.context.view_layer.objects.active = obj
-    mod = obj.modifiers.new("Decimate", "DECIMATE")
-    if mode == 'COLLAPSE':
-        mod.decimate_type = 'COLLAPSE'
-        mod.ratio = min(1.0, threshold / face_count)
-    elif mode == 'UNSUBDIV':
-        mod.decimate_type = 'UNSUBDIV'
-        mod.iterations = int(param)
-    else:
-        mod.decimate_type = 'PLANAR'
-        mod.angle_limit = param
-    bpy.ops.object.modifier_apply(modifier=mod.name)
+    source_obj.select_set(True)
+    bpy.context.view_layer.objects.active = source_obj
+    bpy.ops.object.duplicate()
+    lowpoly_obj = bpy.context.selected_objects[0]
+    lowpoly_obj.name = f"{source_obj.name}_Retopo"
+    
+    log(f"INFO: Applying Voxel Remesh with size: {voxel_size} to create a base shell...")
+    remesh_mod = lowpoly_obj.modifiers.new(name="VoxelRemesh", type='REMESH')
+    remesh_mod.mode = 'VOXEL'
+    remesh_mod.voxel_size = voxel_size
+    bpy.ops.object.modifier_apply(modifier=remesh_mod.name)
+    bpy.ops.object.shade_smooth()
+    log(f"INFO: Voxel Remesh complete. Base mesh has {len(lowpoly_obj.data.polygons)} polygons.")
+    
+    log("INFO: Setting up Multiresolution and Shrinkwrap modifiers for detail projection...")
+    multires_mod = lowpoly_obj.modifiers.new(name="Multires", type='MULTIRES')
+    shrinkwrap_mod = lowpoly_obj.modifiers.new(name="Shrinkwrap", type='SHRINKWRAP')
+    shrinkwrap_mod.target = source_obj
+    shrinkwrap_mod.wrap_method = 'PROJECT'
+    
+    log(f"INFO: Subdividing Multires {multires_levels} times to project details...")
+    for i in range(multires_levels):
+        bpy.ops.object.multires_subdivide(modifier=multires_mod.name)
+        log(f"  ...subdivision level {i+1}")
+        
+    log("INFO: Applying Shrinkwrap modifier to capture details...")
+    bpy.ops.object.modifier_apply(modifier=shrinkwrap_mod.name)
+    
+    log("INFO: Master LOD projection complete.")
+    return lowpoly_obj
 
-def set_origin_to_bottom_face_cursor(obj):
-    bpy.ops.object.select_all(action='DESELECT')
-    obj.select_set(True)
-    bpy.context.view_layer.objects.active = obj
-    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+def bake_maps(source_obj, target_obj, asset_name, output_folder, resolution, bake_margin, cage_extrusion, max_ray_distance):
+    """Bakes Diffuse, Normal, Roughness, and AO maps with improved seam handling."""
+    log("--- Starting Full PBR Texture Baking Process ---")
+    
+    log("INFO: Setting up renderer for CPU baking...")
+    bpy.context.scene.render.engine = 'CYCLES'
+    bpy.context.scene.cycles.device = 'CPU'
+    bpy.context.scene.cycles.samples = 16
+    
+    log("INFO: Generating Smart UVs for the low-poly mesh...")
+    bpy.context.view_layer.objects.active = target_obj
     bpy.ops.object.mode_set(mode='EDIT')
-    bm = bmesh.from_edit_mesh(obj.data)
-    bottom_face = min(
-        bm.faces,
-        key=lambda f: sum((obj.matrix_world @ v.co).z for v in f.verts) / len(f.verts)
-    )
-    center = sum(
-        ((obj.matrix_world @ v.co) for v in bottom_face.verts), Vector()
-    ) / len(bottom_face.verts)
+    bpy.ops.mesh.select_all(action='SELECT')
+    bpy.ops.uv.smart_project(angle_limit=66.0, island_margin=0.02)
     bpy.ops.object.mode_set(mode='OBJECT')
-    bpy.context.scene.cursor.location = center
-    bpy.ops.object.origin_set(type='ORIGIN_CURSOR')
-    obj.location = (0, 0, 0)
+    
+    log(f"INFO: Creating new material and {resolution}x{resolution} images...")
+    baked_material = bpy.data.materials.new(name=f"{asset_name}_Baked_Material")
+    baked_material.use_nodes = True
+    nodes = baked_material.node_tree.nodes
+    links = baked_material.node_tree.links
+    nodes.clear()
+    
+    output_node = nodes.new(type='ShaderNodeOutputMaterial')
+    bsdf_node = nodes.new(type='ShaderNodeBsdfPrincipled')
+    
+    diffuse_tex_node = nodes.new(type='ShaderNodeTexImage')
+    normal_tex_node = nodes.new(type='ShaderNodeTexImage')
+    roughness_tex_node = nodes.new(type='ShaderNodeTexImage')
+    ao_tex_node = nodes.new(type='ShaderNodeTexImage')
+    normal_map_node = nodes.new(type='ShaderNodeNormalMap')
+    
+    diffuse_image = bpy.data.images.new(f"{asset_name}_D", width=resolution, height=resolution)
+    normal_image = bpy.data.images.new(f"{asset_name}_N", width=resolution, height=resolution, is_data=True)
+    roughness_image = bpy.data.images.new(f"{asset_name}_R", width=resolution, height=resolution, is_data=True)
+    ao_image = bpy.data.images.new(f"{asset_name}_AO", width=resolution, height=resolution, is_data=True)
 
+    for img in [normal_image, roughness_image, ao_image]:
+        img.colorspace_settings.name = 'Non-Color'
 
+    diffuse_tex_node.image = diffuse_image
+    normal_tex_node.image = normal_image
+    roughness_tex_node.image = roughness_image
+    ao_tex_node.image = ao_image
 
-def export_fbx(filepath, obj):
-    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    links.new(bsdf_node.outputs['BSDF'], output_node.inputs['Surface'])
+    links.new(diffuse_tex_node.outputs['Color'], bsdf_node.inputs['Base Color'])
+    links.new(roughness_tex_node.outputs['Color'], bsdf_node.inputs['Roughness'])
+    links.new(normal_tex_node.outputs['Color'], normal_map_node.inputs['Color'])
+    links.new(normal_map_node.outputs['Normal'], bsdf_node.inputs['Normal'])
+    
+    target_obj.data.materials.clear()
+    target_obj.data.materials.append(baked_material)
+    
     bpy.ops.object.select_all(action='DESELECT')
-    obj.select_set(True)
-    bpy.context.view_layer.objects.active = obj
-    # Pack all external files (textures) into the .blend before export
-    try:
-        bpy.ops.file.pack_all()
-    except Exception as e:
-        print(f"[WARN] Could not pack all textures: {e}")
-    bpy.ops.export_scene.fbx(
-        filepath=filepath,
-        use_selection=True,
-        apply_unit_scale=True,
-        apply_scale_options='FBX_SCALE_ALL',
-        object_types={'MESH'},
-        bake_space_transform=True,
-        embed_textures=True
-    )
+    source_obj.select_set(True)
+    target_obj.select_set(True)
+    bpy.context.view_layer.objects.active = target_obj
+    
+    bake_kwargs = {
+        "use_selected_to_active": True,
+        "max_ray_distance": max_ray_distance,
+        "cage_extrusion": cage_extrusion,
+        "margin": bake_margin
+    }
+
+    log("INFO: Baking Normal map...")
+    nodes.active = normal_tex_node
+    bpy.ops.object.bake(type='NORMAL', **bake_kwargs)
+    normal_image.filepath_raw = os.path.join(output_folder, f"{asset_name}_Normal.png")
+    normal_image.save()
+    log(f"  ...Normal map saved to {normal_image.filepath_raw}")
+    
+    log("INFO: Baking Roughness map...")
+    nodes.active = roughness_tex_node
+    bpy.ops.object.bake(type='ROUGHNESS', **bake_kwargs)
+    roughness_image.filepath_raw = os.path.join(output_folder, f"{asset_name}_Roughness.png")
+    roughness_image.save()
+    log(f"  ...Roughness map saved to {roughness_image.filepath_raw}")
+
+    log("INFO: Baking Ambient Occlusion map...")
+    nodes.active = ao_tex_node
+    bpy.ops.object.bake(type='AO', **bake_kwargs)
+    ao_image.filepath_raw = os.path.join(output_folder, f"{asset_name}_AO.png")
+    ao_image.save()
+    log(f"  ...AO map saved to {ao_image.filepath_raw}")
+
+    log("INFO: Baking Diffuse map...")
+    nodes.active = diffuse_tex_node
+    bpy.ops.object.bake(type='DIFFUSE', pass_filter={'COLOR'}, **bake_kwargs)
+    diffuse_image.filepath_raw = os.path.join(output_folder, f"{asset_name}_Diffuse.png")
+    diffuse_image.save()
+    log(f"  ...Diffuse map saved to {diffuse_image.filepath_raw}")
+    
+    log("--- Texture Baking Complete ---")
+    return baked_material
 
 # ---------------- MAIN PROCESSING ----------------
 
 def main():
-    # Ensure Cycles render engine is set for baking
-    try:
-        import bpy
-        bpy.context.scene.render.engine = 'CYCLES'
-    except Exception as e:
-        print(f"[WARN] Could not set render engine to CYCLES: {e}")
-    # Setup robust logging
-    log_path = None
-    def log(msg):
-        print(msg)
-        if log_path:
-            try:
-                with open(log_path, "a", encoding="utf-8") as f:
-                    f.write(msg + "\n")
-            except Exception as e:
-                print(f"[LOGGING ERROR] Could not write to log file: {e}")
-
     argv = sys.argv
     if "--" not in argv or len(argv) < argv.index("--") + 2:
-        print("Usage: blender --background --python decimate_only.py -- <asset_name> <input_file> [<output_folder>]")
+        print("Usage: blender --background --python your_script.py -- <asset_name> <input_file> [<output_folder>]")
         sys.exit(1)
+        
     args = argv[argv.index("--") + 1:]
-    # Asset name: if not provided, use input file name
+
     input_file = args[1] if len(args) > 1 else None
     if not input_file:
-        print("Input file required.")
+        log("ERROR: Input file is required.")
         sys.exit(1)
-    # Determine asset_name from input file if not provided
+
     if len(args) > 0 and args[0]:
         asset_name = args[0]
     else:
         asset_name = os.path.splitext(os.path.basename(input_file))[0]
-    # Default extension is .fbx
-    file_ext = os.path.splitext(input_file)[1].lower() or '.fbx'
-    # Output folder: use third arg or sibling to input_file called 'decimated_output'
+
     if len(args) > 2 and args[2]:
         output_folder = args[2]
     else:
-        # Default to app/gradio/s3_downloads/decimated_output relative to this script
         workspace_root = os.path.abspath(os.path.join(os.path.dirname(__file__)))
         output_folder = os.path.join(workspace_root, 's3_downloads', 'decimated_output')
+    
     os.makedirs(output_folder, exist_ok=True)
-    log_path = os.path.join(output_folder, "decimation.log")
-    try:
-        with open(log_path, "w", encoding="utf-8") as f:
-            f.write(f"[START] Decimation run for {asset_name} at {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-        print(f"[INFO] Logging to: {log_path}")
-    except Exception as e:
-        print(f"[LOGGING ERROR] Could not create log file: {e}")
-        log_path = None
-    argv = sys.argv
-    if "--" not in argv or len(argv) < argv.index("--") + 2:
-        print("Usage: blender --background --python decimate_only.py -- <asset_name> <input_file> [<output_folder>]")
-        sys.exit(1)
-    args = argv[argv.index("--") + 1:]
-    # Asset name: if not provided, use input file name
-    input_file = args[1] if len(args) > 1 else None
-    if not input_file:
-        print("Input file required.")
-        sys.exit(1)
-    # Determine asset_name from input file if not provided
-    if len(args) > 0 and args[0]:
-        asset_name = args[0]
-    else:
-        asset_name = os.path.splitext(os.path.basename(input_file))[0]
-    # Default extension is .fbx
-    file_ext = os.path.splitext(input_file)[1].lower() or '.fbx'
-    # Output folder: use third arg or sibling to input_file called 'decimated_output'
-    if len(args) > 2 and args[2]:
-        output_folder = args[2]
-    else:
-        output_folder = os.path.join(os.path.dirname(input_file), 'decimated_output')
-    os.makedirs(output_folder, exist_ok=True)
-    def import_model(filepath):
-        ext = os.path.splitext(filepath)[1].lower()
-        if ext == '.glb' or ext == '.gltf':
-            return import_glb(filepath)
-        # Add more importers if needed
-        else:
-            return import_glb(filepath)
+    
     results = {}
-    voxel_size = 0.01  # Increased voxel size to reduce mesh complexity and resource usage
+    
     try:
-        for suffix, threshold, mode, param in DECIMATION_PROFILES:
-            log(f"[INFO] Processing profile: {suffix}, threshold: {threshold}, mode: {mode}")
-            try:
-                clear_scene()
-            except Exception as e:
-                log(f"[ERROR] clear_scene failed: {e}")
-                results[suffix] = {"error": f"clear_scene failed: {str(e)}"}
-                continue
-            try:
-                obj = import_model(input_file)
-            except Exception as e:
-                log(f"[ERROR] import_model failed: {e}")
-                results[suffix] = {"error": f"import_model failed: {str(e)}"}
-                continue
-            if not obj:
-                log(f"[ERROR] Import failed for {input_file}")
-                results[suffix] = {"error": f"Import failed for {input_file}"}
-                continue
-            poly_before = len(obj.data.polygons)
-            # --- Preprocessing step (modular, can be removed if not needed) ---
-            try:
-                preprocess_mesh(obj)
-            except Exception as e:
-                log(f"[WARN] preprocess_mesh failed: {e}")
+        log(f"--- Starting Decimation Process for Asset: {asset_name} ---")
+        log(f"  Input: {input_file}")
+        log(f"  Output: {output_folder}")
+        
+        clear_scene()
+        
+        source_obj = import_model(input_file)
+        
+        preprocess_mesh(source_obj)
+        
+        master_lod = create_retopo_mesh(source_obj, VOXEL_SIZE, MULTIRES_LEVELS)
+        
+        baked_material = bake_maps(source_obj, master_lod, asset_name, output_folder, BAKE_RESOLUTION, BAKE_MARGIN, CAGE_EXTRUSION, MAX_RAY_DISTANCE)
+        master_lod.data.materials.clear()
+        master_lod.data.materials.append(baked_material)
+        
+        log("INFO: Cleaning up high-poly source object...")
+        bpy.data.objects.remove(source_obj, do_unlink=True)
+        
+        log("INFO: Applying multires modifier at base level to create final master LOD...")
+        bpy.context.view_layer.objects.active = master_lod
+        if "Multires" in master_lod.modifiers:
+            mod = master_lod.modifiers["Multires"]
+            mod.levels = 0
+            mod.sculpt_levels = 0
+            mod.render_levels = 0
+            bpy.ops.object.modifier_apply(modifier=mod.name)
 
-            # --- Texture baking setup ---
-            # Duplicate the original mesh for baking reference
-            original_obj = obj
+        log("--- Starting Progressive Decimation ---")
+        
+        current_lod = master_lod.copy()
+        current_lod.data = master_lod.data.copy()
+        bpy.context.collection.objects.link(current_lod)
+
+        for suffix, face_count in DECIMATION_PROFILES:
+            log(f"\n--- Processing Profile: {suffix} (Target: {face_count} faces) ---")
+            
+            bpy.context.view_layer.objects.active = current_lod
+            poly_before = len(current_lod.data.polygons)
+            
+            if poly_before > face_count:
+                log(f"INFO: Decimating from {poly_before} to {face_count} faces...")
+                dec_mod = current_lod.modifiers.new(name="Decimate", type='DECIMATE')
+                dec_mod.decimate_type = 'COLLAPSE'
+                dec_mod.ratio = face_count / poly_before
+                bpy.ops.object.modifier_apply(modifier=dec_mod.name)
+            else:
+                log(f"WARN: Skipping decimation, face count ({poly_before}) is already below target ({face_count}).")
+            
+            poly_after = len(current_lod.data.polygons)
+            log(f"INFO: Final polygon count for {suffix}: {poly_after}")
+            
+            filepath = os.path.join(output_folder, f"{asset_name}_{suffix}.fbx")
+            log(f"INFO: Exporting FBX to: {filepath}")
             bpy.ops.object.select_all(action='DESELECT')
-            original_obj.select_set(True)
-            bpy.context.view_layer.objects.active = original_obj
-            bpy.ops.object.duplicate()
-            baked_obj = bpy.context.selected_objects[0]
-            baked_obj.name = "RemeshedObj"
-
-            # --- Remesh step on duplicate ---
-            try:
-                remesh_mesh(baked_obj, voxel_size=voxel_size)
-            except Exception as e:
-                log(f"[ERROR] Remesh failed: {e}")
-                results[suffix] = {"error": f"Remesh failed: {str(e)}"}
-                bpy.data.objects.remove(baked_obj, do_unlink=True)
-                continue
-
-            # --- Create new UVs for remeshed object ---
-            try:
-                bpy.context.view_layer.objects.active = baked_obj
-                bpy.ops.object.mode_set(mode='EDIT')
-                bpy.ops.mesh.select_all(action='SELECT')
-                bpy.ops.uv.smart_project()
-                bpy.ops.object.mode_set(mode='OBJECT')
-                log("[INFO] UVs created for remeshed object.")
-            except Exception as e:
-                log(f"[WARN] Failed to create UVs for remeshed object: {e}")
-
-            # --- Bake texture from original to remeshed object ---
-            try:
-                # Smart UV Project on source mesh to ensure full UV coverage
-                bpy.context.view_layer.objects.active = original_obj
-                bpy.ops.object.mode_set(mode='EDIT')
-                bpy.ops.mesh.select_all(action='SELECT')
-                bpy.ops.uv.smart_project()
-                bpy.ops.object.mode_set(mode='OBJECT')
-                log("[INFO] Smart UV Project applied to source mesh.")
-                # Assume first material and first image texture node
-                orig_mat = original_obj.active_material
-                if not orig_mat:
-                    raise Exception("No material found on original object.")
-                # Find image texture node on source
-                img_node = None
-                if orig_mat and orig_mat.use_nodes:
-                    for n in orig_mat.node_tree.nodes:
-                        if n.type == 'TEX_IMAGE':
-                            img_node = n
-                            break
-                if not img_node or not img_node.image:
-                    raise Exception("No image texture found on original material.")
-                orig_img = img_node.image
-                # Log source mesh UV layers
-                uv_layers = list(original_obj.data.uv_layers)
-                log(f"[DEBUG] Source mesh UV layers: {[uv.name for uv in uv_layers]}")
-                if not uv_layers:
-                    log("[WARN] Source mesh has no UV layers!")
-                else:
-                    log(f"[DEBUG] Source mesh active UV: {original_obj.data.uv_layers.active.name}")
-                # Log source material node connections
-                if orig_mat.use_nodes:
-                    for node in orig_mat.node_tree.nodes:
-                        if node.type == 'BSDF_PRINCIPLED':
-                            for input in node.inputs:
-                                if input.name == 'Base Color':
-                                    for link in orig_mat.node_tree.links:
-                                        if link.to_socket == input:
-                                            log(f"[DEBUG] Base Color input is linked from: {link.from_node.name}")
-                # Auto-connect image node to Base Color if not already
-                principled = None
-                for node in orig_mat.node_tree.nodes:
-                    if node.type == 'BSDF_PRINCIPLED':
-                        principled = node
-                        break
-                if principled:
-                    base_color_input = principled.inputs['Base Color']
-                    already_linked = any(
-                        link.to_socket == base_color_input and link.from_node == img_node
-                        for link in orig_mat.node_tree.links
-                    )
-                    if not already_linked:
-                        orig_mat.node_tree.links.new(img_node.outputs['Color'], base_color_input)
-                        log("[DEBUG] Connected image node to Base Color input.")
-                # Set source image node as active and selected
-                for n in orig_mat.node_tree.nodes:
-                    n.select = False
-                img_node.select = True
-                orig_mat.node_tree.nodes.active = img_node
-                log(f"[DEBUG] Source image node set active: {img_node.name}, image: {orig_img.name}")
-                # Create new image for baking
-                bake_img = bpy.data.images.new("BakedTexture", width=orig_img.size[0], height=orig_img.size[1])
-                # Create new material for baked_obj
-                baked_mat = bpy.data.materials.new(name="BakedMaterial")
-                baked_mat.use_nodes = True
-                nodes = baked_mat.node_tree.nodes
-                links = baked_mat.node_tree.links
-                nodes.clear()
-                out_node = nodes.new(type='ShaderNodeOutputMaterial')
-                diff_node = nodes.new(type='ShaderNodeBsdfPrincipled')
-                tex_node = nodes.new(type='ShaderNodeTexImage')
-                tex_node.image = bake_img
-                tex_node.select = True  # Ensure node is selected
-                nodes.active = tex_node  # Set as active node
-                links.new(diff_node.outputs['BSDF'], out_node.inputs['Surface'])
-                links.new(tex_node.outputs['Color'], diff_node.inputs['Base Color'])
-                baked_obj.data.materials.clear()
-                baked_obj.data.materials.append(baked_mat)
-                # Ensure UV map exists and is active
-                if not baked_obj.data.uv_layers:
-                    bpy.context.view_layer.objects.active = baked_obj
-                    bpy.ops.object.mode_set(mode='EDIT')
-                    bpy.ops.mesh.select_all(action='SELECT')
-                    bpy.ops.uv.smart_project()
-                    bpy.ops.object.mode_set(mode='OBJECT')
-                baked_obj.data.uv_layers.active_index = 0
-                # Set up bake: select source, make target active
-                bpy.ops.object.select_all(action='DESELECT')
-                original_obj.select_set(True)
-                baked_obj.select_set(True)
-                bpy.context.view_layer.objects.active = baked_obj
-                # Set bake image node as active and selected on target
-                for n in baked_mat.node_tree.nodes:
-                    n.select = False
-                tex_node.select = True
-                baked_mat.node_tree.nodes.active = tex_node
-                log(f"[DEBUG] Target bake image node set active: {tex_node.name}, image: {bake_img.name}")
-                # Bake using EMIT as a test
-                try:
-                    bpy.ops.object.bake(type='EMIT', use_selected_to_active=True, margin=2)
-                    log("[INFO] Texture baked from original to remeshed object using EMIT.")
-                except Exception as e:
-                    log(f"[WARN] EMIT bake failed: {e}, trying DIFFUSE.")
-                    bpy.ops.object.bake(type='DIFFUSE', pass_filter={'COLOR'}, use_selected_to_active=True, margin=2)
-                    log("[INFO] Texture baked from original to remeshed object using DIFFUSE.")
-                # Save the baked image to disk
-                baked_img_path = os.path.join(output_folder, f"{asset_name}_{suffix}_baked.png")
-                bake_img.filepath_raw = baked_img_path
-                bake_img.file_format = 'PNG'
-                bake_img.save()
-                log(f"[INFO] Baked image saved to {baked_img_path}")
-                # Optionally pack the image
-                try:
-                    bake_img.pack()
-                    log("[INFO] Baked image packed into blend file.")
-                except Exception as e:
-                    log(f"[WARN] Could not pack baked image: {e}")
-                # Ensure the baked material references the saved image and is active
-                tex_node.image = bake_img
-                # Set the image texture node as active for export
-                try:
-                    baked_mat.node_tree.nodes.active = tex_node
-                    log("[INFO] Set baked image node as active for export.")
-                except Exception as e:
-                    log(f"[WARN] Could not set baked image node as active: {e}")
-                # Double-check assignment
-                if not tex_node.image or tex_node.image != bake_img:
-                    log(f"[WARN] Baked image not assigned to texture node before export!")
-            except Exception as e:
-                log(f"[WARN] Texture baking failed: {e}")
-
-            # --- Continue pipeline with baked_obj ---
-            obj = baked_obj
-
-            # --- Decimate step ---
-            try:
-                decimate_mesh(obj, threshold, mode, param)
-            except Exception as e:
-                log(f"[ERROR] Decimate failed: {e}")
-                results[suffix] = {"error": f"Decimate failed: {str(e)}"}
-                bpy.data.objects.remove(obj, do_unlink=True)
-                continue
-            # --- Quadify step ---
-            try:
-                quadify_mesh(obj)
-            except Exception as e:
-                log(f"[WARN] Quadify failed: {e}")
-            try:
-                poly_after = len(obj.data.polygons)
-            except Exception as e:
-                log(f"[WARN] Could not get poly_after: {e}")
-                poly_after = None
-            try:
-                set_origin_to_bottom_face_cursor(obj)
-            except Exception as e:
-                log(f"[WARN] set_origin_to_bottom_face_cursor failed: {e}")
-            out_name = f"{asset_name}_{suffix}_decimated.fbx"
-            local_fbx = os.path.join(output_folder, out_name)
-            try:
-                export_fbx(local_fbx, obj)
-            except Exception as e:
-                log(f"[ERROR] export_fbx failed: {e}")
-                results[suffix] = {"error": f"export_fbx failed: {str(e)}"}
-                bpy.data.objects.remove(obj, do_unlink=True)
-                continue
+            current_lod.select_set(True)
+            bpy.ops.export_scene.fbx(
+                filepath=filepath,
+                use_selection=True,
+                apply_scale_options='FBX_SCALE_ALL',
+                object_types={'MESH'},
+                embed_textures=True,
+                path_mode='COPY'
+            )
+            
+            reduction = (poly_before - poly_after) / poly_before if poly_before > 0 and (poly_before - poly_after) > 0 else 0
             results[suffix] = {
-                "local_file": local_fbx,
+                "output_file": filepath,
                 "poly_before": poly_before,
                 "poly_after": poly_after,
-                "reduction_ratio": round((poly_before - poly_after) / poly_before, 3) if poly_before and poly_after else None
+                "reduction_ratio": round(reduction, 3)
             }
-            # Clean up: remove the original object from the scene
-            try:
-                bpy.data.objects.remove(original_obj, do_unlink=True)
-            except Exception as e:
-                log(f"[WARN] Could not remove original object: {e}")
-    except KeyboardInterrupt:
-        log("[INTERRUPT] Script interrupted by user.")
-        results['interrupted'] = {"error": "Script interrupted by user."}
+        
+        log("INFO: Cleaning up temporary LOD objects...")
+        bpy.data.objects.remove(master_lod, do_unlink=True)
+        bpy.data.objects.remove(current_lod, do_unlink=True)
+            
     except Exception as e:
-        log(f"[FATAL] Unhandled exception: {e}")
+        log(f"FATAL ERROR: {e}")
         import traceback
+        # Also log the full traceback to the console
         log(traceback.format_exc())
-        results['fatal'] = {"error": f"Unhandled exception: {str(e)}"}
-    print(json.dumps(results))
+        results['error'] = str(e)
+            
+    finally:
+        # This block ensures the final JSON is printed, even on error.
+        print("\n--- Final Results ---")
+        print(json.dumps(results, indent=2))
+        log("--- Script Finished ---")
 
 if __name__ == "__main__":
     main()

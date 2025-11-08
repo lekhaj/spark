@@ -46,7 +46,7 @@ def biome_assets_for_task(biome_id: str, status_filter: str = "not complete"):
                     # Try to get 3D S3 URL and image S3 URL from several possible key names
                         # possible keys for image URL (top-level or within attributes)
                         image_keys = ["image_s3_url", "image_url", "s3_image_url", "s3_image_uri"]
-                        s3_3d_keys = ["s3_3d_url", "s3_3d_uri", "3d_s3_url", "s3_model_url"]
+                        s3_3d_keys = ["s3_3d_url", "s3_3d_uri", "3d_s3_url", "s3_model_url","painted_url","mesh_url"]
 
                         image_url = None
                         s3_3d_url = None
