@@ -38,7 +38,7 @@ def _attach_generator_widgets() -> Dict[str, object]:
     save_status = gr.Textbox(lines=2, label="Save status", interactive=False)
     current_sys_prompt = gr.State("")
 
-    def generate_prompt(prompt: Any, system_prompt: str | None = None) -> str:
+    def generate_prompt(prompt: Any, system_prompt: str | None = None, save_to_db: bool = True) -> tuple[str, str]:
         # Coerce prompt to a string
         if not isinstance(prompt, str):
             try:
@@ -49,21 +49,33 @@ def _attach_generator_widgets() -> Dict[str, object]:
             prompt_text = prompt
 
         try:
-            result = create_new_biome(prompt_text, system_prompt)
+            result = create_new_biome(prompt_text, system_prompt, save_to_db=save_to_db)
         except Exception:
             import traceback
-            return """Failed to run generator:\n""" + traceback.format_exc()
+            return ("""Failed to run generator:\n""" + traceback.format_exc(), "")
 
+        # If the generator returned a biome document, present that document
+        # directly (this avoids wrapping it in an outer envelope). Also return
+        # the generator message for display in the save status field.
+        biome_doc = getattr(result, "biome_document", None)
+        message = getattr(result, "message", "")
+        if isinstance(biome_doc, dict):
+            try:
+                return (json.dumps(biome_doc, indent=2, ensure_ascii=False), message)
+            except Exception:
+                return (str(biome_doc), message)
+
+        # Fallback: return a small envelope if no document is present
         out_obj = {
             "success": getattr(result, "success", False),
-            "message": getattr(result, "message", None),
+            "message": message,
             "biome_name": getattr(result, "biome_name", None),
-            "biome_document": getattr(result, "biome_document", None),
+            "biome_document": biome_doc,
         }
         try:
-            return json.dumps(out_obj, indent=2, ensure_ascii=False)
+            return (json.dumps(out_obj, indent=2, ensure_ascii=False), message)
         except Exception:
-            return str(out_obj)
+            return (str(out_obj), message)
 
     def on_generate(p, s_input, stored_sys, auto_save_val: bool | None = True):
         """Generate using s_input if non-empty (and update stored prompt); otherwise use stored_sys.
@@ -75,26 +87,11 @@ def _attach_generator_widgets() -> Dict[str, object]:
             new_stored = s_input
             effective_system = s_input
 
-        result_text = generate_prompt(p, effective_system)
-
-        save_msg = ""
-        # If auto-save enabled, try to parse and save the returned JSON/dict
-        try:
-            if auto_save_val:
-                parsed = None
-                try:
-                    parsed = json.loads(result_text)
-                except Exception:
-                    parsed = {"biome_name": None, "generated": result_text}
-
-                if isinstance(parsed, dict):
-                    res = save_biome_document(parsed)
-                    save_msg = f"Auto-save: {res or 'failed or no DB connection'}"
-                else:
-                    save_msg = "Auto-save: could not parse output"
-        except Exception as e:
-            save_msg = f"Auto-save error: {e}"
-
+        # Pass the UI auto-save toggle into the generator so it knows whether
+        # to persist the generated document. generate_prompt returns a tuple
+        # (display_text, save_message) where save_message contains any status
+        # produced during saving.
+        result_text, save_msg = generate_prompt(p, effective_system, save_to_db=bool(auto_save_val))
         return result_text, new_stored, save_msg
 
     def on_clear(stored_sys):
@@ -107,10 +104,11 @@ def _attach_generator_widgets() -> Dict[str, object]:
             parsed = {"biome_name": f"unsaved_{int(__import__('time').time())}", "generated": displayed_text}
 
         try:
+            biome_name = parsed.get("biome_name") or f"unsaved_{int(__import__('time').time())}"
             res = save_biome_document(parsed)
             if res is None:
-                return "Save failed (no DB connection or error)."
-            return f"Saved: {res}"
+                return f"Save failed: '{biome_name}' (no DB connection or error)."
+            return f"Saved: '{biome_name}' ({res})"
         except Exception as e:
             return f"Save error: {e}"
 

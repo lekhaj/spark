@@ -1,4 +1,5 @@
 from urllib.parse import urlparse
+import os
 import gradio as gr
 import time
 from app.config import settings
@@ -14,6 +15,29 @@ DECIMATION_PROFILES = [
     ("8k", 8000, "COLLAPSE", None),
     ("10k", 10000, "COLLAPSE", None),
 ]
+
+# Debug / behaviour flag (tweak for local runs)
+# SAVE_LOCAL: when True, keep downloaded input files and decimated outputs locally.
+#            when False, downloaded input files and decimated outputs are removed after upload/Mongo update.
+SAVE_LOCAL = False
+
+
+def _cleanup_files(files):
+    """Attempt to remove each path in files.
+    Returns a list of log messages (strings) describing actions or warnings.
+    The caller may iterate and yield each message to the Gradio stream.
+    """
+    msgs = []
+    for f in files or []:
+        try:
+            if os.path.exists(f):
+                os.remove(f)
+            else:
+                # file not present; nothing to do
+                pass
+        except Exception as e:
+            msgs.append(f"[WARN] Could not remove {f}: {e}")
+    return msgs
 
 
 
@@ -178,15 +202,49 @@ def decimation_page_ui():
             bucket_name = settings.AWS_S3_BUCKET if hasattr(settings, 'AWS_S3_BUCKET') else 'dummy-bucket'
             s3_prefix = "3d_assets"
 
-            workspace_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
-            models_folder = os.path.join(workspace_root, "app", "gradio", "s3_downloads")
-            output_folder = os.path.join(models_folder, "decimated_output")
+            # Single base path for this page: the parent 'app/gradio' directory.
+            # Use this for all local S3-like downloads and decimation outputs.
+            base_gradio_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+            # Download folder: ../s3_downloads (i.e. app/gradio/s3_downloads)
+            models_folder = os.path.join(base_gradio_dir, "s3_downloads")
+            # Save model folder: ../s3_downloads/decimation_output
+            output_folder = os.path.join(models_folder, "decimation_output")
             os.makedirs(models_folder, exist_ok=True)
             os.makedirs(output_folder, exist_ok=True)
 
-            # Ensure log accumulator exists even if no Blender run occurs or all assets are skipped
-            log_accum = ""
+            # Clear the UI output box at the start of a run so previous runs don't remain visible
+            yield ""
+            # Report SAVE_LOCAL so it's easy to see whether local files will be retained
+            yield f"[INFO] SAVE_LOCAL={SAVE_LOCAL} (if False, downloaded and decimated files will be removed after successful Mongo update)"
+            # Create a session log file (append-only) in app/gradio/logs
+            try:
+                import uuid
+                logs_dir = os.path.join(base_gradio_dir, "logs")
+                os.makedirs(logs_dir, exist_ok=True)
+                session_log_filename = f"decimation_{int(time.time())}_{uuid.uuid4().hex}.log"
+                session_log_path = os.path.join(logs_dir, session_log_filename)
+                session_log = open(session_log_path, 'a', encoding='utf-8')
+            except Exception:
+                session_log = None
 
+            def _write_session_log(msg: str):
+                """Write a single line to the session log (if available) and flush.
+                Keep session log independent of the `log_accum` variable used for Gradio streaming.
+                """
+                if not session_log:
+                    return
+                try:
+                    # Ensure we write one physical line per call
+                    session_log.write(msg.rstrip('\n') + '\n')
+                    session_log.flush()
+                except Exception:
+                    # best-effort logging; don't raise
+                    pass
+            # log accumulator for the realtime output in the gradio Ui
+            log_accum = ""
+            # Track downloaded input files and decimated outputs for optional cleanup
+            downloaded_files = []
+            decimated_local_files = []
             for category, asset_name, asset in assets_to_decimate:
                 update_key = get_biome_asset_update_key(biome_id, asset_name)
                 # Inline priority selection: painted -> mesh -> s3_3d_url (only if status == '3d_generated')
@@ -200,6 +258,8 @@ def decimation_page_ui():
                         input_url = attrs.get("painted_url")
                     # then mesh
                     if not input_url:
+                        # Track downloaded input files for optional cleanup
+                        downloaded_files = []
                         if asset.get("mesh_url"):
                             input_url = asset.get("mesh_url")
                         elif attrs.get("mesh_url"):
@@ -213,6 +273,14 @@ def decimation_page_ui():
 
                 if not input_url:
                     yield f"[ERROR] Asset '{asset_name}' has no usable input URL (painted/mesh/s3_3d_url with status=3d_generated), skipping."
+                    # If we have an update_key, mark the asset as errored in Mongo
+                    if update_key:
+                        try:
+                            update_or_add_biome_asset(biome_id, update_key, {"decimation_status": "error", "decimation_error": "no input_url"})
+                        except Exception as _e:
+                            yield f"[WARN] Could not write 'no input_url' error to Mongo for {asset_name}: {_e}"
+                    else:
+                        yield f"[WARN] No update_key available for {asset_name}; cannot write error state to Mongo"
                     continue
                 try:
                     parsed = urlparse(input_url)
@@ -221,6 +289,8 @@ def decimation_page_ui():
                     s3_filename = os.path.basename(key)
                     local_file = os.path.abspath(os.path.join(models_folder, s3_filename))
                     download_from_s3(bucket, key, local_file)
+                    downloaded_files.append(local_file)
+                    # keep original detailed download message
                     yield f"[S3] Downloaded {input_url} to {local_file}"
                 except Exception as e:
                     yield f"[ERROR] Failed to download s3_3d_url for {asset_name}: {e}"
@@ -228,14 +298,21 @@ def decimation_page_ui():
                         update_or_add_biome_asset(biome_id, update_key, {"decimation_status": "error", "decimation_error": str(e)})
                     continue
                 if update_key:
-                    update_or_add_biome_asset(biome_id, update_key, {"decimation_status": "queued"})
+                    try:
+                        update_or_add_biome_asset(biome_id, update_key, {"decimation_status": "queued"})
+                    except Exception as _e:
+                        yield f"[WARN] Failed to set 'queued' in Mongo for {asset_name}: {_e}"
+                else:
+                    yield f"[WARN] No update_key available for {asset_name}; could not set 'queued' status in Mongo"
                 decimated_assets = {}
                 success_count = 0
                 # Resolve blender binary using config, PATH, or common locations
                 import shutil
                 blender_path = getattr(settings, "BLENDER_PATH", None)
                 if not blender_path:
-                    blender_path = shutil.which("blender")
+                    p = "/usr/bin/blender"
+                    if os.path.exists(p) and os.access(p, os.X_OK):
+                        blender_path = p
                 if not blender_path:
                     p = "/usr/bin/blender"
                     if os.path.exists(p) and os.access(p, os.X_OK):
@@ -256,6 +333,7 @@ def decimation_page_ui():
                     local_file
                 ]
                 yield f"[INFO] Using Blender binary: {blender_path}\n[INFO] Running Blender command: {' '.join(blender_cmd)}"
+### --- IGNORE --- USE_THIS_ONLY_WHEN_CPU_RESOURCES_ARE_CONSTRAINED
                 try:
                     # Prepare a constrained environment for Blender to reduce CPU/RAM/IO pressure
                     env = os.environ.copy()
@@ -266,7 +344,6 @@ def decimation_page_ui():
                         "OPENBLAS_NUM_THREADS": str(getattr(settings, "BLENDER_OPENBLAS_THREADS", 2)),
                         "BLIS_NUM_THREADS": str(getattr(settings, "BLENDER_BLIS_THREADS", 2)),
                     })
-
                     # On POSIX, lower niceness and ignore SIGINT in the child via preexec_fn
                     preexec = None
                     try:
@@ -286,45 +363,79 @@ def decimation_page_ui():
                             preexec = _preexec
                     except Exception:
                         preexec = None
+### --- IGNORE --- USE_THIS_ONLY_WHEN_CPU_RESOURCES_ARE_CONSTRAINED
 
+# running of command to initiate decimation
                     process = subprocess.Popen(
                         blender_cmd,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT,
                         text=True,
                         bufsize=1,
-                        env=env,
-                        preexec_fn=preexec
+                        env=env
+                        #preexec_fn=preexec
                     )
                     output_lines = []
                     output_json = None
-                    log_accum = ""
                     # Accumulate and yield all output lines for Gradio
                     for line in process.stdout:
                         output_lines.append(line)
+                        # Append to local accumulator for UI streaming
                         log_accum += line.rstrip() + "\n"
+                        # Also write the raw blender output line to the session log
+                        try:
+                            _write_session_log(line.rstrip())
+                        except Exception:
+                            pass
                         yield log_accum
+                        # try quick per-line JSON parse (some blender scripts may print compact JSON on one line)
                         try:
                             maybe_json = json.loads(line)
                             output_json = maybe_json
                         except Exception:
                             pass
                     process.wait(timeout=1200)
+                    full_text = ''.join(output_lines)
                     if process.returncode != 0:
-                        log_accum += f"[ERROR] Blender decimation failed for {asset_name}: Return code {process.returncode}\nSTDOUT/STDERR:\n{''.join(output_lines)}\n"
+                        msg = f"[ERROR] Blender decimation failed for {asset_name}: Return code {process.returncode}\nSee Blender output above."
+                        log_accum += msg + "\n"
+                        _write_session_log(msg)
                         yield log_accum
+                        # close session log on error for this asset and continue to next asset
                         continue
+                    # If we didn't get JSON per-line, try parsing the full stdout as JSON
                     if not output_json:
-                        log_accum += f"[ERROR] No valid JSON output from Blender script for {asset_name}.\nSTDOUT/STDERR:\n{''.join(output_lines)}\n"
+                        try:
+                            output_json = json.loads(full_text)
+                        except Exception:
+                            # Attempt to extract a JSON object from within a larger log blob
+                            first = full_text.find('{')
+                            last = full_text.rfind('}')
+                            if first != -1 and last != -1 and last > first:
+                                try:
+                                    candidate = full_text[first:last+1]
+                                    output_json = json.loads(candidate)
+                                except Exception:
+                                    output_json = None
+                    if not output_json:
+                        # show a short tail of Blender output to help debugging without duplicating the whole stream
+                        tail = full_text[-2000:] if len(full_text) > 2000 else full_text
+                        msg = f"[ERROR] No valid JSON output from Blender script for {asset_name}.\nLast part of Blender output:\n{tail}"
+                        log_accum += msg + "\n"
+                        _write_session_log(msg)
                         yield log_accum
                         continue
                     for suffix, data in output_json.items():
                         if "error" in data:
                             decimated_assets[f"decimated_{suffix}"] = {"error": data["error"]}
-                            log_accum += f"[ERROR] Decimation failed for {asset_name} profile {suffix}: {data['error']}\n"
+                            msg = f"[ERROR] Decimation failed for {asset_name} profile {suffix}: {data['error']}"
+                            log_accum += msg + "\n"
+                            _write_session_log(msg)
                             yield log_accum
                             continue
                         local_fbx = data["local_file"]
+                        # remember decimated output to delete later if SAVE_LOCAL is False
+                        decimated_local_files.append(local_fbx)
                         if not os.path.exists(local_fbx):
                             log_accum += f"[ERROR] Output file not found: {local_fbx} for {asset_name} profile {suffix}.\n"
                             decimated_assets[f"decimated_{suffix}"] = {"error": f"Output file not found: {local_fbx}"}
@@ -332,7 +443,9 @@ def decimation_page_ui():
                             continue
                         try:
                             s3_dest = f"{s3_prefix}/decimated/{os.path.basename(local_fbx)}"
-                            log_accum += f"[DEBUG] Uploading {local_fbx} to S3 bucket '{bucket_name}' at key '{s3_dest}'\n"
+                            msg = f"[DEBUG] Uploading {local_fbx} to S3 bucket '{bucket_name}' at key '{s3_dest}'"
+                            log_accum += msg + "\n"
+                            _write_session_log(msg)
                             yield log_accum
                             upload_to_s3(bucket_name, s3_dest, local_fbx)
                             s3_url = f"https://{bucket_name}.s3.amazonaws.com/{s3_dest}"
@@ -343,30 +456,29 @@ def decimation_page_ui():
                                 "reduction_ratio": data.get("reduction_ratio"),
                                 "status": "complete"
                             }
-                            log_accum += f"[SUCCESS] Uploaded {local_fbx} to S3 bucket '{bucket_name}' at key '{s3_dest}'\n"
-                            log_accum += f"[SUCCESS] {suffix}: {data.get('poly_before')} → {data.get('poly_after')} polygons for {asset_name}\n"
+                            msg = f"[SUCCESS] Uploaded {local_fbx} to S3 bucket '{bucket_name}' at key '{s3_dest}'"
+                            log_accum += msg + "\n"
+                            _write_session_log(msg)
+                            msg2 = f"[SUCCESS] {suffix}: {data.get('poly_before')} → {data.get('poly_after')} polygons for {asset_name}"
+                            log_accum += msg2 + "\n"
+                            _write_session_log(msg2)
                             success_count += 1
                             yield log_accum
                         except Exception as e:
                             import traceback
                             tb = traceback.format_exc()
                             decimated_assets[f"decimated_{suffix}"] = {"error": f"S3 upload failed: {e}"}
-                            log_accum += f"[ERROR] S3 upload failed for {local_fbx}: {e}\n{tb}\n"
+                            msg = f"[ERROR] S3 upload failed for {local_fbx}: {e}\n{tb}"
+                            log_accum += msg + "\n"
+                            _write_session_log(msg)
                             yield log_accum
-                        try:
-                            if os.path.exists(local_fbx):
-                                os.remove(local_fbx)
-                                log_accum += f"[INFO] Removed local file {local_fbx}\n"
-                                yield log_accum
-                        except Exception as e:
-                            import traceback
-                            tb = traceback.format_exc()
-                            log_accum += f"[WARN] Could not remove {local_fbx}: {e}\n{tb}\n"
-                            yield log_accum
+                        # decimated_local_files appended above; cleanup will happen after Mongo update
                 except Exception as e:
                     import traceback
                     tb = traceback.format_exc()
-                    yield f"[ERROR] Blender decimation failed for {asset_name}: {e}\n{tb}"
+                    msg = f"[ERROR] Blender decimation failed for {asset_name}: {e}\n{tb}"
+                    _write_session_log(msg)
+                    yield msg
                 update_data = {
                     "decimation_status": "completed" if success_count > 0 else "failed",
                     "decimated_assets": decimated_assets,
@@ -377,20 +489,62 @@ def decimation_page_ui():
                 # Remove decimation_error if decimation succeeded
                 if success_count > 0:
                     update_data["decimation_error"] = None
+                mongo_write_ok = False
                 if update_key:
-                    # If decimation_error is None, remove the field from Mongo
-                    if "decimation_error" in update_data and update_data["decimation_error"] is None:
-                        update_or_add_biome_asset(biome_id, update_key, {**update_data, "$unset": {"decimation_error": ""}})
-                    else:
-                        update_or_add_biome_asset(biome_id, update_key, update_data)
-                if success_count > 0:
                     try:
-                        if os.path.exists(local_file):
-                            os.remove(local_file)
-                    except Exception as e:
-                        yield f"[WARN] Could not clean up file {local_file}: {e}"
-            log_accum += f"\nTimestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                        # If decimation_error is None, remove the field from Mongo
+                        if "decimation_error" in update_data and update_data["decimation_error"] is None:
+                            update_or_add_biome_asset(biome_id, update_key, {**update_data, "$unset": {"decimation_error": ""}})
+                        else:
+                            update_or_add_biome_asset(biome_id, update_key, update_data)
+                        mongo_write_ok = True
+                    except Exception as _e:
+                        msg = f"[WARN] Failed to write decimation results to Mongo for {asset_name}: {_e}"
+                        try:
+                            _write_session_log(msg)
+                        except Exception:
+                            pass
+                        yield msg
+                        mongo_write_ok = False
+                else:
+                    msg = f"[WARN] No update_key available for {asset_name}; decimation results not written to Mongo"
+                    _write_session_log(msg)
+                    yield msg
+                    mongo_write_ok = False
+
+                # Cleanup downloaded input file(s) and decimated outputs depending on SAVE_LOCAL flag.
+                try:
+                    if not SAVE_LOCAL:
+                        if mongo_write_ok:
+                            to_cleanup = []
+                            to_cleanup.extend(downloaded_files or [])
+                            to_cleanup.extend(decimated_local_files or [])
+                            # ensure local input file is also cleaned
+                            to_cleanup.append(local_file)
+                            msgs = _cleanup_files(to_cleanup)
+                            for m in msgs:
+                                _write_session_log(m)
+                                yield m
+                            downloaded_files = []
+                            decimated_local_files = []
+                        else:
+                            msg = f"[WARN] Skipping local cleanup for {asset_name} because Mongo update did not complete. Set SAVE_LOCAL=True to keep files for debugging."
+                            _write_session_log(msg)
+                            yield msg
+                except Exception as e:
+                    msg = f"[WARN] Cleanup step failed: {e}"
+                    _write_session_log(msg)
+                    yield msg
+            final_ts = f"\nTimestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            log_accum += final_ts
+            _write_session_log(final_ts)
             yield log_accum
+            # Close session log for this run
+            try:
+                if session_log:
+                    session_log.close()
+            except Exception:
+                pass
 
         def handle_check_status(coll_name, biome_id, asset_id, biome_choices):
             db_name = settings.MONGODB_DB_NAME

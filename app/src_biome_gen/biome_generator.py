@@ -20,7 +20,7 @@ class GenerationResult:
         self.biome_document = biome_document
 
 
-def create_new_biome(theme_prompt: str, system_prompt: str | None = None) -> GenerationResult:
+def create_new_biome(theme_prompt: str, system_prompt: str | None = None, save_to_db: bool = True) -> GenerationResult:
     """
     Orchestrates the entire process of generating and saving a new biome.
 
@@ -67,17 +67,25 @@ def create_new_biome(theme_prompt: str, system_prompt: str | None = None) -> Gen
 
     # Persist only the user's theme prompt in the stored document.
     biome_document['theme_prompt'] = theme_prompt
-    biome_document['_id'] = str(uuid.uuid4())
-    
-    biome_name = biome_document.get("biome_name", "Unnamed Biome")
 
-    save_result = database.save_biome_document(biome_document)
-    if not save_result:
-        error_msg = f"Failed to save the generated biome '{biome_name}' to the database."
-        logger.error(error_msg)
-        return GenerationResult(success=False, message=error_msg)
+    biome_name = biome_document.get("biome_name") or "Unnamed Biome"
+
+    save_result = None
+    if save_to_db:
+        # Assign an _id only when performing the DB save so generated-but-unsaved
+        # documents don't carry a stale or conflicting '_id'.
+        biome_document['_id'] = str(uuid.uuid4())
+        save_result = database.save_biome_document(biome_document)
+        if not save_result:
+            error_msg = f"Failed to save the generated biome '{biome_name}' to the database."
+            logger.error(error_msg)
+            return GenerationResult(success=False, message=error_msg)
 
     # --- Success ---
-    success_msg = f"Successfully generated and saved biome: '{biome_name}'"
+    if save_to_db:
+        success_msg = f"Successfully generated and saved biome: '{biome_name}'"
+    else:
+        success_msg = f"Successfully generated biome (not saved): '{biome_name}'"
+
     logger.info(success_msg)
     return GenerationResult(success=True, message=success_msg, biome_name=biome_name, biome_document=biome_document)

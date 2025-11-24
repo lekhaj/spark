@@ -111,7 +111,7 @@ def _call_local_model(prompt: str) -> str | None:
         logger.error(f"Error during local LLM inference: {e}", exc_info=True)
         return None
 
-def _call_claude_bedrock(prompt: str, max_tokens: int = 4096) -> str | None:
+def _call_claude_bedrock(prompt: str, max_tokens: int = 8000) -> str | None:
     """
     Sends a single-turn message to Anthropic Claude via AWS Bedrock and returns the response text.
     """
