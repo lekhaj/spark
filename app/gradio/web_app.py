@@ -12,6 +12,7 @@ from pymongo.errors import ConnectionFailure, OperationFailure
 from app.gradio.pages.s3_asset_viewer_page import s3_asset_viewer_ui
 from app.gradio.pages.decimation_page import decimation_page_ui
 from app.gradio.pages.biome_generation_page import mount_into as mount_generator_ui
+from app.gradio.pages.biome_editor import biome_editor_ui
 from app.services.mongo_service import get_db, get_biome_choices_live
 
 # Load environment variables from .env file
@@ -392,6 +393,11 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
         # S3 Asset Viewer Tab
         with gr.TabItem("S3 Asset Viewer"):
             s3_asset_viewer_ui()
+        
+        # Biome editor tab    
+        with gr.TabItem("Biome Editor"):
+            biome_editor_ui()
+
 
         # Orchestrate Biome Tab
         with gr.TabItem("Orchestrate Biome"):
@@ -437,43 +443,7 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
         with gr.TabItem("Asset Decimation"):
             decimation_page_ui()
 
-        # New Tab for AWS Control
-        with gr.TabItem("AWS Control"):
-            gr.Markdown("## 🚀 AWS EC2 Instance Control")
-            gr.Markdown("Control the GPU and CPU instances directly from this interface.")
-
-            status_output = gr.Textbox(label="Status", interactive=False)
-
-            with gr.Row():
-                start_gpu_button = gr.Button("Start GPU Instance")
-                stop_gpu_button = gr.Button("Stop GPU Instance")
-
-            with gr.Row():
-                start_cpu_button = gr.Button("Start CPU Instance")
-                stop_cpu_button = gr.Button("Stop CPU Instance")
-
-            # Button actions
-            start_gpu_button.click(
-                fn=lambda: control_aws_instance(instance_type="gpu", action="start"),
-                inputs=[],
-                outputs=[status_output]
-            )
-            stop_gpu_button.click(
-                fn=lambda: control_aws_instance(instance_type="gpu", action="stop"),
-                inputs=[],
-                outputs=[status_output]
-            )
-
-            start_cpu_button.click(
-                fn=lambda: control_aws_instance(instance_type="cpu", action="start"),
-                inputs=[],
-                outputs=[status_output]
-            )
-            stop_cpu_button.click(
-                fn=lambda: control_aws_instance(instance_type="cpu", action="stop"),
-                inputs=[],
-                outputs=[status_output]
-            )
+        
             
 # Launch the Gradio application
-demo.launch(server_name="127.0.0.1", server_port=7860, share=True)
+demo.launch(server_name="127.0.0.1", server_port=7860)# share=True
