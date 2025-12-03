@@ -30,12 +30,13 @@ def _attach_generator_widgets() -> Dict[str, object]:
 
     with gr.Row():
         inp = gr.Textbox(lines=4, placeholder="Enter a theme prompt or paste JSON here...", label="Prompt")
-        out = gr.Textbox(lines=20, label="Result (JSON)")
+        out = gr.Textbox(lines=20, label="Generated Biome (JSON - Editable)", interactive=True)
 
-    btn = gr.Button("Generate")
-    auto_save = gr.Checkbox(value=True, label="Auto-save generated biome to MongoDB")
-    save_btn = gr.Button("Save to DB")
-    save_status = gr.Textbox(lines=2, label="Save status", interactive=False)
+    with gr.Row():
+        btn = gr.Button("Generate Biome")
+        save_btn = gr.Button("Save to Database")
+
+    save_status = gr.Textbox(lines=2, label="Save Status", interactive=False)
     current_sys_prompt = gr.State("")
 
     def generate_prompt(prompt: Any, system_prompt: str | None = None) -> str:
@@ -65,9 +66,9 @@ def _attach_generator_widgets() -> Dict[str, object]:
         except Exception:
             return str(out_obj)
 
-    def on_generate(p, s_input, stored_sys, auto_save_val: bool | None = True):
+    def on_generate(p, s_input, stored_sys):
         """Generate using s_input if non-empty (and update stored prompt); otherwise use stored_sys.
-        Returns (result_text, new_stored_sys, save_status_message).
+        Returns (result_text, new_stored_sys).
         """
         new_stored = stored_sys
         effective_system = stored_sys
@@ -76,48 +77,60 @@ def _attach_generator_widgets() -> Dict[str, object]:
             effective_system = s_input
 
         result_text = generate_prompt(p, effective_system)
-
-        save_msg = ""
-        # If auto-save enabled, try to parse and save the returned JSON/dict
-        try:
-            if auto_save_val:
-                parsed = None
-                try:
-                    parsed = json.loads(result_text)
-                except Exception:
-                    parsed = {"biome_name": None, "generated": result_text}
-
-                if isinstance(parsed, dict):
-                    res = save_biome_document(parsed)
-                    save_msg = f"Auto-save: {res or 'failed or no DB connection'}"
-                else:
-                    save_msg = "Auto-save: could not parse output"
-        except Exception as e:
-            save_msg = f"Auto-save error: {e}"
-
-        return result_text, new_stored, save_msg
+        return result_text, new_stored
 
     def on_clear(stored_sys):
         return ""
 
     def on_save(displayed_text):
+        """Save the JSON content (whether original or edited) to database"""
         try:
+            # Parse the JSON content
             parsed = json.loads(displayed_text)
-        except Exception:
-            parsed = {"biome_name": f"unsaved_{int(__import__('time').time())}", "generated": displayed_text}
-
-        try:
-            res = save_biome_document(parsed)
-            if res is None:
-                return "Save failed (no DB connection or error)."
-            return f"Saved: {res}"
+            
+            # Handle both the wrapper object and direct biome document
+            if isinstance(parsed, dict):
+                # If it's the wrapper object with biome_document inside
+                if 'biome_document' in parsed and parsed['biome_document']:
+                    # Use the actual biome document for saving
+                    biome_doc = parsed['biome_document']
+                else:
+                    # Use the parsed object directly
+                    biome_doc = parsed
+                
+                # Ensure we have a proper document structure
+                if not isinstance(biome_doc, dict):
+                    biome_doc = {"content": biome_doc}
+                
+                # Save to database
+                res = save_biome_document(biome_doc)
+                if res is None:
+                    return "Save failed (no DB connection or error)."
+                return f"Successfully saved to database: {res}"
+            else:
+                return "Error: Content must be a valid JSON object"
+                
+        except json.JSONDecodeError as e:
+            return f"Invalid JSON format: {e}"
         except Exception as e:
             return f"Save error: {e}"
 
     # Wire events
-    btn.click(on_generate, inputs=[inp, sys_prompt, current_sys_prompt, auto_save], outputs=[out, current_sys_prompt, save_status])
-    save_btn.click(on_save, inputs=[out], outputs=[save_status])
-    clear_btn.click(on_clear, inputs=[current_sys_prompt], outputs=[current_sys_prompt])
+    btn.click(
+        on_generate, 
+        inputs=[inp, sys_prompt, current_sys_prompt], 
+        outputs=[out, current_sys_prompt]
+    )
+    save_btn.click(
+        on_save, 
+        inputs=[out], 
+        outputs=[save_status]
+    )
+    clear_btn.click(
+        on_clear, 
+        inputs=[current_sys_prompt], 
+        outputs=[current_sys_prompt]
+    )
 
     return {
         "sys_prompt": sys_prompt,
@@ -125,7 +138,6 @@ def _attach_generator_widgets() -> Dict[str, object]:
         "inp": inp,
         "out": out,
         "btn": btn,
-        "auto_save": auto_save,
         "save_btn": save_btn,
         "save_status": save_status,
         "current_sys_prompt": current_sys_prompt,
