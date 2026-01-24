@@ -12,7 +12,8 @@ from pymongo.errors import ConnectionFailure, OperationFailure
 from app.gradio.pages.s3_asset_viewer_page import s3_asset_viewer_ui
 from app.gradio.pages.decimation_page import decimation_page_ui
 from app.gradio.pages.biome_generation_page import mount_into as mount_generator_ui
-from app.services.mongo_service import get_db, get_biome_choices_live
+from app.gradio.pages.rigging_page import rigging_ui
+from app.services.mongo_service import get_db, get_biome_choices_live, biome_assets_for_task, get_biome, update_or_add_biome_asset, get_biome_asset_update_key
 
 # Load environment variables from .env file
 load_dotenv()
@@ -338,6 +339,57 @@ def _start_decimation_task(database_name, collection_name, biome_action_type, ne
     
     return (gr.State(task_id), "Task submitted: PENDING", "")
 
+
+def _start_rigging_task(selected_biome_name, biome_choices, selected_asset):
+    """Push pending rigging tasks for a biome (or single asset) into Redis list 'rig_model'."""
+    # Resolve doc id from biome_choices
+    doc_id = next((_id for name, _id in biome_choices if name == selected_biome_name), None)
+    if not doc_id:
+        return (gr.State(None), "Selected biome not found.")
+
+    # Fetch assets with status '3d_generated'
+    try:
+        assets = biome_assets_for_task(doc_id, status_filter="3d_generated")
+    except Exception as e:
+        return (gr.State(doc_id), f"Error fetching assets: {e}")
+
+    if not assets:
+        return (gr.State(doc_id), "No assets ready for rigging.")
+
+    to_queue = []
+    if selected_asset and selected_asset != "all":
+        if selected_asset in assets:
+            to_queue = [(selected_asset, assets[selected_asset])]
+        else:
+            return (gr.State(doc_id), f"Asset {selected_asset} not found or not ready.")
+    else:
+        to_queue = list(assets.items())
+
+    queued = 0
+    for asset_name, asset in to_queue:
+        payload = {
+            "biome_id": str(doc_id),
+            "asset_name": asset_name,
+            "timestamp": time.time()
+        }
+        try:
+            if r:
+                r.lpush("rig_model", json.dumps(payload))
+                queued += 1
+                # mark asset rigging_status as queued (best-effort)
+                try:
+                    update_key = get_biome_asset_update_key(doc_id, asset_name)
+                    if update_key:
+                        update_or_add_biome_asset(doc_id, update_key, {"rigging_status": "queued", "rigging_timestamp": int(time.time())})
+                except Exception:
+                    pass
+            else:
+                return (gr.State(doc_id), "Redis not available; could not queue tasks.")
+        except Exception as e:
+            return (gr.State(doc_id), f"Failed to queue {asset_name}: {e}")
+
+    return (gr.State(doc_id), f"Queued {queued} rigging tasks.")
+
 # --- AWS Control Functions ---
 
 def control_aws_instance(instance_type: str, action: str):
@@ -433,6 +485,10 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
             submit_image_btn.click(fn=submit_image_tasks_gradio, inputs=[orchestrate_biome_dropdown], outputs=[orchestration_result])
             submit_3d_btn.click(fn=submit_3d_tasks_gradio, inputs=[orchestrate_biome_dropdown], outputs=[orchestration_result])
             refresh_biomes_btn.click(fn=refresh_orchestrate_biomes, inputs=[], outputs=[orchestrate_biome_dropdown])
+
+        # Rigging Tab (mounted from pages/rigging_page.py)
+        with gr.TabItem("Rigging"):
+            rigging_ui()
 
         # Asset Decimation Tab
         with gr.TabItem("Asset Decimation"):
