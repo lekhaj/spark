@@ -12,8 +12,9 @@ from pymongo.errors import ConnectionFailure, OperationFailure
 from app.gradio.pages.s3_asset_viewer_page import s3_asset_viewer_ui
 from app.gradio.pages.decimation_page import decimation_page_ui
 from app.gradio.pages.biome_generation_page import mount_into as mount_generator_ui
-from app.gradio.pages.rigging_page import rigging_ui
-from app.services.mongo_service import get_db, get_biome_choices_live, biome_assets_for_task, get_biome, update_or_add_biome_asset, get_biome_asset_update_key
+from app.gradio.pages.orchestrator_control_page import create_orchestrator_ui
+from app.gradio.pages.biome_editor import biome_editor_ui
+from app.services.mongo_service import get_db, get_biome_choices_live
 
 # Load environment variables from .env file
 load_dotenv()
@@ -33,7 +34,6 @@ API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 # Initialize Redis client
 try:
     r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
-    r.ping()
     print("Successfully connected to Redis.")
 except redis.ConnectionError as e:
     print(f"Could not connect to Redis: {e}")
@@ -159,9 +159,9 @@ def refresh_orchestrate_biomes():
 
 # --- ORCHESTRATOR ENDPOINT CALLERS ---
 def submit_image_tasks_api(biome_id):
-    """Call orchestrator /submit_image_tasks/ endpoint for the given biome_id."""
+    """Call orchestrator /submit_image_task/ endpoint for the given biome_id."""
     try:
-        resp = requests.post(f"{API_BASE_URL}/submit_image_tasks/", params={"biome_id": biome_id}, timeout=30)
+        resp = requests.post(f"{API_BASE_URL}/submit_image_task/", params={"biome_id": biome_id}, timeout=30)
         if resp.ok:
             return json.dumps(resp.json(), indent=2)
         else:
@@ -340,72 +340,6 @@ def _start_decimation_task(database_name, collection_name, biome_action_type, ne
     return (gr.State(task_id), "Task submitted: PENDING", "")
 
 
-def _start_rigging_task(selected_biome_name, biome_choices, selected_asset):
-    """Push pending rigging tasks for a biome (or single asset) into Redis list 'rig_model'."""
-    # Resolve doc id from biome_choices
-    doc_id = next((_id for name, _id in biome_choices if name == selected_biome_name), None)
-    if not doc_id:
-        return (gr.State(None), "Selected biome not found.")
-
-    # Fetch assets with status '3d_generated'
-    try:
-        assets = biome_assets_for_task(doc_id, status_filter="3d_generated")
-    except Exception as e:
-        return (gr.State(doc_id), f"Error fetching assets: {e}")
-
-    if not assets:
-        return (gr.State(doc_id), "No assets ready for rigging.")
-
-    to_queue = []
-    if selected_asset and selected_asset != "all":
-        if selected_asset in assets:
-            to_queue = [(selected_asset, assets[selected_asset])]
-        else:
-            return (gr.State(doc_id), f"Asset {selected_asset} not found or not ready.")
-    else:
-        to_queue = list(assets.items())
-
-    queued = 0
-    for asset_name, asset in to_queue:
-        payload = {
-            "biome_id": str(doc_id),
-            "asset_name": asset_name,
-            "timestamp": time.time()
-        }
-        try:
-            if r:
-                r.lpush("rig_model", json.dumps(payload))
-                queued += 1
-                # mark asset rigging_status as queued (best-effort)
-                try:
-                    update_key = get_biome_asset_update_key(doc_id, asset_name)
-                    if update_key:
-                        update_or_add_biome_asset(doc_id, update_key, {"rigging_status": "queued", "rigging_timestamp": int(time.time())})
-                except Exception:
-                    pass
-            else:
-                return (gr.State(doc_id), "Redis not available; could not queue tasks.")
-        except Exception as e:
-            return (gr.State(doc_id), f"Failed to queue {asset_name}: {e}")
-
-    return (gr.State(doc_id), f"Queued {queued} rigging tasks.")
-
-# --- AWS Control Functions ---
-
-def control_aws_instance(instance_type: str, action: str):
-    """
-    Sends a request to the FastAPI backend to start or stop a specific EC2 instance.
-    """
-    endpoint = f"{API_BASE_URL}/aws/{action}/{instance_type}"
-    try:
-        response = requests.post(endpoint)
-        response.raise_for_status()  # This will raise an exception for HTTP errors
-        return f"Successfully sent command to {action} {instance_type} instance."
-    except requests.exceptions.RequestException as e:
-        return f"Failed to connect to API: {e}"
-    except Exception as e:
-        return f"An error occurred: {e}"
-
 # --- GRADIO INTERFACE LAYOUT (modified to include AWS control) ---
 
 with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
@@ -423,7 +357,7 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
     dbs = get_database_names()
     default_db = dbs[0] if dbs else None
     colls = get_collection_names(default_db) if default_db else []
-    default_coll = colls[0] if colls else None
+    default_coll = colls[2] if colls else None
     initial_biome_names = []
     initial_biome_value = None
     initial_biome_choices_val = []
@@ -438,13 +372,22 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
         initial_biome_value = initial_biome_names[0] if initial_biome_names else None
 
     with gr.Tabs() as tabs:
-        # Generator Tab (now first)
-        with gr.TabItem("Generate Biome"):
-            mount_generator_ui()
-
         # S3 Asset Viewer Tab
         with gr.TabItem("S3 Asset Viewer"):
             s3_asset_viewer_ui()
+
+        # Generator Tab
+        with gr.TabItem("Generate Biome"):
+            mount_generator_ui()
+
+        # Biome editor tab
+        with gr.TabItem("Biome Editor"):
+            biome_editor_ui()
+
+        # Orchestrator Control Tab
+        with gr.TabItem("Orchestrator Control"):
+            create_orchestrator_ui()
+
 
         # Orchestrate Biome Tab
         with gr.TabItem("Orchestrate Biome"):
@@ -486,51 +429,11 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
             submit_3d_btn.click(fn=submit_3d_tasks_gradio, inputs=[orchestrate_biome_dropdown], outputs=[orchestration_result])
             refresh_biomes_btn.click(fn=refresh_orchestrate_biomes, inputs=[], outputs=[orchestrate_biome_dropdown])
 
-        # Rigging Tab (mounted from pages/rigging_page.py)
-        with gr.TabItem("Rigging"):
-            rigging_ui()
-
         # Asset Decimation Tab
         with gr.TabItem("Asset Decimation"):
             decimation_page_ui()
 
-        # New Tab for AWS Control
-        with gr.TabItem("AWS Control"):
-            gr.Markdown("## 🚀 AWS EC2 Instance Control")
-            gr.Markdown("Control the GPU and CPU instances directly from this interface.")
 
-            status_output = gr.Textbox(label="Status", interactive=False)
-
-            with gr.Row():
-                start_gpu_button = gr.Button("Start GPU Instance")
-                stop_gpu_button = gr.Button("Stop GPU Instance")
-
-            with gr.Row():
-                start_cpu_button = gr.Button("Start CPU Instance")
-                stop_cpu_button = gr.Button("Stop CPU Instance")
-
-            # Button actions
-            start_gpu_button.click(
-                fn=lambda: control_aws_instance(instance_type="gpu", action="start"),
-                inputs=[],
-                outputs=[status_output]
-            )
-            stop_gpu_button.click(
-                fn=lambda: control_aws_instance(instance_type="gpu", action="stop"),
-                inputs=[],
-                outputs=[status_output]
-            )
-
-            start_cpu_button.click(
-                fn=lambda: control_aws_instance(instance_type="cpu", action="start"),
-                inputs=[],
-                outputs=[status_output]
-            )
-            stop_cpu_button.click(
-                fn=lambda: control_aws_instance(instance_type="cpu", action="stop"),
-                inputs=[],
-                outputs=[status_output]
-            )
             
 # Launch the Gradio application
-demo.launch(server_name="0.0.0.0", server_port=7860, share=True)
+demo.launch(server_name="0.0.0.0", server_port=7860)# share=True

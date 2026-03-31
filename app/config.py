@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
+from typing import Optional
 class Settings(BaseSettings):
     redis_host: str = "localhost"
     redis_port: int = 6379
@@ -26,13 +26,22 @@ class Settings(BaseSettings):
 
     AWS_REGION: str = "ap-south-1"
     AWS_S3_BUCKET: str
-    AWS_GPU_INSTANCE_ID: str
+
     
     AWS_ACCESS_KEY_ID: str
     AWS_SECRET_ACCESS_KEY: str
-    
-    GPU_SSH_USER: str
-    GPU_PUBLIC_IP:str
+
+    # AWS Instance IDs
+    AWS_CPU_INSTANCE_ID: Optional[str] = None
+    AWS_GPU_T4_INSTANCE_ID: Optional[str] = None
+    AWS_GPU_A10_INSTANCE_ID: Optional[str] = None
+
+    # GPU SSH Configuration
+    GPU_T4_SSH_USER: str = "ubuntu"
+    GPU_T4_PUBLIC_IP: Optional[str] = None
+    GPU_A10_SSH_USER: str = "ubuntu"
+    GPU_A10_PUBLIC_IP: Optional[str] = None
+
     # Optional explicit blender executable path (set in .env on the host that will run Blender)
     BLENDER_PATH: str | None = None
     # Resource tuning for Blender worker (controls threaded libraries)

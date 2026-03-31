@@ -59,7 +59,7 @@ def create_3d_task_dict(image_s3_url, prompt=""):
 
 @router.post("/submit_image_tasks/")
 def submit_image_tasks(biome_id: str):
-    assets = biome_assets_for_task(biome_id, status_filter="not complete")
+    assets = biome_assets_for_task(biome_id, status_filter="not complete",quality_filter=None)
     if not assets:
         return {"message": "No assets with status 'not complete' for this biome."}
     job_ids = []
@@ -94,9 +94,9 @@ def submit_image_tasks(biome_id: str):
 
 @router.post("/submit_3d_tasks/")
 def submit_3d_tasks(biome_id: str):
-    assets = biome_assets_for_task(biome_id, status_filter="image generated")
+    assets = biome_assets_for_task(biome_id, status_filter="image_generated", quality_filter="good")
     if not assets:
-        return {"message": "No assets with status 'image generated' for this biome."}
+        return {"message": "No assets with status 'image_generated' and quality 'good' for this biome."}
     job_ids = []
     image_url_key = ["image_s3_url", "image_url", "s3_image_url", "s3_image_uri"]
     for asset_name, asset in assets.items():

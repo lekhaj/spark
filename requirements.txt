@@ -4,6 +4,9 @@ redis
 pymongo
 boto3
 gradio
+requests
+python-dotenv
+pydantic-settings
 
 # The following Blender modules are only available inside Blender's Python:
 # bpy, bmesh, mathutils

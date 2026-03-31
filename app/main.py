@@ -1,4 +1,3 @@
-
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -30,7 +29,6 @@ logger = logging.getLogger("app")
 ## main was edited to make api endpoints as a executable function...
 ## core_logic is unchanged. :)
 
-
 def create_image_task_dict(prompt, negative_prompt="", width=1024, height=1024, num_inference_steps=30):
     job_id = str(uuid.uuid4())
     return job_id, {
@@ -57,6 +55,7 @@ def create_3d_task_dict(image_s3_url, prompt=""):
         "status": "queued",
         "output_key": f"3d_assets/{job_id}_mesh.obj"
     }
+
 # Redis client using config
 try:
     r = redis.Redis.from_url(settings.CELERY_BROKER_URL)
@@ -65,7 +64,37 @@ try:
 except Exception as e:
     print(f"[FastAPI] Failed to connect to Redis: {e}")
 
-app = FastAPI(title="Dual Model Generation API")
+# Use lifespan context manager for better startup/shutdown handling
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    logger.info("Starting up FastAPI application...")
+
+    # Test DB connection on startup
+    db = get_db()
+    if db is not None:
+        logger.info("MongoDB connected on startup.")
+    else:
+        logger.error("MongoDB connection failed on startup.")
+
+    # Start orchestrator as background task
+    orchestrator_task = asyncio.create_task(orchestrator_main())
+    logger.info("Orchestrator background task started")
+
+    yield  # App runs here
+
+    # Shutdown
+    logger.info("Shutting down FastAPI application...")
+    orchestrator_task.cancel()
+    try:
+        await orchestrator_task
+    except asyncio.CancelledError:
+        logger.info("Orchestrator task cancelled successfully")
+
+app = FastAPI(
+    title="Dual Model Generation API",
+    lifespan=lifespan
+)
 
 # Mount routers for Mongo and AWS
 app.include_router(mongo_router, prefix="/mongo", tags=["MongoDB"])
@@ -76,6 +105,7 @@ app.include_router(mongo_routes.router, prefix="")
 app.include_router(orchestrator_router, prefix="/orchestrate", tags=["Orchestrator"])
 # Also expose the same orchestrator router at root so legacy clients can POST to /submit_image_tasks/
 app.include_router(orchestrator_router, prefix="", tags=["Orchestrator"])
+
 class TaskType(str, Enum):
     IMAGE = "image"
     MODEL_3D = "3d_model"
@@ -90,22 +120,6 @@ class ImagePromptRequest(BaseModel):
 class Model3DRequest(BaseModel):
     image_s3_url: str
     prompt: str = ""  # Optional prompt for guidance
-
-@app.on_event("startup")
-async def start_background():
-    # Test DB connection on startup
-    db = get_db()
-    if db is not None:
-        logger.info("MongoDB connected on startup.")
-    else:
-        logger.error("MongoDB connection failed on startup.")
-    #asyncio.create_task(orchestrator_main())
-   
-
-@app.get("/")
-def home():
-    return {"message": "Dual model generation API - Image prompts & 3D model tasks"}
-
 
 # --- Biome generation endpoints (moved from c_main.py) ---
 # In-memory background task store for lightweight single-node async tasks
@@ -252,40 +266,42 @@ async def get_biome_endpoint(biome_name: str):
         raise HTTPException(status_code=404, detail=f"Biome '{biome_name}' not found.")
     return biome_data
 
-@app.post("/submit_image_task/")
-async def submit_image_task(image_request: ImagePromptRequest):
-    """Submit a prompt for SDXL image generation"""
-    job_id, task_data = create_image_task_dict(
-        prompt=image_request.prompt,
-        negative_prompt=image_request.negative_prompt,
-        width=image_request.width,
-        height=image_request.height,
-        num_inference_steps=image_request.num_inference_steps
-    )
-    r.lpush("image_tasks", json.dumps(task_data))
-    print(f"[FastAPI] Image task pushed to Redis: {job_id}")
-    return {
-        "status": "success", 
-        "message": "Image generation task added to queue",
-        "job_id": job_id,
-        "task_type": TaskType.IMAGE
-    }
+# @app.post("/submit_image_task/")
+# async def submit_image_task(image_request: ImagePromptRequest):
+#     """Submit a prompt for SDXL image generation"""
+#     job_id, task_data = create_image_task_dict(
+#         prompt=image_request.prompt,
+#         negative_prompt=image_request.negative_prompt,
+#         width=image_request.width,
+#         height=image_request.height,
+#         num_inference_steps=image_request.num_inference_steps
+#     )
+#     print(task_data)
+#     r.lpush("image_tasks", json.dumps(task_data))
+#     print(task_data)
+#     print(f"[FastAPI] Image task pushed to Redis: {job_id}")
+#     return {
+#         "status": "success",
+#         "message": "Image generation task added to queue",
+#         "job_id": job_id,
+#         "task_type": TaskType.IMAGE
+#     }
 
-@app.post("/submit_3d_task/")
-async def submit_3d_task(model_request: Model3DRequest):
-    """Submit an S3 image URL for 3D model generation"""
-    job_id, task_data = create_3d_task_dict(
-        image_s3_url=model_request.image_s3_url,
-        prompt=model_request.prompt
-    )
-    r.lpush("model_tasks", json.dumps(task_data))
-    print(f"[FastAPI] 3D task pushed to Redis: {job_id}")
-    return {
-        "status": "success", 
-        "message": "3D model generation task added to queue",
-        "job_id": job_id,
-        "task_type": TaskType.MODEL_3D
-    }
+# @app.post("/submit_3d_task/")
+# async def submit_3d_task(model_request: Model3DRequest):
+#     """Submit an S3 image URL for 3D model generation"""
+#     job_id, task_data = create_3d_task_dict(
+#         image_s3_url=model_request.image_s3_url,
+#         prompt=model_request.prompt
+#     )
+#     r.lpush("model_tasks", json.dumps(task_data))
+#     print(f"[FastAPI] 3D task pushed to Redis: {job_id}")
+#     return {
+#         "status": "success",
+#         "message": "3D model generation task added to queue",
+#         "job_id": job_id,
+#         "task_type": TaskType.MODEL_3D
+#     }
 
 @app.get("/queue_status/")
 async def queue_status():
@@ -298,21 +314,100 @@ async def queue_status():
         "total_pending": image_queue_length + model_3d_queue_length
     }
 
-@app.get("/get_result/{job_id}")
-async def get_result(job_id: str):
-    """Check result for a specific job"""
-    result_key = f"result:{job_id}"
-    result = r.get(result_key)
-    if result:
-        return json.loads(result)
-    else:
-        return {"status": "processing", "job_id": job_id}
 
-@app.get("/get_all_results/")
-async def get_all_results():
-    """Get all completed results (for debugging)"""
-    results = {}
-    for key in r.scan_iter("result:*"):
-        job_id = key.decode().split(":")[1]
-        results[job_id] = json.loads(r.get(key))
-    return results
+
+
+@app.get("/orchestrate/status")
+async def get_orchestrator_status():
+    """Get orchestrator status"""
+    from app.services.orchestrator_service import orchestrator
+
+    try:
+        # Get queue status
+        image_queue_length = r.llen("image_tasks")
+        model_queue_length = r.llen("model_tasks")
+
+        # Get GPU states
+        from app.services.aws_service import get_instance_state, is_gpu_worker_running
+
+        gpu_t4_state = get_instance_state("gpu_t4")
+        gpu_a10_state = get_instance_state("gpu_a10")
+
+        gpu_t4_worker = is_gpu_worker_running("gpu_t4") if gpu_t4_state == "running" else False
+        gpu_a10_worker = is_gpu_worker_running("gpu_a10") if gpu_a10_state == "running" else False
+
+        return {
+            "auto_mode": orchestrator.auto_mode,
+            "gpu_t4": {
+                "state": gpu_t4_state,
+                "worker_running": gpu_t4_worker
+            },
+            "gpu_a10": {
+                "state": gpu_a10_state,
+                "worker_running": gpu_a10_worker
+            },
+            "queues": {
+                "image_tasks": image_queue_length,
+                "model_tasks": model_queue_length,
+                "total_pending": image_queue_length + model_queue_length
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error getting orchestrator status: {e}")
+        return {
+            "auto_mode": False,
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+@app.post("/orchestrate/mode")
+async def set_orchestrator_mode_endpoint(auto_mode: bool):
+    """Enable/disable auto scaling mode"""
+    from app.services.orchestrator_service import orchestrator
+
+    try:
+        orchestrator.auto_mode = auto_mode
+        logger.info(f"Orchestrator auto mode set to: {auto_mode}")
+        return {
+            "status": "success",
+            "auto_mode": auto_mode,
+            "message": f"Auto scaling mode {'enabled' if auto_mode else 'disabled'}"
+        }
+    except Exception as e:
+        logger.error(f"Error setting orchestrator mode: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to set orchestrator mode: {e}")
+
+@app.post("/orchestrate/start")
+async def start_orchestrator_endpoint():
+    """Start orchestrator monitoring"""
+    from app.services.orchestrator_service import orchestrator
+
+    try:
+        orchestrator.auto_mode = True
+        logger.info("Orchestrator auto mode enabled")
+        return {
+            "status": "success",
+            "auto_mode": True,
+            "message": "Orchestrator auto mode started"
+        }
+    except Exception as e:
+        logger.error(f"Error starting orchestrator: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to start orchestrator: {e}")
+
+@app.post("/orchestrate/stop")
+async def stop_orchestrator_endpoint():
+    """Stop orchestrator monitoring"""
+    from app.services.orchestrator_service import orchestrator
+
+    try:
+        orchestrator.auto_mode = False
+        logger.info("Orchestrator auto mode disabled")
+        return {
+            "status": "success",
+            "auto_mode": False,
+            "message": "Orchestrator auto mode stopped"
+        }
+    except Exception as e:
+        logger.error(f"Error stopping orchestrator: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to stop orchestrator: {e}")

@@ -24,10 +24,10 @@ def ping_db():
         return db_connection.db.command("ping")
     return {"error": "Database not connected"}
 
-def biome_assets_for_task(biome_id: str, status_filter: str = "not complete"):
+def biome_assets_for_task(biome_id: str, status_filter: str = "not complete", quality_filter: str = "good", categories: list = None):
     """
     Returns a dict of asset objects (buildings, creatures, props, terrain, etc.) for a biome,
-    filtered by status (e.g., 'not complete').
+    filtered by status (e.g., 'not complete') and quality (e.g., 'good').
     Each key is the asset name, value is a dict with description, name, status, and other info.
     """
     try:
@@ -38,15 +38,28 @@ def biome_assets_for_task(biome_id: str, status_filter: str = "not complete"):
         # The possible_structures field contains asset categories
         possible_structures = biome.get("possible_structures", {})
         result = {}
-        for category in ["buildings", "creatures", "props", "terrain"]:
+        if categories is None:
+            # Search all available categories dynamically
+            categories_to_search = list(possible_structures.keys())
+        else:
+            # Search only the specified categories
+            categories_to_search = categories
+        for category in categories_to_search:
             assets = possible_structures.get(category, {})
             for asset_name, asset in assets.items():
-                # If asset is a dict and has a status field
-                if isinstance(asset, dict) and asset.get("status") == status_filter:
-                    # Try to get 3D S3 URL and image S3 URL from several possible key names
+                # If asset is a dict and matches status AND quality filters
+                if isinstance(asset, dict):
+                    status_ok = asset.get("status") == status_filter or asset.get("status") == "pending"
+                    if quality_filter is None:
+                        quality_ok = True
+                    else:
+                        quality_ok = asset.get("quality") == quality_filter
+
+                    if status_ok and quality_ok:
+                        # Try to get 3D S3 URL and image S3 URL from several possible key names
                         # possible keys for image URL (top-level or within attributes)
-                        image_keys = ["image_s3_url", "image_url", "s3_image_url", "s3_image_uri"]
-                        s3_3d_keys = ["s3_3d_url", "s3_3d_uri", "3d_s3_url", "s3_model_url","painted_url","mesh_url"]
+                        image_keys = ["image_url", "s3_image_url", "s3_image_uri"]
+                        s3_3d_keys = ["s3_model_url","painted_url","mesh_url"]
 
                         image_url = None
                         s3_3d_url = None
@@ -86,15 +99,16 @@ def biome_assets_for_task(biome_id: str, status_filter: str = "not complete"):
                             "background_prompt": asset.get("background_prompt", ""),
                             "attributes": asset.get("attributes", {}),
                             "id": asset.get("id", None),
+                            "quality": asset.get("quality", ""),  # Include quality in the result
                             "s3_3d_url": s3_3d_url,
                             # provide both fields for compatibility: 'image_url' (legacy) and 'image_s3_url' (preferred)
                             "image_url": image_url,
                             "image_s3_url": image_url,
+                            "category": category,
                         }
         return result
     except Exception as e:
         return {"error": str(e)}
-    
 def get_db() -> Database | None:
     if db_connection.db is not None:
         return db_connection.db
@@ -102,7 +116,6 @@ def get_db() -> Database | None:
         db_connection.client = MongoClient(settings.MONGODB_URL)
         db_connection.client.admin.command('ismaster')
         db_connection.db = db_connection.client[settings.MONGODB_DB_NAME]
-        logger_db.info("Database connection established successfully.")
         return db_connection.db
 
     except PyMongoError as e:
@@ -212,7 +225,8 @@ def get_biome_asset_update_key_by_job_id(biome_id: str, job_id: str) -> str | No
     """
     biome_data = get_biome(biome_id)
     possible_structures = biome_data.get("possible_structures", {})
-    for category in ["buildings", "creatures", "props", "terrain"]:
+    categories_to_search = list(possible_structures.keys())
+    for category in categories_to_search:
         assets = possible_structures.get(category, {})
         for key, asset in assets.items():
             if isinstance(asset, dict) and str(asset.get("job_id")) == str(job_id):
@@ -242,7 +256,8 @@ def get_biome_asset_update_key(biome_id: str, asset_name: str) -> str | None:
     """
     biome_data = get_biome(biome_id)
     possible_structures = biome_data.get("possible_structures", {})
-    for category in ["buildings", "creatures", "props", "terrain"]:
+    categories_to_search = list(possible_structures.keys())
+    for category in categories_to_search:
         assets = possible_structures.get(category, {})
         for key, asset in assets.items():
             if key == asset_name or (isinstance(asset, dict) and asset.get("name") == asset_name):
@@ -269,7 +284,7 @@ def get_biome_choices_live(database_name, collection_name):
     # biome = biome_collection.find_one({"_id": biome_id})
     # return serialize_mongo_doc(biome)
 
-def get_data(collection_name: str, limit: int = 5):
+def get_data(collection_name: str, limit: int = 20):
     db = get_db()                     
     if db is None:
         logger_db.error("Database not connected.")
@@ -296,3 +311,49 @@ def get_assets_by_biome(biome_id: str):
             asset['_id'] = str(asset['_id'])
     
     return assets_list
+
+from typing import List, Dict, Any
+
+def extract_all_images_from_biome(biome_id: str) -> List[Dict[str, Any]]:
+    """Extract all images from a specific biome"""
+    db = get_db()
+    if db is None:
+        logger_db.error("Database connection is not available.")
+        return []
+
+    biome = db["biomes"].find_one({"_id": biome_id})
+    if not biome:
+        return []
+
+    images = []
+    image_fields = ['image_url', 's3_image_uri']
+
+    def find_images(obj, category=""):
+        if isinstance(obj, dict):
+            # Check if this object has an image
+            for field in image_fields:
+                if field in obj and obj[field]:
+                    images.append({
+                        "url": obj[field],
+                        "name": obj.get('description', 'Unnamed'),
+                        "type": category,
+                        "status": obj.get('status', 'unknown')
+                    })
+                    break
+
+            # Search nested objects
+            for key, value in obj.items():
+                find_images(value, category or key)
+
+        elif isinstance(obj, list):
+            for item in obj:
+                find_images(item, category)
+
+    # Search through all structures
+    structures = biome.get('possible_structures', {})
+    for category, items in structures.items():
+        if isinstance(items, dict):
+            for name, details in items.items():
+                find_images(details, category)
+
+    return images
