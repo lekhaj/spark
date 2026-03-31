@@ -87,8 +87,8 @@ def load_pipeline():
         torch_dtype=TORCH_DTYPE,
         low_cpu_mem_usage=True,
     )
-    pipe.enable_model_cpu_offload()
-    logger.info(f"✅ Pipeline loaded: {PIPELINE_CLASS} with CPU offload")
+    pipe.to("cuda")
+    logger.info(f"✅ Pipeline loaded: {PIPELINE_CLASS} on CUDA")
     return pipe
 
 
