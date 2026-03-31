@@ -20,20 +20,18 @@ INSTANCE_MAP = {
 }
 
 # GPU SSH Configuration
-# A10 is the primary GPU — runs both image-worker and model-worker
-# T4 is kept in config for reference but is not started by the orchestrator
+# T4  → image_tasks  (SDXL image generation)  service: image-worker
+# A10 → model_tasks  (Hunyuan3D 3D generation) service: model-worker
 GPU_CONFIG = {
     "gpu_t4": {
         "ssh_user": getattr(settings, "GPU_T4_SSH_USER", "ubuntu"),
         "public_ip": getattr(settings, "GPU_T4_PUBLIC_IP", None),
-        "worker_service": "image-worker",
-        "enabled": False   # Disabled — A10 handles all tasks
+        "worker_service": "image-worker"
     },
     "gpu_a10": {
         "ssh_user": getattr(settings, "GPU_A10_SSH_USER", "ubuntu"),
         "public_ip": getattr(settings, "GPU_A10_PUBLIC_IP", None),
-        "worker_service": "spark-worker",   # single service managing both queues on A10
-        "enabled": True
+        "worker_service": "model-worker"
     }
 }
 
