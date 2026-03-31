@@ -85,10 +85,10 @@ def load_pipeline():
     pipe = PipelineClass.from_pretrained(
         MODEL_ID,
         torch_dtype=TORCH_DTYPE,
-        low_cpu_mem_usage=False,
+        low_cpu_mem_usage=True,
     )
-    pipe.to("cuda")
-    logger.info(f"✅ Pipeline loaded: {PIPELINE_CLASS} on cuda")
+    pipe.enable_model_cpu_offload()
+    logger.info(f"✅ Pipeline loaded: {PIPELINE_CLASS} with CPU offload")
     return pipe
 
 

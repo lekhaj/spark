@@ -27,7 +27,7 @@ class DualGPUOrchestrator:
         self.poll_interval = 30
         self.idle_shutdown = 300  # 5 min with no tasks → stop A10 instance
         self.idle_start_a10 = None
-        self.auto_mode = True
+        self.auto_mode = False
 
     def get_queue_lengths(self):
         return {
@@ -110,7 +110,7 @@ class DualGPUOrchestrator:
         }
 
     async def run(self):
-        print("[ORCHESTRATOR] Started — A10 only | image-worker + model-worker | auto_mode=True")
+        print("[ORCHESTRATOR] Started — A10 only | image-worker + model-worker | auto_mode=False (manual control)")
         while True:
             try:
                 await self.manage_gpu_a10()
