@@ -154,10 +154,21 @@ class GPUOrchestrator:
                 ensure_gpu_worker_running("gpu_a10_image")
 
         elif gpu_active:
-            # No tasks — start idle countdown
-            if self.idle_since is None:
+            # No tasks in queue — but check if workers are still busy
+            # (model_runner pops tasks from queue and runs model_worker_simple
+            #  as a subprocess, so queue can be empty while work is in progress)
+            img_worker_up = is_gpu_worker_running("gpu_a10_image")
+            model_worker_up = is_gpu_worker_running("gpu_a10")
+            workers_busy = img_worker_up or model_worker_up
+
+            if workers_busy:
+                # Workers still running — don't start idle timer
+                self.idle_since = None
+                print(f"[GPU] Queues empty but workers still active "
+                      f"(img={img_worker_up} model={model_worker_up}) — keeping alive")
+            elif self.idle_since is None:
                 self.idle_since = time.time()
-                print(f"[GPU] Queues empty — will shut down in "
+                print(f"[GPU] Queues empty, no workers — will shut down in "
                       f"{self.idle_shutdown // 60}min if no new tasks")
             else:
                 idle_elapsed = time.time() - self.idle_since
