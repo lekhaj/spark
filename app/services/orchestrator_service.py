@@ -12,7 +12,7 @@ from app.services.aws_service import (
 r = redis.Redis.from_url(settings.CELERY_BROKER_URL, decode_responses=True)
 
 # ── Configurable limits ──────────────────────────────────────────────────────
-TASK_TTL_SECONDS = 3600        # 1 hour — expire stale tasks
+TASK_TTL_SECONDS = 14400       # 4 hours — expire stale tasks (3D gen takes ~10 min per task)
 IDLE_SHUTDOWN_SECONDS = 300    # 5 min idle → stop GPU instance
 POLL_INTERVAL_SECONDS = 30    # how often the orchestrator checks queues
 BOOT_WAIT_SECONDS = 60        # wait for instance to boot + SSH ready
