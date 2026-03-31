@@ -12,18 +12,20 @@ r = redis.Redis.from_url(settings.CELERY_BROKER_URL, decode_responses=True)
 
 class DualGPUOrchestrator:
     """
-    Manages two GPU instances:
-      T4  (gpu_t4)  → image_tasks   → SDXL image generation  → service: image-worker
-      A10 (gpu_a10) → model_tasks   → Hunyuan3D 3D generation → service: model-worker
+    A10-only orchestrator — handles both image and 3D generation.
 
-    Pipeline flow:
-      Submit image_tasks → T4 generates image → updates MongoDB → pushes to model_tasks
-                                                                → A10 generates 3D mesh → updates MongoDB
+    Pipeline:
+      image_tasks → A10 (image-worker / SDXL)      → image generated → MongoDB updated
+                                                     → pushes to model_tasks
+      model_tasks → A10 (model-worker / Hunyuan3D)  → 3D mesh generated → MongoDB updated
+
+    Both workers run on the single A10 instance. T4 is not used.
+    Workers start when tasks arrive and stop when idle (30s for image, 3min for 3D).
+    The A10 instance itself shuts down after 5 min of both queues being empty.
     """
     def __init__(self):
         self.poll_interval = 30
-        self.idle_shutdown = 300  # 5 minutes idle before stopping instance
-        self.idle_start_t4  = None
+        self.idle_shutdown = 300  # 5 min with no tasks → stop A10 instance
         self.idle_start_a10 = None
         self.auto_mode = True
 
@@ -33,6 +35,10 @@ class DualGPUOrchestrator:
             "model_tasks": r.llen("model_tasks")
         }
 
+    def total_pending(self) -> int:
+        q = self.get_queue_lengths()
+        return q["image_tasks"] + q["model_tasks"]
+
     def is_gpu_active(self, gpu_type: str) -> bool:
         try:
             state = get_instance_state(gpu_type)
@@ -40,81 +46,79 @@ class DualGPUOrchestrator:
         except:
             return False
 
-    async def _manage_gpu(self, gpu_type: str, queue_name: str, idle_attr: str):
-        """Generic GPU manager — start on tasks, stop after idle_shutdown seconds idle."""
+    async def manage_gpu_a10(self):
+        """
+        A10 handles both image_tasks and model_tasks.
+        Starts instance when any task is pending.
+        Ensures both image-worker and model-worker are running.
+        Stops instance after idle_shutdown with no tasks.
+        """
         if not self.auto_mode:
             return
 
-        queue_len  = r.llen(queue_name)
-        gpu_active = self.is_gpu_active(gpu_type)
-        label      = gpu_type.upper()
+        queues     = self.get_queue_lengths()
+        total      = queues["image_tasks"] + queues["model_tasks"]
+        gpu_active = self.is_gpu_active("gpu_a10")
 
-        print(f"[{label}] Queue={queue_name}:{queue_len}, Active={gpu_active}")
+        print(f"[A10] image_tasks={queues['image_tasks']} model_tasks={queues['model_tasks']} active={gpu_active}")
 
-        if queue_len > 0:
-            setattr(self, idle_attr, None)  # reset idle timer
+        if total > 0:
+            self.idle_start_a10 = None
 
             if not gpu_active:
-                print(f"[{label}] Starting instance for {queue_len} pending task(s)...")
-                if start_instance(gpu_type):
-                    await asyncio.sleep(60)   # wait for boot + SSH readiness
-                    ensure_gpu_worker_running(gpu_type)
+                print(f"[A10] {total} task(s) queued — starting A10 instance...")
+                if start_instance("gpu_a10"):
+                    await asyncio.sleep(60)  # boot + SSH ready
+                    print("[A10] Instance ready — starting workers...")
+                    ensure_gpu_worker_running("gpu_a10")         # model-worker (Hunyuan3D)
+                    ensure_gpu_worker_running("gpu_a10_image")   # image-worker (SDXL)
                 return
 
-            if not is_gpu_worker_running(gpu_type):
-                print(f"[{label}] Instance up but worker not running — starting...")
-                ensure_gpu_worker_running(gpu_type)
+            # Instance running — ensure both workers are up
+            if not is_gpu_worker_running("gpu_a10"):
+                print("[A10] model-worker not running — starting...")
+                ensure_gpu_worker_running("gpu_a10")
+            if not is_gpu_worker_running("gpu_a10_image"):
+                print("[A10] image-worker not running — starting...")
+                ensure_gpu_worker_running("gpu_a10_image")
 
         elif gpu_active:
-            idle_start = getattr(self, idle_attr)
-            if idle_start is None:
-                setattr(self, idle_attr, time.time())
-                print(f"[{label}] Idle — will stop in {self.idle_shutdown//60} min if no tasks")
-            elif time.time() - idle_start > self.idle_shutdown:
-                print(f"[{label}] Idle timeout — stopping instance")
-                if stop_instance(gpu_type):
-                    setattr(self, idle_attr, None)
+            if self.idle_start_a10 is None:
+                self.idle_start_a10 = time.time()
+                print(f"[A10] Queues empty — stopping in {self.idle_shutdown//60} min if no new tasks")
+            elif time.time() - self.idle_start_a10 > self.idle_shutdown:
+                print("[A10] Idle timeout — stopping instance to save cost")
+                if stop_instance("gpu_a10"):
+                    self.idle_start_a10 = None
         else:
-            setattr(self, idle_attr, None)
-
-    async def manage_gpu_t4(self):
-        """T4 handles image_tasks (SDXL image generation)"""
-        await self._manage_gpu("gpu_t4", "image_tasks", "idle_start_t4")
-
-    async def manage_gpu_a10(self):
-        """A10 handles model_tasks (Hunyuan3D 3D generation)"""
-        await self._manage_gpu("gpu_a10", "model_tasks", "idle_start_a10")
+            self.idle_start_a10 = None
 
     def get_status(self):
-        queues        = self.get_queue_lengths()
-        t4_active     = self.is_gpu_active("gpu_t4")
-        a10_active    = self.is_gpu_active("gpu_a10")
+        queues     = self.get_queue_lengths()
+        a10_active = self.is_gpu_active("gpu_a10")
         return {
-            "auto_mode": self.auto_mode,
-            "pipeline": "image_tasks → T4(SDXL) → model_tasks → A10(Hunyuan3D)",
-            "gpu_t4": {
-                "active":         t4_active,
-                "queue":          queues["image_tasks"],
-                "worker_running": is_gpu_worker_running("gpu_t4") if t4_active else False
-            },
+            "auto_mode":  self.auto_mode,
+            "pipeline":   "image_tasks + model_tasks → A10 (SDXL + Hunyuan3D)",
+            "gpu_t4":     {"active": False, "note": "Disabled — A10 handles all tasks"},
             "gpu_a10": {
-                "active":         a10_active,
-                "queue":          queues["model_tasks"],
-                "worker_running": is_gpu_worker_running("gpu_a10") if a10_active else False
+                "active":               a10_active,
+                "image_queue":          queues["image_tasks"],
+                "model_queue":          queues["model_tasks"],
+                "image_worker_running": is_gpu_worker_running("gpu_a10_image") if a10_active else False,
+                "model_worker_running": is_gpu_worker_running("gpu_a10")       if a10_active else False,
             }
         }
 
     async def run(self):
-        print("[ORCHESTRATOR] Started — T4=image_tasks | A10=model_tasks | auto_mode=True")
+        print("[ORCHESTRATOR] Started — A10 only | image-worker + model-worker | auto_mode=True")
         while True:
             try:
-                await self.manage_gpu_t4()
                 await self.manage_gpu_a10()
-
-                s = self.get_status()
-                print(f"[T4]  active={s['gpu_t4']['active']}  worker={s['gpu_t4']['worker_running']}  queue={s['gpu_t4']['queue']}")
-                print(f"[A10] active={s['gpu_a10']['active']} worker={s['gpu_a10']['worker_running']} queue={s['gpu_a10']['queue']}")
-
+                s   = self.get_status()
+                a10 = s["gpu_a10"]
+                print(f"[A10] active={a10['active']} "
+                      f"img_worker={a10['image_worker_running']} img_q={a10['image_queue']} "
+                      f"model_worker={a10['model_worker_running']} model_q={a10['model_queue']}")
                 await asyncio.sleep(self.poll_interval)
             except Exception as e:
                 print(f"[ORCHESTRATOR ERROR] {e}")

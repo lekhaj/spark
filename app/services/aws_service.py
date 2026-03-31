@@ -20,18 +20,25 @@ INSTANCE_MAP = {
 }
 
 # GPU SSH Configuration
-# T4  → image_tasks  (SDXL image generation)  service: image-worker
-# A10 → model_tasks  (Hunyuan3D 3D generation) service: model-worker
+# A10 handles ALL tasks — two workers on same instance:
+#   image-worker → SDXL+ControlNet T-pose image generation  (gpu_a10_image)
+#   model-worker → Hunyuan3D 3D mesh generation             (gpu_a10)
 GPU_CONFIG = {
     "gpu_t4": {
         "ssh_user": getattr(settings, "GPU_T4_SSH_USER", "ubuntu"),
         "public_ip": getattr(settings, "GPU_T4_PUBLIC_IP", None),
-        "worker_service": "image-worker"
+        "worker_service": "image-worker",
+        "note": "Disabled — A10 handles all tasks"
     },
     "gpu_a10": {
         "ssh_user": getattr(settings, "GPU_A10_SSH_USER", "ubuntu"),
         "public_ip": getattr(settings, "GPU_A10_PUBLIC_IP", None),
-        "worker_service": "model-worker"
+        "worker_service": "model-worker"      # Hunyuan3D 3D generation
+    },
+    "gpu_a10_image": {
+        "ssh_user": getattr(settings, "GPU_A10_SSH_USER", "ubuntu"),
+        "public_ip": getattr(settings, "GPU_A10_PUBLIC_IP", None),
+        "worker_service": "image-worker"      # SDXL+ControlNet image generation
     }
 }
 
