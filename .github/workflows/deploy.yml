@@ -1,0 +1,64 @@
+name: Deploy to EC2
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to deploy'
+        required: true
+        default: 'feature/claude-gen-code'
+
+jobs:
+  deploy:
+    name: SSH Deploy to EC2
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
+
+      - name: Deploy to EC2 via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          timeout: 120s
+          script: |
+            set -e
+
+            echo ">>> Deploying branch: ${{ github.event.inputs.branch }}"
+
+            cd /home/ubuntu/spark
+
+            # Stash any local changes (e.g. .env, logs)
+            git stash --include-untracked || true
+
+            # Fetch latest and switch to the target branch
+            git fetch origin
+            git checkout ${{ github.event.inputs.branch }}
+            git pull origin ${{ github.event.inputs.branch }}
+
+            # Restore stash (brings back .env etc.)
+            git stash pop || true
+
+            # Install any new Python dependencies
+            /home/ubuntu/spark/venv/bin/pip install -r requirements.txt --quiet
+
+            # Restart services
+            sudo systemctl restart fastapi_app.service
+            sleep 3
+            sudo systemctl restart gradio_app.service
+            sleep 3
+
+            # Health check
+            echo ">>> FastAPI health check"
+            curl -sf http://localhost:8000/ || echo "WARNING: FastAPI not responding"
+
+            echo ">>> Service status"
+            systemctl is-active fastapi_app.service && echo "FastAPI: OK"
+            systemctl is-active gradio_app.service && echo "Gradio: OK"
+
+            echo ">>> Deploy complete!"
