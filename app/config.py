@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     GPU_T4_PUBLIC_IP: Optional[str] = None
     GPU_A10_SSH_USER: str = "ubuntu"
     GPU_A10_PUBLIC_IP: Optional[str] = None
+    # SSH key path on the server running the orchestrator (CPU instance)
+    GPU_SSH_KEY_PATH: str = "/home/ubuntu/.ssh/s_spu_key.pem"
 
     # Optional explicit blender executable path (set in .env on the host that will run Blender)
     BLENDER_PATH: str | None = None

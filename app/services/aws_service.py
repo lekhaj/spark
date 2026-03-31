@@ -20,16 +20,20 @@ INSTANCE_MAP = {
 }
 
 # GPU SSH Configuration
+# A10 is the primary GPU — runs both image-worker and model-worker
+# T4 is kept in config for reference but is not started by the orchestrator
 GPU_CONFIG = {
     "gpu_t4": {
         "ssh_user": getattr(settings, "GPU_T4_SSH_USER", "ubuntu"),
         "public_ip": getattr(settings, "GPU_T4_PUBLIC_IP", None),
-        "worker_service": "image-worker"
+        "worker_service": "image-worker",
+        "enabled": False   # Disabled — A10 handles all tasks
     },
     "gpu_a10": {
         "ssh_user": getattr(settings, "GPU_A10_SSH_USER", "ubuntu"),
         "public_ip": getattr(settings, "GPU_A10_PUBLIC_IP", None),
-        "worker_service": "model-worker"
+        "worker_service": "spark-worker",   # single service managing both queues on A10
+        "enabled": True
     }
 }
 
@@ -120,8 +124,9 @@ def ssh_to_gpu(gpu_type: str, command: str) -> tuple[bool, str]:
             print(f"[SSH ERROR] No public IP configured for {gpu_type}")
             return False, ""
 
+        ssh_key = getattr(settings, "GPU_SSH_KEY_PATH", "/home/ubuntu/.ssh/s_spu_key.pem")
         full_command = [
-            "ssh", "-i", "C:/Users/Harsh Thakur/.ssh/s_spu_key.pem",
+            "ssh", "-i", ssh_key,
             "-o", "StrictHostKeyChecking=accept-new",
             "-o", "ConnectTimeout=30",
             "-o", "BatchMode=yes",
