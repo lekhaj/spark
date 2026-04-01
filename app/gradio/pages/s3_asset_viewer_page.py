@@ -102,6 +102,25 @@ def s3_asset_viewer_ui():
             )
             model_action_html = gr.HTML(value="", elem_id="model-action-area")
 
+        # Rigged Models Accordion
+        with gr.Accordion("Rigged Models", open=False):
+            gr.Markdown("View rigged `.glb` models stored in S3 after UniRig processing.")
+            fetch_rigged_btn = gr.Button("Fetch Rigged Models")
+            rigged_status_md = gr.Markdown("#### Rigged Model URLs")
+            rigged_model_select = gr.Dropdown(
+                label="Select Rigged Model",
+                choices=[],
+                value=None,
+                interactive=True
+            )
+            rigged_action_html = gr.HTML(value="", elem_id="rigged-action-area")
+            with gr.Row():
+                rigged_url_box = gr.Textbox(
+                    label="Direct S3 URL",
+                    interactive=False,
+                    placeholder="Select a rigged model to see its URL"
+                )
+
         # Core Helper Functions
         def s3_to_https(uri):
             """Convert S3 URI to HTTPS URL"""
@@ -449,6 +468,83 @@ def s3_asset_viewer_ui():
             except Exception as e:
                 return (f"Error: {e}", gr.update(choices=[]))
 
+        def fetch_rigged_models(biome_id, asset_name=None):
+            """Fetch rigged model URLs for a biome — checks rigged_model_url, rigged_url,
+            and per-variant rigged_url inside decimated_assets."""
+            try:
+                if not biome_id or biome_id == "none":
+                    return "No biome selected", gr.update(choices=[])
+
+                assets_map = get_biome_assets(biome_id, asset_name)
+                if not assets_map:
+                    return "No assets found", gr.update(choices=[])
+
+                rigged_keys = ("rigged_model_url", "rigged_url", "rigged_glb_url")
+                found = []
+
+                for asset_name_key, asset_data in assets_map.items():
+                    if not isinstance(asset_data, dict):
+                        continue
+
+                    # Top-level rigged URL
+                    for k in rigged_keys:
+                        url = asset_data.get(k)
+                        if url:
+                            found.append((asset_name_key, s3_to_https(url), "rigged"))
+
+                    # Per-variant inside decimated_assets
+                    dec_obj = asset_data.get("decimated_assets") or {}
+                    for variant_key, variant_val in dec_obj.items():
+                        if not isinstance(variant_val, dict):
+                            continue
+                        for k in rigged_keys:
+                            url = variant_val.get(k)
+                            if url:
+                                found.append((
+                                    f"{asset_name_key} / {variant_key}",
+                                    s3_to_https(url), "rigged-decimated"
+                                ))
+
+                if not found:
+                    return "No rigged models found. Run rigging first.", gr.update(choices=[])
+
+                import os
+                md_lines = [f"### Rigged Models ({len(found)})\n"]
+                choices = []
+                for asset_lbl, url, kind in found:
+                    fname = os.path.basename(url)
+                    label = f"{asset_lbl} — {fname}"
+                    md_lines.append(f"- [{label}]({url})")
+                    choices.append((label, url))
+
+                return "\n".join(md_lines), gr.update(choices=choices, value=choices[0][1] if choices else None)
+
+            except Exception as e:
+                return f"Error: {e}", gr.update(choices=[])
+
+        def show_rigged_model_actions(model_url):
+            """Generate viewer HTML for a rigged model URL."""
+            if not model_url:
+                return "", ""
+
+            import urllib.parse
+            encoded_url = urllib.parse.quote(model_url, safe=':/')
+            viewer_url = f"https://3dviewer.net/#model={encoded_url}"
+
+            html = (
+                f'<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">'
+                f'<a href="{viewer_url}" target="_blank" rel="noopener noreferrer" '
+                f'style="padding:8px 14px;background:#7c3aed;color:#fff;border-radius:6px;'
+                f'text-decoration:none;font-weight:600;">🦴 Open Rigged Model in 3D Viewer</a>'
+                f'<a href="{model_url}" target="_blank" rel="noopener noreferrer" '
+                f'style="padding:8px 14px;background:#1f7f46;color:#fff;border-radius:6px;'
+                f'text-decoration:none;font-weight:600;">⬇️ Download GLB</a>'
+                f'</div>'
+                f'<p style="margin-top:8px;font-size:12px;color:#666">'
+                f'Tip: 3DViewer.net supports GLB files with bones/armature from UniRig.</p>'
+            )
+            return html, model_url
+
         def update_image_preview(selected_image_url):
             """Update image preview when selection changes - works with any image"""
             return gr.update(visible=bool(selected_image_url), value=selected_image_url)
@@ -532,6 +628,19 @@ def s3_asset_viewer_ui():
             fn=refresh_biome_choices,
             inputs=[],
             outputs=[biome_dropdown]
+        )
+
+        # Rigged model event handlers
+        fetch_rigged_btn.click(
+            fn=fetch_rigged_models,
+            inputs=[biome_dropdown, asset_name_box],
+            outputs=[rigged_status_md, rigged_model_select]
+        )
+
+        rigged_model_select.change(
+            fn=show_rigged_model_actions,
+            inputs=[rigged_model_select],
+            outputs=[rigged_action_html, rigged_url_box]
         )
 
     return s3_asset_viewer
