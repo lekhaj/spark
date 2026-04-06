@@ -102,6 +102,32 @@ def s3_asset_viewer_ui():
             )
             model_action_html = gr.HTML(value="", elem_id="model-action-area")
 
+        # Decimated Models Accordion
+        with gr.Accordion("Decimated Models", open=False):
+            gr.Markdown("View per-LOD decimated `.glb` models stored in S3.")
+            fetch_decimated_btn = gr.Button("Fetch Decimated Models")
+            decimated_status_md = gr.Markdown("#### Decimated Model URLs")
+            decimated_model_select = gr.Dropdown(
+                label="Select Decimated Model",
+                choices=[],
+                value=None,
+                interactive=True
+            )
+            decimated_action_html = gr.HTML(value="", elem_id="decimated-action-area")
+
+        # TRELLIS Models Accordion
+        with gr.Accordion("TRELLIS Models", open=False):
+            gr.Markdown("View TRELLIS.2-4B generated `.glb` models stored in S3.")
+            fetch_trellis_btn = gr.Button("Fetch TRELLIS Models")
+            trellis_status_md = gr.Markdown("#### TRELLIS Model URLs")
+            trellis_model_select = gr.Dropdown(
+                label="Select TRELLIS Model",
+                choices=[],
+                value=None,
+                interactive=True
+            )
+            trellis_action_html = gr.HTML(value="", elem_id="trellis-action-area")
+
         # Rigged Models Accordion
         with gr.Accordion("Rigged Models", open=False):
             gr.Markdown("View rigged `.glb` models stored in S3 after UniRig processing.")
@@ -433,6 +459,16 @@ def s3_asset_viewer_ui():
                             if isinstance(profile_info, dict) and profile_info.get("url"):
                                 urls.append(profile_info.get("url"))
 
+                    # TRELLIS model
+                    trellis_url = asset_data.get("trellis_glb_url")
+                    if trellis_url:
+                        urls.append(s3_to_https(trellis_url))
+
+                    # Rigged models: rigged_lod_* (Hunyuan) and rigged_trellis_* (TRELLIS)
+                    for k, v in asset_data.items():
+                        if (k.startswith("rigged_lod_") or k.startswith("rigged_trellis_")) and isinstance(v, str) and v:
+                            urls.append(s3_to_https(v))
+
                 # Deduplicate URLs
                 seen_urls = set()
                 unique_urls = []
@@ -444,9 +480,17 @@ def s3_asset_viewer_ui():
                 # Create labeled choices and markdown output - dynamic for any number of models
                 import os
 
-                def create_url_label(url):
+                def create_url_label(url, hint=""):
                     filename = os.path.basename(url)
                     url_lower = url.lower()
+                    if hint:
+                        return f"{hint} — {filename}"
+                    if "rigging" in url_lower and "trellis" in filename.lower():
+                        return f"Rigged [TRELLIS] — {filename}"
+                    if "rigging" in url_lower:
+                        return f"Rigged [Hunyuan] — {filename}"
+                    if "trellis" in url_lower:
+                        return f"TRELLIS — {filename}"
                     if "painted" in url_lower:
                         return f"Painted — {filename}"
                     if "decimated" in url_lower or "decimate" in url_lower:
@@ -486,11 +530,23 @@ def s3_asset_viewer_ui():
                     if not isinstance(asset_data, dict):
                         continue
 
-                    # Top-level rigged URL
+                    # Top-level rigged URL (fixed keys)
                     for k in rigged_keys:
                         url = asset_data.get(k)
                         if url:
                             found.append((asset_name_key, s3_to_https(url), "rigged"))
+
+                    # Dynamic rigged_lod_* keys (Hunyuan): rigged_lod_300k, rigged_lod_100k, etc.
+                    for k, v in asset_data.items():
+                        if k.startswith("rigged_lod_") and isinstance(v, str) and v:
+                            label = f"{asset_name_key} [Hunyuan {k}]"
+                            found.append((label, s3_to_https(v), "hunyuan-rigged"))
+
+                    # Dynamic rigged_trellis_* keys: rigged_trellis_lod_300k, etc.
+                    for k, v in asset_data.items():
+                        if k.startswith("rigged_trellis_") and isinstance(v, str) and v:
+                            label = f"{asset_name_key} [TRELLIS {k}]"
+                            found.append((label, s3_to_https(v), "trellis-rigged"))
 
                     # Per-variant inside decimated_assets
                     dec_obj = asset_data.get("decimated_assets") or {}
@@ -521,6 +577,103 @@ def s3_asset_viewer_ui():
 
             except Exception as e:
                 return f"Error: {e}", gr.update(choices=[])
+
+        def fetch_decimated_models(biome_id, asset_name=None):
+            """Fetch per-LOD decimated models from decimated_assets.{lod}.url"""
+            try:
+                if not biome_id or biome_id == "none":
+                    return "No biome selected", gr.update(choices=[])
+
+                assets_map = get_biome_assets(biome_id, asset_name)
+                if not assets_map:
+                    return "No assets found", gr.update(choices=[])
+
+                found = []
+                for asset_name_key, asset_data in assets_map.items():
+                    if not isinstance(asset_data, dict):
+                        continue
+                    dec_obj = asset_data.get("decimated_assets") or {}
+                    for lod_key, lod_data in dec_obj.items():
+                        if not isinstance(lod_data, dict):
+                            continue
+                        url = lod_data.get("url") or lod_data.get("glb_url")
+                        if url:
+                            found.append((f"{asset_name_key} / {lod_key}", s3_to_https(url)))
+
+                if not found:
+                    return "No decimated models found. Run decimation first.", gr.update(choices=[])
+
+                import os
+                md_lines = [f"### Decimated Models ({len(found)} LOD variants)\n"]
+                choices = []
+                for label, url in found:
+                    fname = os.path.basename(url)
+                    md_lines.append(f"- [{label} — {fname}]({url})")
+                    choices.append((label, url))
+
+                return "\n".join(md_lines), gr.update(choices=choices, value=choices[0][1] if choices else None)
+
+            except Exception as e:
+                return f"Error: {e}", gr.update(choices=[])
+
+        def fetch_trellis_models(biome_id, asset_name=None):
+            """Fetch TRELLIS.2-4B generated models from trellis_glb_url field."""
+            try:
+                if not biome_id or biome_id == "none":
+                    return "No biome selected", gr.update(choices=[])
+
+                assets_map = get_biome_assets(biome_id, asset_name)
+                if not assets_map:
+                    return "No assets found", gr.update(choices=[])
+
+                found = []
+                for asset_name_key, asset_data in assets_map.items():
+                    if not isinstance(asset_data, dict):
+                        continue
+                    # TRELLIS primary output
+                    url = asset_data.get("trellis_glb_url")
+                    if url:
+                        found.append((f"{asset_name_key} (TRELLIS)", s3_to_https(url)))
+                    # TRELLIS decimated variants (future: trellis_decimated_assets)
+                    trellis_dec = asset_data.get("trellis_decimated_assets") or {}
+                    for lod_key, lod_data in trellis_dec.items():
+                        if isinstance(lod_data, dict):
+                            dec_url = lod_data.get("url") or lod_data.get("glb_url")
+                            if dec_url:
+                                found.append((f"{asset_name_key} / TRELLIS-{lod_key}", s3_to_https(dec_url)))
+
+                if not found:
+                    return "No TRELLIS models found.", gr.update(choices=[])
+
+                import os
+                md_lines = [f"### TRELLIS Models ({len(found)})\n"]
+                choices = []
+                for label, url in found:
+                    fname = os.path.basename(url)
+                    md_lines.append(f"- [{label} — {fname}]({url})")
+                    choices.append((label, url))
+
+                return "\n".join(md_lines), gr.update(choices=choices, value=choices[0][1] if choices else None)
+
+            except Exception as e:
+                return f"Error: {e}", gr.update(choices=[])
+
+        def show_model_viewer_html(model_url, label_prefix="Model"):
+            """Generic GLB viewer HTML — works for decimated, TRELLIS, rigged."""
+            if not model_url:
+                return ""
+            encoded_url = urllib.parse.quote(model_url, safe=':/')
+            viewer_url = f"https://3dviewer.net/#model={encoded_url}"
+            return (
+                f'<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">'
+                f'<a href="{viewer_url}" target="_blank" rel="noopener noreferrer" '
+                f'style="padding:8px 14px;background:#0b5fff;color:#fff;border-radius:6px;'
+                f'text-decoration:none;font-weight:600;">🔍 Open in 3D Viewer</a>'
+                f'<a href="{model_url}" target="_blank" rel="noopener noreferrer" '
+                f'style="padding:8px 14px;background:#1f7f46;color:#fff;border-radius:6px;'
+                f'text-decoration:none;font-weight:600;">⬇️ Download GLB</a>'
+                f'</div>'
+            )
 
         def show_rigged_model_actions(model_url):
             """Generate viewer HTML for a rigged model URL."""
@@ -641,6 +794,32 @@ def s3_asset_viewer_ui():
             fn=show_rigged_model_actions,
             inputs=[rigged_model_select],
             outputs=[rigged_action_html, rigged_url_box]
+        )
+
+        # Decimated model event handlers
+        fetch_decimated_btn.click(
+            fn=fetch_decimated_models,
+            inputs=[biome_dropdown, asset_name_box],
+            outputs=[decimated_status_md, decimated_model_select]
+        )
+
+        decimated_model_select.change(
+            fn=show_model_viewer_html,
+            inputs=[decimated_model_select],
+            outputs=[decimated_action_html]
+        )
+
+        # TRELLIS model event handlers
+        fetch_trellis_btn.click(
+            fn=fetch_trellis_models,
+            inputs=[biome_dropdown, asset_name_box],
+            outputs=[trellis_status_md, trellis_model_select]
+        )
+
+        trellis_model_select.change(
+            fn=show_model_viewer_html,
+            inputs=[trellis_model_select],
+            outputs=[trellis_action_html]
         )
 
     return s3_asset_viewer

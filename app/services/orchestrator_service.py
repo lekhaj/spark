@@ -5,33 +5,34 @@ import redis
 from app.config import settings
 from app.services.aws_service import (
     start_instance, stop_instance, is_gpu_worker_running,
-    get_instance_state, ensure_gpu_worker_running
+    get_instance_state, ensure_gpu_worker_running, ssh_to_gpu
 )
 
 # Redis connection
 r = redis.Redis.from_url(settings.CELERY_BROKER_URL, decode_responses=True)
 
 # ── Configurable limits ──────────────────────────────────────────────────────
-TASK_TTL_SECONDS = 14400       # 4 hours — expire stale tasks (3D gen takes ~10 min per task)
+TASK_TTL_SECONDS = 14400       # 4 hours — expire stale tasks
 IDLE_SHUTDOWN_SECONDS = 300    # 5 min idle → stop GPU instance
-POLL_INTERVAL_SECONDS = 30    # how often the orchestrator checks queues
-BOOT_WAIT_SECONDS = 60        # wait for instance to boot + SSH ready
+POLL_INTERVAL_SECONDS = 30     # how often the orchestrator checks queues
+BOOT_WAIT_SECONDS = 60         # wait for instance to boot + SSH ready
+
+# All queues that require GPU — orchestrator keeps GPU alive while any has work
+GPU_QUEUES = ("image_tasks", "model_tasks", "rig_model")
 
 
 class GPUOrchestrator:
     """
-    GPU orchestrator — auto-starts/stops a single GPU instance (A10G / g5.2xlarge)
-    for both image generation (Z-Image-Turbo) and 3D generation (Hunyuan3D-2).
+    GPU orchestrator — auto-starts/stops the GPU instance (A10G / g5.2xlarge).
 
-    Features:
-      - auto_mode: when True, starts GPU when tasks arrive, stops when idle
-      - Task expiration: removes tasks older than TASK_TTL_SECONDS from queues
-      - Idle shutdown: stops GPU instance after IDLE_SHUTDOWN_SECONDS with empty queues
-      - Runs on the CPU server, manages GPU via SSH + AWS API
+    Watches all GPU queues:
+      image_tasks  → image-worker  (Z-Image-Turbo)
+      model_tasks  → model-worker  (Hunyuan3D-2 / TRELLIS)
+      rig_model    → rig-worker    (UniRig)
 
-    Pipeline:
-      image_tasks → GPU (image-worker / Z-Image-Turbo) → image → MongoDB → model_tasks
-      model_tasks → GPU (model-worker / Hunyuan3D-2)   → 3D mesh → MongoDB + S3
+    Lifecycle:
+      - Any queue has tasks   → start GPU, ensure relevant workers running
+      - All queues empty AND no workers active → start 5-min idle timer → stop GPU
     """
 
     def __init__(self):
@@ -44,17 +45,13 @@ class GPUOrchestrator:
     # ── Queue helpers ─────────────────────────────────────────────────────
 
     def get_queue_lengths(self):
-        return {
-            "image_tasks": r.llen("image_tasks"),
-            "model_tasks": r.llen("model_tasks"),
-        }
+        return {q: r.llen(q) for q in GPU_QUEUES}
 
     def total_pending(self) -> int:
-        q = self.get_queue_lengths()
-        return q["image_tasks"] + q["model_tasks"]
+        return sum(self.get_queue_lengths().values())
 
     def expire_stale_tasks(self):
-        """Remove tasks older than task_ttl from all queues."""
+        """Remove tasks older than task_ttl from image/model queues (not rig_model)."""
         now = time.time()
         expired_count = 0
         for queue_name in ("image_tasks", "model_tasks"):
@@ -70,7 +67,6 @@ class GPUOrchestrator:
                 try:
                     task = json.loads(raw)
                     ts = task.get("timestamp", 0)
-                    # Parse ISO timestamp or unix timestamp
                     if isinstance(ts, str):
                         from datetime import datetime
                         try:
@@ -86,10 +82,9 @@ class GPUOrchestrator:
                         print(f"[EXPIRE] Removing stale task from {queue_name} "
                               f"(age={age/60:.0f}min, job_id={task.get('job_id','?')})")
                 except (json.JSONDecodeError, TypeError):
-                    keep.append(raw)  # keep unparseable tasks
+                    keep.append(raw)
 
             if expired_count > 0:
-                # Replace queue atomically
                 pipe = r.pipeline()
                 pipe.delete(queue_name)
                 if keep:
@@ -109,14 +104,51 @@ class GPUOrchestrator:
         except Exception:
             return False
 
+    def is_rig_worker_running(self) -> bool:
+        """Check if rig-worker service is actively processing (not just idle)."""
+        try:
+            success, output = ssh_to_gpu("gpu_a10", "systemctl is-active rig-worker")
+            if not (success and output == "active"):
+                return False
+            # rig-worker is active — check if it's actually processing (unirig subprocess running)
+            success2, out2 = ssh_to_gpu(
+                "gpu_a10",
+                "pgrep -f 'generate_skeleton|generate_skin|merge.sh|unirig_batch_rig' | wc -l"
+            )
+            if success2:
+                try:
+                    if int(out2.strip()) > 0:
+                        return True
+                except (ValueError, IndexError):
+                    pass
+            # Also check rig_model queue — if items remain, worker is still busy
+            return r.llen("rig_model") > 0 and success
+        except Exception:
+            return False
+
+    def ensure_rig_worker(self):
+        """Start rig-worker on GPU if not running."""
+        try:
+            success, output = ssh_to_gpu("gpu_a10", "systemctl is-active rig-worker")
+            if success and output == "active":
+                print("[GPU] rig-worker already active")
+                return True
+            print("[GPU] Starting rig-worker...")
+            ok, _ = ssh_to_gpu("gpu_a10", "sudo systemctl start rig-worker")
+            return ok
+        except Exception as e:
+            print(f"[GPU] Failed to start rig-worker: {e}")
+            return False
+
     # ── Main orchestration loop ───────────────────────────────────────────
 
     async def manage_gpu(self):
         """
         Core logic:
-          1. Expire stale tasks (>1 hour)
-          2. If tasks pending → start GPU + ensure workers
-          3. If no tasks + GPU idle >5 min → stop GPU
+          1. Expire stale image/model tasks
+          2. Check all GPU queues (image_tasks, model_tasks, rig_model)
+          3. If any queue has work → start GPU + ensure appropriate workers
+          4. If all queues empty + no workers active → 5-min idle → stop GPU
         """
         if not self.auto_mode:
             return
@@ -124,13 +156,13 @@ class GPUOrchestrator:
         # Step 1: expire stale tasks
         self.expire_stale_tasks()
 
-        # Step 2: check queues
+        # Step 2: check all queues
         queues = self.get_queue_lengths()
-        total = queues["image_tasks"] + queues["model_tasks"]
+        total = sum(queues.values())
         gpu_active = self.is_gpu_active("gpu_a10")
 
         print(f"[GPU] image_tasks={queues['image_tasks']} model_tasks={queues['model_tasks']} "
-              f"active={gpu_active} auto_mode={self.auto_mode}")
+              f"rig_model={queues['rig_model']} active={gpu_active} auto_mode={self.auto_mode}")
 
         if total > 0:
             # Work to do — reset idle timer
@@ -141,40 +173,44 @@ class GPUOrchestrator:
                 if start_instance("gpu_a10"):
                     await asyncio.sleep(BOOT_WAIT_SECONDS)
                     print("[GPU] Instance booted — starting workers...")
-                    ensure_gpu_worker_running("gpu_a10")         # model-worker
-                    ensure_gpu_worker_running("gpu_a10_image")   # image-worker
+                    ensure_gpu_worker_running("gpu_a10")        # model-worker
+                    ensure_gpu_worker_running("gpu_a10_image")  # image-worker
+                    if queues["rig_model"] > 0:
+                        self.ensure_rig_worker()
                 return
 
-            # GPU running — ensure both workers are up
-            if not is_gpu_worker_running("gpu_a10"):
-                print("[GPU] model-worker not running — starting...")
-                ensure_gpu_worker_running("gpu_a10")
-            if not is_gpu_worker_running("gpu_a10_image"):
-                print("[GPU] image-worker not running — starting...")
-                ensure_gpu_worker_running("gpu_a10_image")
+            # GPU running — ensure correct workers are up for pending queues
+            if queues["image_tasks"] > 0 or queues["model_tasks"] > 0:
+                if not is_gpu_worker_running("gpu_a10"):
+                    print("[GPU] model-worker not running — starting...")
+                    ensure_gpu_worker_running("gpu_a10")
+                if not is_gpu_worker_running("gpu_a10_image"):
+                    print("[GPU] image-worker not running — starting...")
+                    ensure_gpu_worker_running("gpu_a10_image")
+
+            if queues["rig_model"] > 0:
+                self.ensure_rig_worker()
 
         elif gpu_active:
-            # No tasks in queue — but check if workers are still busy
-            # (model_runner pops tasks from queue and runs model_worker_simple
-            #  as a subprocess, so queue can be empty while work is in progress)
-            img_worker_up = is_gpu_worker_running("gpu_a10_image")
-            model_worker_up = is_gpu_worker_running("gpu_a10")
-            workers_busy = img_worker_up or model_worker_up
+            # All queues empty — check if any worker is still processing
+            img_busy   = is_gpu_worker_running("gpu_a10_image")
+            model_busy = is_gpu_worker_running("gpu_a10")
+            rig_busy   = self.is_rig_worker_running()
+            workers_busy = img_busy or model_busy or rig_busy
 
             if workers_busy:
-                # Workers still running — don't start idle timer
                 self.idle_since = None
                 print(f"[GPU] Queues empty but workers still active "
-                      f"(img={img_worker_up} model={model_worker_up}) — keeping alive")
+                      f"(img={img_busy} model={model_busy} rig={rig_busy}) — keeping alive")
             elif self.idle_since is None:
                 self.idle_since = time.time()
-                print(f"[GPU] Queues empty, no workers — will shut down in "
-                      f"{self.idle_shutdown // 60}min if no new tasks")
+                print(f"[GPU] All queues empty, no workers active — "
+                      f"shutting down in {self.idle_shutdown // 60}min if no new tasks")
             else:
                 idle_elapsed = time.time() - self.idle_since
                 remaining = max(0, self.idle_shutdown - idle_elapsed)
                 if idle_elapsed >= self.idle_shutdown:
-                    print("[GPU] Idle timeout reached — stopping instance to save cost")
+                    print("[GPU] Idle timeout reached — stopping GPU instance to save cost")
                     if stop_instance("gpu_a10"):
                         self.idle_since = None
                 else:
@@ -196,13 +232,15 @@ class GPUOrchestrator:
             "auto_mode": self.auto_mode,
             "task_ttl_minutes": self.task_ttl // 60,
             "idle_shutdown_minutes": self.idle_shutdown // 60,
-            "pipeline": "image_tasks + model_tasks → GPU (Z-Image-Turbo + Hunyuan3D-2)",
+            "pipeline": "image_tasks + model_tasks + rig_model → GPU",
             "gpu": {
                 "active": gpu_active,
                 "image_queue": queues["image_tasks"],
                 "model_queue": queues["model_tasks"],
+                "rig_queue": queues["rig_model"],
                 "image_worker_running": is_gpu_worker_running("gpu_a10_image") if gpu_active else False,
                 "model_worker_running": is_gpu_worker_running("gpu_a10") if gpu_active else False,
+                "rig_worker_running": self.is_rig_worker_running() if gpu_active else False,
                 "idle_seconds": idle_elapsed,
             }
         }
@@ -211,6 +249,7 @@ class GPUOrchestrator:
 
     async def run(self):
         print(f"[ORCHESTRATOR] Started — auto_mode={self.auto_mode} | "
+              f"queues={GPU_QUEUES} | "
               f"task_ttl={self.task_ttl // 60}min | "
               f"idle_shutdown={self.idle_shutdown // 60}min | "
               f"poll={self.poll_interval}s")

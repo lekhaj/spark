@@ -15,6 +15,11 @@ router = APIRouter()
 
 REDIS_IMAGE_QUEUE = "image_tasks"
 REDIS_3D_QUEUE = "model_tasks"
+# Asset names to permanently exclude from all pipelines (image + 3D generation)
+# Add any creature/asset name here to skip it globally
+SKIP_ASSET_NAMES = {
+    "dire_wolf",  # excluded: four-legged, poor rigging compatibility
+}
 logger = logging.getLogger("app.orchestrator")
 
 # Create a Redis client safely (may be None if not configured)
@@ -64,6 +69,9 @@ def submit_image_tasks(biome_id: str):
         return {"message": "No assets with status 'not complete' for this biome."}
     job_ids = []
     for asset_name, asset in assets.items():
+        if asset_name in SKIP_ASSET_NAMES:
+            logger.info(f"[SKIP] {asset_name} is in SKIP_ASSET_NAMES — skipping image task")
+            continue
         job_id, task = create_image_task_dict(
             prompt=asset["description"],
             negative_prompt=asset.get("negative_prompt", ""),
@@ -100,6 +108,9 @@ def submit_3d_tasks(biome_id: str):
     job_ids = []
     image_url_key = ["image_s3_url", "image_url", "s3_image_url", "s3_image_uri"]
     for asset_name, asset in assets.items():
+        if asset_name in SKIP_ASSET_NAMES:
+            logger.info(f"[SKIP] {asset_name} is in SKIP_ASSET_NAMES — skipping 3D task")
+            continue
         # prefer top-level keys, else look inside attributes dict
         chosen_key = next((x for x in image_url_key if x in asset and asset.get(x)), None)
         image_url_val = asset.get(chosen_key) if chosen_key else None

@@ -68,6 +68,12 @@ IDLE_TIMEOUT     = int(os.getenv("IMAGE_IDLE_TIMEOUT", "30"))  # seconds
 
 TORCH_DTYPE = getattr(torch, TORCH_DTYPE_STR, torch.bfloat16)
 
+# Asset names to never forward to 3D pipeline
+SKIP_ASSET_NAMES = {
+    "dire_wolf",  # excluded: four-legged, poor rigging compatibility
+}
+
+
 
 def load_pipeline():
     """Dynamically load the configured pipeline class from diffusers."""
@@ -158,6 +164,10 @@ def update_mongo(biome_id: str, update_key: str, image_url: str, status: str = "
 
 def forward_to_model_queue(redis_client, task: dict, image_url: str):
     """Push a model_tasks entry so the 3D worker picks up the generated image."""
+    asset_name = (task.get("update_key") or "").split(".")[-1]
+    if asset_name in SKIP_ASSET_NAMES:
+        logger.info(f"[SKIP] {asset_name} is in SKIP_ASSET_NAMES — not forwarding to model_tasks")
+        return
     model_task = {
         "job_id":       task["job_id"],
         "image_s3_url": image_url,
