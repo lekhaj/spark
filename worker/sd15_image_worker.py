@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SD 1.5 Multi-Stage Image Worker — A10 GPU (13.203.114.77)
+SD 1.5 Multi-Stage Image Worker — L4 GPU (3.215.211.192)
 =========================================================
 Generates game-ready character images for TRELLIS 3D input.
 
@@ -83,12 +83,12 @@ STAGE2_CFG      = 7.5
 STAGE2_STRENGTH = 0.35   # img2img denoising strength (0.3–0.4 per spec)
 
 # ── Infrastructure ────────────────────────────────────────────────────────────
-REDIS_HOST   = os.getenv("REDIS_HOST",   "15.206.99.66")
+REDIS_HOST   = os.getenv("REDIS_HOST",   "18.207.13.85")
 REDIS_PORT   = int(os.getenv("REDIS_PORT", 6380))
-MONGO_URI    = os.getenv("MONGO_URI",    "mongodb://kartik:Kartikg421@15.206.99.66:27017")
+MONGO_URI    = os.getenv("MONGO_URI",    "mongodb://kartik:Kartikg421@18.207.13.85:27017")
 MONGO_DB     = "World_builder"
-S3_BUCKET    = os.getenv("AWS_S3_BUCKET", "spackassets")
-S3_REGION    = os.getenv("AWS_REGION",    "ap-south-1")
+S3_BUCKET    = os.getenv("AWS_S3_BUCKET", "sparkassets-us")
+S3_REGION    = os.getenv("AWS_REGION",    "us-east-1")
 
 INPUT_QUEUE  = "sd15_tasks"    # A10 worker reads from here
 OUTPUT_QUEUE = "model_tasks"   # TRELLIS worker reads from here (L4 GPU)

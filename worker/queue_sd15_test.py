@@ -11,7 +11,7 @@ import time
 import uuid
 import redis
 
-REDIS_HOST = "15.206.99.66"
+REDIS_HOST = "18.207.13.85"
 REDIS_PORT = 6380
 QUEUE      = "sd15_tasks"
 

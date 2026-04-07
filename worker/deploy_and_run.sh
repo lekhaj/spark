@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # ════════════════════════════════════════════════════════
 # deploy_and_run.sh
-# Assumes both CPU (15.206.99.66) and A10 (43.205.175.32)
+# Assumes both CPU (18.207.13.85) and L4 (3.215.211.192)
 # are already running. Run from your Mac:
 #   bash worker/deploy_and_run.sh
 # ════════════════════════════════════════════════════════
 set -e
 
-KEY="/Users/lekhaj/Downloads/s_spu_key.pem"
-A10="ubuntu@43.205.175.32"
-CPU="ubuntu@15.206.99.66"
+KEY="/Users/lekhaj/Downloads/us_cpu_key.pem"
+A10="ubuntu@3.215.211.192"
+CPU="ubuntu@18.207.13.85"
 REMOTE_DIR="/home/ubuntu/worker/sd15"
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
@@ -18,7 +18,7 @@ SCP="scp -i $KEY -o StrictHostKeyChecking=no"
 
 # ════════════════════════════════════════════════════════
 echo "════════════════════════════════════════"
-echo " STEP 1 — Deploy worker files to A10"
+echo " STEP 1 — Deploy worker files to L4"
 echo "════════════════════════════════════════"
 $SSH $A10 "mkdir -p $REMOTE_DIR"
 $SCP "$REPO_DIR/worker/sd15_image_worker.py"       $A10:$REMOTE_DIR/
@@ -28,7 +28,7 @@ echo "Files deployed."
 # ════════════════════════════════════════════════════════
 echo ""
 echo "════════════════════════════════════════"
-echo " STEP 2 — Install / verify Python deps on A10"
+echo " STEP 2 — Install / verify Python deps on L4"
 echo "════════════════════════════════════════"
 $SSH $A10 bash <<'ENDSSH'
 set -e
@@ -58,7 +58,7 @@ ENDSSH
 # ════════════════════════════════════════════════════════
 echo ""
 echo "════════════════════════════════════════"
-echo " STEP 3 — Generate ControlNet reference images on A10"
+echo " STEP 3 — Generate ControlNet reference images on L4"
 echo "════════════════════════════════════════"
 $SSH $A10 bash <<'ENDSSH'
 VENV=/home/ubuntu/worker/Hunyuan3D-2/myenv
@@ -78,7 +78,7 @@ $SSH $CPU "python3 /tmp/mongo_schema_update.py"
 # ════════════════════════════════════════════════════════
 echo ""
 echo "════════════════════════════════════════"
-echo " STEP 5 — Start SD15 worker on A10 (screen)"
+echo " STEP 5 — Start SD15 worker on L4 (screen)"
 echo "════════════════════════════════════════"
 $SSH $A10 bash <<'ENDSSH'
 set -e

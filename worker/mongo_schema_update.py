@@ -19,7 +19,7 @@ Run this script ONCE to insert/update the test biome in MongoDB.
 import sys
 from pymongo import MongoClient
 
-MONGO_URI = "mongodb://kartik:Kartikg421@15.206.99.66:27017"
+MONGO_URI = "mongodb://kartik:Kartikg421@18.207.13.85:27017"
 DB_NAME   = "World_builder"
 
 # ── New biome document ────────────────────────────────────────────────────────
