@@ -7,10 +7,10 @@
 # ════════════════════════════════════════════════════════
 set -e
 
-KEY="/Users/lekhaj/Downloads/us_cpu_key.pem"
-A10="ubuntu@3.215.211.192"
+KEY="/Users/lekhaj/Documents/us_cpu_key.pem"
+A10="ec2-user@3.215.211.192"
 CPU="ubuntu@18.207.13.85"
-REMOTE_DIR="/home/ubuntu/worker/sd15"
+REMOTE_DIR="/home/ec2-user/worker/sd15"
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 SSH="ssh -i $KEY -o StrictHostKeyChecking=no -o ConnectTimeout=30"
