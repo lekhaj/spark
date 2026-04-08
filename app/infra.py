@@ -9,21 +9,22 @@ All services (orchestrator, aws_service, workers) import from here.
 """
 
 # ── EC2 Instance IDs ─────────────────────────────────────────────────────────
-CPU_INSTANCE_ID  = "i-0f53b275935e3ea6b"   # FastAPI / orchestrator / Redis / MongoDB
-GPU_INSTANCE_ID  = "i-0e446ff2933c012cb"   # g5.2xlarge — A10G GPU workers (image + 3D + rig)
+CPU_INSTANCE_ID  = "i-0663f7700a2da31c7"   # FastAPI / orchestrator / Redis / MongoDB (us-east-1)
+GPU_INSTANCE_ID  = "i-0d6b9d6d34ccc053d"   # g6.2xlarge — L4 GPU workers (image + 3D + rig)
 
 # ── Public IPs ───────────────────────────────────────────────────────────────
-CPU_PUBLIC_IP = "15.206.99.66"
-GPU_PUBLIC_IP = "43.205.175.32"
-GPU_PUBLIC_DNS = "ec2-43-205-175-32.ap-south-1.compute.amazonaws.com"
+CPU_PUBLIC_IP = "18.207.13.85"
+GPU_PUBLIC_IP = "3.215.211.192"
+GPU_PUBLIC_DNS = "ec2-3-215-211-192.compute-1.amazonaws.com"
 
 # ── SSH Configuration ────────────────────────────────────────────────────────
-SSH_USER      = "ubuntu"
+SSH_USER     = "ubuntu"       # CPU instance user
+GPU_SSH_USER = "ec2-user"     # GPU instance user (Amazon Linux 2023)
 # Path to the private key on the CPU instance (orchestrator host)
-SSH_KEY_PATH  = "/home/ubuntu/.ssh/s_spu_key.pem"
+SSH_KEY_PATH  = "/home/ubuntu/.ssh/us_cpu_key.pem"
 
 # ── AWS Region ───────────────────────────────────────────────────────────────
-AWS_REGION = "ap-south-1"
+AWS_REGION = "us-east-1"
 
 # ── Redis (running on CPU instance) ──────────────────────────────────────────
 REDIS_URL = f"redis://{CPU_PUBLIC_IP}:6379/0"
@@ -39,55 +40,60 @@ GPU_ALIAS_INSTANCE_MAP: dict[str, str] = {
     "gpu_a10":        GPU_INSTANCE_ID,
     "gpu_a10_image":  GPU_INSTANCE_ID,
     "gpu_t4":         GPU_INSTANCE_ID,  # legacy alias — same physical GPU
+    "gpu_l4":         GPU_INSTANCE_ID,
 }
 
 # ── GPU Instance SSH Config (per alias) ──────────────────────────────────────
 GPU_CONFIG: dict[str, dict] = {
     "gpu_a10": {
         "instance_id": GPU_INSTANCE_ID,
-        "ssh_user":    SSH_USER,
+        "ssh_user":    GPU_SSH_USER,
         "public_ip":   GPU_PUBLIC_IP,
         "worker_service": "model-worker",
     },
     "gpu_a10_image": {
         "instance_id": GPU_INSTANCE_ID,
-        "ssh_user":    SSH_USER,
+        "ssh_user":    GPU_SSH_USER,
         "public_ip":   GPU_PUBLIC_IP,
         "worker_service": "image-worker",
     },
     "gpu_t4": {
         "instance_id": GPU_INSTANCE_ID,
-        "ssh_user":    SSH_USER,
+        "ssh_user":    GPU_SSH_USER,
         "public_ip":   GPU_PUBLIC_IP,
         "worker_service": "image-worker",
+    },
+    "gpu_l4": {
+        "instance_id": GPU_INSTANCE_ID,
+        "ssh_user":    GPU_SSH_USER,
+        "public_ip":   GPU_PUBLIC_IP,
+        "worker_service": "gpu-worker",
     },
 }
 
 # ── Redis Queue → Worker Service mapping ──────────────────────────────────────
 QUEUE_WORKER_MAP: dict[str, str] = {
-    "image_tasks": "image-worker",
-    "model_tasks": "model-worker",
-    "rig_model":   "rig-worker",
+    "sd15_tasks":  "gpu-worker",
+    "image_tasks": "gpu-worker",
+    "model_tasks": "gpu-worker",
+    "rig_model":   "gpu-worker",
 }
 
 # ── All GPU Redis Queues ──────────────────────────────────────────────────────
-GPU_QUEUES = ("image_tasks", "model_tasks", "rig_model")
+GPU_QUEUES = ("sd15_tasks", "image_tasks", "model_tasks", "rig_model")
 
 # ── Orchestrator Tuning ───────────────────────────────────────────────────────
 TASK_TTL_SECONDS      = 14400   # 4 hours — expire stale queued tasks
-IDLE_SHUTDOWN_SECONDS = 300     # 5 min idle → stop GPU instance
+IDLE_SHUTDOWN_SECONDS = 900     # 15 min idle → stop GPU instance
 POLL_INTERVAL_SECONDS = 30      # how often orchestrator checks queues
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SPOT INSTANCE CONFIG — FUTURE (disabled until custom AMI is ready)
 # ─────────────────────────────────────────────────────────────────────────────
-# When ready, set these values and switch orchestrator_service.py to use
-# spot_gpu_service.SpotGPUManager instead of fixed instance IDs.
-#
-# SPOT_INSTANCE_TYPES   = ["g6.2xlarge", "g5.2xlarge"]   # try in order
+# SPOT_INSTANCE_TYPES   = ["g6.2xlarge", "g5.2xlarge"]
 # SPOT_PROJECT_TAG      = "spark-gpu-worker"
-# SPOT_AMI_ID           = None    # pre-baked AMI with CUDA + workers + weights
-# SPOT_KEY_NAME         = None    # EC2 key pair name
-# SPOT_SECURITY_GROUP_IDS = ""    # comma-separated SG IDs
-# SPOT_SUBNET_ID        = None    # public subnet for SSH access
+# SPOT_AMI_ID           = None
+# SPOT_KEY_NAME         = None
+# SPOT_SECURITY_GROUP_IDS = ""
+# SPOT_SUBNET_ID        = None
 # SPOT_IAM_INSTANCE_PROFILE = None
