@@ -11,7 +11,7 @@ Both are 512×512 PNG, coloured skeleton on pure black background —
 the exact format the respective ControlNet models were trained on.
 
 Run this ONCE on the A10 before starting the worker:
-  mkdir -p /home/ubuntu/controlnet_refs
+  mkdir -p /home/ec2-user/controlnet_refs
   python prepare_controlnet_refs.py
 
 Two approaches are attempted in order:
@@ -30,7 +30,7 @@ from PIL import Image, ImageDraw
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
-OUT_DIR = Path("/home/ubuntu/controlnet_refs")
+OUT_DIR = Path(os.getenv("CONTROLNET_REFS_DIR", "/home/ec2-user/controlnet_refs"))
 TPOSE_PATH     = OUT_DIR / "tpose_openpose.png"
 QUAD_PATH      = OUT_DIR / "quad_animalpose.png"
 IMG_SIZE = 512
@@ -346,9 +346,9 @@ def main():
 ── Visual check (SSH to A10, then): ──────────────────────────
   python3 -c "
   from PIL import Image
-  img = Image.open('/home/ubuntu/controlnet_refs/tpose_openpose.png')
+  img = Image.open('/home/ec2-user/controlnet_refs/tpose_openpose.png')
   img.save('/tmp/tpose_check.png')
-  img2 = Image.open('/home/ubuntu/controlnet_refs/quad_animalpose.png')
+  img2 = Image.open('/home/ec2-user/controlnet_refs/quad_animalpose.png')
   img2.save('/tmp/quad_check.png')
   print('OK — copy /tmp/tpose_check.png and /tmp/quad_check.png to inspect')
   "
