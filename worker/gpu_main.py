@@ -116,9 +116,12 @@ def main():
     if "trellis" in requested:
         # Ensure TRELLIS repo is on sys.path (installed by install_trellis.sh)
         trellis_repo = os.getenv("TRELLIS_REPO_PATH", os.path.expanduser("~/trellis"))
-        if os.path.isdir(trellis_repo) and trellis_repo not in sys.path:
-            sys.path.insert(0, trellis_repo)
-            logger.info(f"Added TRELLIS repo to path: {trellis_repo}")
+        if os.path.isdir(trellis_repo):
+            if trellis_repo not in sys.path:
+                sys.path.insert(0, trellis_repo)
+                logger.info(f"Added TRELLIS repo to path: {trellis_repo}")
+            else:
+                logger.info(f"TRELLIS repo already in path: {trellis_repo}")
         else:
             logger.warning(
                 f"TRELLIS repo not found at {trellis_repo}. "

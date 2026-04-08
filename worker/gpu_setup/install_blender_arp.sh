@@ -70,35 +70,51 @@ fi
 # ── 4. Install Auto-Rig Pro addon into Blender ───────────────────────────────
 log "STEP 4: Install Auto-Rig Pro addon into Blender"
 
-# Find the Blender version's addons directory
-BLENDER_ADDON_DIR=$(find "$BLENDER_DIR" -path "*/scripts/addons" -type d | head -1)
-echo "Addon dir: $BLENDER_ADDON_DIR"
+# Blender 4.x user addons live in ~/.config/blender/4.2/scripts/addons
+BLENDER_ADDON_DIR="$HOME/.config/blender/4.2/scripts/addons"
+mkdir -p "$BLENDER_ADDON_DIR"
 
-if [ -d "$BLENDER_ADDON_DIR/auto_rig_pro" ]; then
-  echo "Auto-Rig Pro already installed in Blender addons"
+if [ -f "$BLENDER_ADDON_DIR/auto_rig_pro/__init__.py" ]; then
+  echo "Auto-Rig Pro already installed at $BLENDER_ADDON_DIR/auto_rig_pro"
 else
-  mkdir -p "$BLENDER_ADDON_DIR"
+  # The outer zip is a package containing auto_rig_pro_3.76.22.zip inside
+  # Extract the inner ARP addon zip first
+  echo "Extracting ARP addon zip from package..."
+  unzip -p "$ARP_ZIP" \
+    'Auto-Rig Pro 3.76.22/Auto-Rig Pro 3.76.22/auto_rig_pro_3.76.22.zip' \
+    > /tmp/arp_addon.zip
+
+  # Extract ARP addon to user addons dir (extracts as auto_rig_pro-master)
   cd "$BLENDER_ADDON_DIR"
-  unzip -q "$ARP_ZIP" -d .
-  # ARP extracts to a folder — find it
-  ARP_EXTRACTED=$(unzip -l "$ARP_ZIP" | grep '/$' | head -1 | awk '{print $NF}' | cut -d'/' -f1)
-  echo "ARP extracted folder: $ARP_EXTRACTED"
-  ok "Auto-Rig Pro installed at $BLENDER_ADDON_DIR/$ARP_EXTRACTED"
+  unzip -q /tmp/arp_addon.zip
+
+  # Rename master suffix if present
+  [ -d "auto_rig_pro-master" ] && mv auto_rig_pro-master auto_rig_pro
+
+  # Also extract rig_tools (required companion)
+  unzip -p "$ARP_ZIP" \
+    'Auto-Rig Pro 3.76.22/Auto-Rig Pro 3.76.22/rig_tools_3.76.18.zip' \
+    > /tmp/rig_tools.zip
+  unzip -q /tmp/rig_tools.zip 2>/dev/null || true
+
+  ok "Auto-Rig Pro installed at $BLENDER_ADDON_DIR/auto_rig_pro"
 fi
 
 # ── 5. Enable Auto-Rig Pro in Blender's startup ──────────────────────────────
 log "STEP 5: Enable Auto-Rig Pro addon in Blender"
 "$BLENDER_BIN" --background --python-expr "
-import bpy
-import addon_utils
-
-# Enable the auto_rig_pro addon
-addon_utils.enable('auto_rig_pro', default_set=True, persistent=True)
-
-# Save user preferences so it persists
+import bpy, addon_utils
+for mod in ['auto_rig_pro', 'rig_tools']:
+    mods = [m.__name__ for m in addon_utils.modules()]
+    if mod in mods:
+        addon_utils.enable(mod, default_set=True, persistent=True)
+        print('Enabled:', mod)
+    else:
+        print('WARNING: module not found:', mod)
 bpy.ops.wm.save_userpref()
+print('ARP ops available:', hasattr(bpy.ops, 'arp'))
 print('AUTO_RIG_PRO ENABLED OK')
-" 2>&1 | grep -E 'AUTO_RIG|ERROR|error|Warning' | head -20
+" 2>&1 | grep -E 'AUTO_RIG|Enabled|arp|ERROR|WARNING' | head -10
 
 # ── 6. Set BLENDER_PATH in .env ──────────────────────────────────────────────
 log "STEP 6: Update .env with Blender path"
