@@ -4,20 +4,25 @@ GPU Main — Spark Pipeline Entry Point
 ======================================
 Starts all GPU workers in separate threads and runs AutoShutdown monitoring.
 
-Workers started:
-  1. SD15Worker   — reads sd15_tasks  → generates character images
-  2. TRELLISWorker— reads model_tasks → generates 3D GLB models
+Workers:
+  sd15    — reads sd15_tasks  → SD1.5+ControlNet character image generation
+  trellis — reads model_tasks → TRELLIS.2-4B image-to-3D GLB generation
+  rig     — reads rig_model   → Auto-Rig Pro headless rigging via Blender
 
 AutoShutdown:
-  Monitors both queues; stops this EC2 instance after IDLE_SHUTDOWN_MINUTES
+  Monitors all queues; stops this EC2 instance after IDLE_SHUTDOWN_MINUTES
   of inactivity to avoid idle GPU charges.
 
 Usage:
-  python gpu_main.py [--workers sd15,trellis]  (default: all)
+  python gpu_main.py                          # all workers (default)
+  python gpu_main.py --workers sd15,trellis   # skip rig
+  python gpu_main.py --workers rig            # rig only
+  python gpu_main.py --no-shutdown            # keep alive (dev mode)
 
-Screen session example:
-  screen -dmS gpu_workers python /home/ec2-user/spark/worker/gpu_main.py
-  screen -r gpu_workers
+Screen session:
+  screen -dmS workers bash -c 'cd ~/spark && \
+    PYTHONPATH=~/trellis python worker/gpu_main.py 2>&1 | tee /tmp/gpu_workers.log'
+  screen -r workers
 """
 
 import argparse
@@ -86,8 +91,8 @@ def main():
     parser = argparse.ArgumentParser(description="Spark GPU Worker Manager")
     parser.add_argument(
         "--workers",
-        default="sd15,trellis",
-        help="Comma-separated list of workers to start: sd15, trellis (default: all)",
+        default="sd15,trellis,rig",
+        help="Comma-separated list of workers: sd15, trellis, rig (default: all)",
     )
     parser.add_argument(
         "--no-shutdown",
@@ -122,6 +127,10 @@ def main():
         from workers.trellis_worker import TRELLISWorker
         worker_map["trellis"] = TRELLISWorker
 
+    if "rig" in requested:
+        from workers.rig_worker import RigWorker
+        worker_map["rig"] = RigWorker
+
     if not worker_map:
         logger.error(f"No valid workers in: {requested}")
         sys.exit(1)
@@ -131,6 +140,7 @@ def main():
     all_queues = []
     if "sd15"    in requested: all_queues.append("sd15_tasks")
     if "trellis" in requested: all_queues.append("model_tasks")
+    if "rig"     in requested: all_queues.append("rig_model")
 
     shutdown = AutoShutdown(queues=all_queues)
     if not args.no_shutdown:
