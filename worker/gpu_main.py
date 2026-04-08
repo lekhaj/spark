@@ -104,12 +104,21 @@ def main():
     # ── Import workers lazily (avoid loading torch before needed) ────────────
     worker_map = {}
     if "sd15" in requested:
-        # Refactored SD15 worker that extends BaseWorker
         sys.path.insert(0, os.path.dirname(__file__))
         from workers.sd15_image_worker import SD15Worker
         worker_map["sd15"] = SD15Worker
 
     if "trellis" in requested:
+        # Ensure TRELLIS repo is on sys.path (installed by install_trellis.sh)
+        trellis_repo = os.getenv("TRELLIS_REPO_PATH", os.path.expanduser("~/trellis"))
+        if os.path.isdir(trellis_repo) and trellis_repo not in sys.path:
+            sys.path.insert(0, trellis_repo)
+            logger.info(f"Added TRELLIS repo to path: {trellis_repo}")
+        else:
+            logger.warning(
+                f"TRELLIS repo not found at {trellis_repo}. "
+                "Run: bash worker/gpu_setup/install_trellis.sh"
+            )
         from workers.trellis_worker import TRELLISWorker
         worker_map["trellis"] = TRELLISWorker
 

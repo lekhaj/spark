@@ -8,7 +8,7 @@
 #   • PyTorch 2.3 (CUDA 12.1 wheel — compatible with CUDA 12.4)
 #   • diffusers, transformers, xformers (SD1.5 + ControlNet)
 #   • controlnet-aux (OpenPose + AnimalPose preprocessors)
-#   • Hunyuan3D-2.1 (TRELLIS 3D backend)
+#   • 3D mesh utils (trimesh, open3d, einops — pre-reqs for TRELLIS)
 #   • rembg (background removal)
 #   • boto3, redis, pymongo, python-dotenv, Pillow
 #
@@ -121,19 +121,21 @@ pip install \
 log "STEP 7: controlnet-aux"
 pip install controlnet-aux==0.0.7
 
-# ── 8. Hunyuan3D-2.1 (TRELLIS 3D backend) ────────────────────────────────────
-log "STEP 8: Hunyuan3D-2.1"
-# Install mesh/geometry libs
+# ── 8. 3D mesh utility libs (used by TRELLIS pipeline) ───────────────────────
+log "STEP 8: 3D mesh utils"
 pip install \
-  trimesh==4.3.2 \
-  pymeshlab==2023.12.post2 \
+  trimesh \
   einops \
   open3d \
-  scikit-image
+  scikit-image \
+  easydict \
+  imageio \
+  imageio-ffmpeg
 
-# Install Hunyuan3D from GitHub
-pip install git+https://github.com/tencent/Hunyuan3D-2.git || \
-  echo "WARNING: Hunyuan3D install may require manual setup — check docs"
+# NOTE: TRELLIS itself is installed separately via:
+#   bash worker/gpu_setup/install_trellis.sh
+# Clones Microsoft TRELLIS repo and builds required CUDA extensions.
+# Default model: microsoft/TRELLIS.2-4B (best for game character meshes on 24GB L4)
 
 # ── 9. Background removal ─────────────────────────────────────────────────────
 log "STEP 9: rembg background removal"
