@@ -243,47 +243,80 @@ class SD15Worker(BaseWorker):
         creature_category = "quadruped" if char_type == "quadruped" else "bipedal"
         templates = CREATURE_PROMPTS.get(char_type, CREATURE_PROMPTS["bipedal"])
 
-        # Stage 1 — always template (structure-only, no custom override)
-        s1_pos = build_prompt(templates["stage1"]["positive"], None)
-        s1_neg = templates["stage1"]["negative"]
+        # ── Stage 1 prompts ───────────────────────────────────────────────────
+        # Explicit task field wins; falls back to creature template
+        s1_pos = task.get("stage1_prompt") or build_prompt(
+            templates["stage1"]["positive"], None
+        )
+        s1_neg = task.get("stage1_negative") or templates["stage1"]["negative"]
 
-        # Stage 2 — task-supplied custom prompt if provided
-        custom = task.get("refine_prompt") or task.get("prompt")
-        s2_pos = build_prompt(templates["stage2"]["positive"], custom)
-        s2_neg = templates["stage2"]["negative"]
+        # ── Stage 2 prompts ───────────────────────────────────────────────────
+        # Priority: stage2_prompt > refine_prompt > prompt > template
+        s2_pos = (
+            task.get("stage2_prompt")
+            or task.get("refine_prompt")
+            or task.get("prompt")
+            or build_prompt(templates["stage2"]["positive"], None)
+        )
+        s2_neg = task.get("stage2_negative") or templates["stage2"]["negative"]
 
-        self.logger.info(f"[{char_name}] Stage1 ({len(s1_pos.split())}w): {s1_pos}")
-        self.logger.info(f"[{char_name}] Stage2 ({len(s2_pos.split())}w): {s2_pos}")
+        self.logger.info(f"[{char_name}] Stage1 (~{len(s1_pos.split())}w): {s1_pos[:100]}")
+        self.logger.info(f"[{char_name}] Stage2 (~{len(s2_pos.split())}w): {s2_pos[:100]}")
 
-        # ── Stage 1: base structure ───────────────────────────────────────────
+        # ── Stage 1: ControlNet structure pass ────────────────────────────────
         self.mongo_update(biome_id, char_name, {
-            "generation_stage": "base_gen",
-            "status": "generating",
+            "status":           "generating",
+            "generation_stage": "stage1_base",
+            "stage1.prompt":    s1_pos,
+            "stage1.negative":  s1_neg,
+            "stage1.status":    "generating",
         })
-        self.logger.info(f"[{char_name}] Generating base structure...")
+        self.logger.info(f"[{char_name}] Stage 1 — ControlNet ({creature_category})...")
         base_img = self.generate_base(creature_category, s1_pos, s1_neg)
 
-        base_key = f"images/{biome_id}/{char_name}_base.png"
+        base_key    = f"images/{biome_id}/{char_name}_base.png"
+        s3_base_url = (
+            f"https://{self.cfg.S3_BUCKET}.s3.{self.cfg.S3_REGION}.amazonaws.com/{base_key}"
+        )
         self.upload_image(base_img, base_key)
         self.mongo_update(biome_id, char_name, {
-            "generation_stage": "refinement",
-            "images.base": base_key,
+            "generation_stage": "stage2_refine",
+            "stage1.status":    "complete",
+            "stage1.image_key": base_key,
+            "stage1.image_url": s3_base_url,
+            "images.base":      base_key,
         })
+        self.logger.info(f"[{char_name}] Stage 1 done → {base_key}")
 
-        # ── Stage 2: detail refinement ────────────────────────────────────────
-        self.logger.info(f"[{char_name}] Refining (strength={STAGE2_STRENGTH})...")
+        # ── Stage 2: img2img detail pass ──────────────────────────────────────
+        self.mongo_update(biome_id, char_name, {
+            "stage2.prompt":   s2_pos,
+            "stage2.negative": s2_neg,
+            "stage2.status":   "generating",
+        })
+        self.logger.info(
+            f"[{char_name}] Stage 2 — img2img refine (strength={STAGE2_STRENGTH})..."
+        )
         refined_img = self.refine(base_img, s2_pos, s2_neg)
 
-        refined_key = f"images/{biome_id}/{char_name}_refined.png"
+        refined_key    = f"images/{biome_id}/{char_name}_refined.png"
+        s3_refined_url = (
+            f"https://{self.cfg.S3_BUCKET}.s3.{self.cfg.S3_REGION}.amazonaws.com/{refined_key}"
+        )
         self.upload_image(refined_img, refined_key)
         self.mongo_update(biome_id, char_name, {
-            "generation_stage": "complete",
+            "generation_stage": "image_complete",
             "status":           "image_complete",
+            "stage2.status":    "complete",
+            "stage2.image_key": refined_key,
+            "stage2.image_url": s3_refined_url,
             "images.refined":   refined_key,
             "images.final":     refined_key,
+            "image_url":        s3_refined_url,   # top-level URL for Gradio viewer
         })
+        self.logger.info(f"[{char_name}] Stage 2 done → {refined_key}")
 
-        # ── Push to TRELLIS queue ─────────────────────────────────────────────
+        # ── Push to TRELLIS queue (uses Stage 2 refined image) ────────────────
         self.push_task(OUTPUT_QUEUE, {
             "task_id":        str(uuid.uuid4()),
             "biome_id":       biome_id,
@@ -292,6 +325,6 @@ class SD15Worker(BaseWorker):
             "image_path":     refined_key,
             "timestamp":      time.time(),
         })
-        self.logger.info(f"[{char_name}] Done. Pushed to {OUTPUT_QUEUE}.")
+        self.logger.info(f"[{char_name}] Complete → pushed to {OUTPUT_QUEUE}.")
 
         torch.cuda.empty_cache()
