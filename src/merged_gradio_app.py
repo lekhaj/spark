@@ -186,11 +186,11 @@ except ImportError:
             "created_at": datetime.now(),
             "possible_structures": {
                 "buildings": {
-                    "tent_camp": {"name": "Nomad Tent", "image_path": "https://sparkassets.s3.ap-south-1.amazonaws.com/images/mongo_684038b1b4b2f8b37d69e32f_20250611_140425.png"},
-                    "supply_wagon": {"name": "Supply Wagon", "attributes": {"image_path": "https://sparkassets.s3.ap-south-1.amazonaws.com/images/sample_wagon.png"}}
+                    "tent_camp": {"name": "Nomad Tent", "image_path": "https://sparkassets-us.s3.us-east-1.amazonaws.com/images/mongo_684038b1b4b2f8b37d69e32f_20250611_140425.png"},
+                    "supply_wagon": {"name": "Supply Wagon", "attributes": {"image_path": "https://sparkassets-us.s3.us-east-1.amazonaws.com/images/sample_wagon.png"}}
                 }
             },
-            "image_path": "https://sparkassets.s3.ap-south-1.amazonaws.com/images/mongo_684038b1b4b2f8b37d69e32f_20250611_140425.png"
+            "image_path": "https://sparkassets-us.s3.us-east-1.amazonaws.com/images/mongo_684038b1b4b2f8b37d69e32f_20250611_140425.png"
         }
     }
 

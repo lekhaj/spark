@@ -1260,8 +1260,8 @@ def generate_3d_model_from_image(self, image_s3_key_or_path, with_texture=False,
             # Parse S3 key from different URL formats
             # First, remove any s3://bucket/ prefix that might have been incorrectly added
             clean_path = image_s3_key_or_path
-            if clean_path.startswith('s3://sparkassets/'):
-                clean_path = clean_path.replace('s3://sparkassets/', '')
+            if clean_path.startswith('s3://sparkassets-us/'):
+                clean_path = clean_path.replace('s3://sparkassets-us/', '')
             
             if clean_path.startswith('s3://'):
                 # s3://bucket/key format

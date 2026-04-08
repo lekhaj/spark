@@ -8,11 +8,11 @@ from mathutils import Vector
 from urllib.parse import urlparse
 
 # ---------------- USER CONFIGURATION ----------------
-bucket_name       = "sparkassets"
+bucket_name       = "sparkassets-us"
 s3_prefix         = "3d_assets"
 models_folder     = "/home/ubuntu/sarthak/input"
 output_folder     = "/home/ubuntu/sarthak/output"
-mongo_uri         = "mongodb://ec2-15-206-99-66.ap-south-1.compute.amazonaws.com:27017"
+mongo_uri         = "mongodb://18.207.13.85:27017"
 db_name           = "World_builder"
 collection_name   = "biomes"
 

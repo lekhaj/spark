@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 class S3Manager:
     """Manages S3 operations for images and 3D assets."""
     
-    def __init__(self, bucket_name: Optional[str] = None, region: str = 'ap-south-1'):
+    def __init__(self, bucket_name: Optional[str] = None, region: str = 'us-east-1'):
         """
         Initialize S3 Manager.
         
@@ -24,8 +24,8 @@ class S3Manager:
             bucket_name: S3 bucket name (uses environment variable if not provided)
             region: AWS region
         """
-        # Default to 'sparkassets' if not provided
-        self.bucket_name = bucket_name or os.environ.get('S3_BUCKET_NAME') or 'sparkassets'
+        # Default to 'sparkassets-us' if not provided
+        self.bucket_name = bucket_name or os.environ.get('S3_BUCKET_NAME') or 'sparkassets-us'
         self.region = region
         self.s3_client = None
         

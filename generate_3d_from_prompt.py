@@ -328,7 +328,7 @@ if __name__ == "__main__":
         gr.Markdown("# AI-Powered 3D Asset Generator")
         gr.Markdown("This application offloads heavy AI generation tasks to Celery workers (on GPU instances), allowing the Gradio UI to remain responsive on a CPU instance.")
 
-        s3_bucket_input_global = gr.Textbox(label="S3 Bucket Name", value="sparkassets", interactive=True)
+        s3_bucket_input_global = gr.Textbox(label="S3 Bucket Name", value="sparkassets-us", interactive=True)
 
         with gr.Tabs():
             with gr.TabItem("Text to Image"):

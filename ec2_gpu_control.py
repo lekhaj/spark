@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 # --- AWS Configuration ---
 # boto3 will automatically pick up credentials from env vars or ~/.aws/credentials
 # Ensure your AWS_DEFAULT_REGION environment variable is set, or configure it via `aws configure`.
-# Example: export AWS_DEFAULT_REGION="ap-south-1"
+# Example: export AWS_DEFAULT_REGION="us-east-1"
 ec2_client = boto3.client('ec2')
 
 def start_ec2_instance(instance_id: str):

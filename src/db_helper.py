@@ -9,7 +9,7 @@ class MongoDBHelper:
     A helper class to perform CRUD operations and run queries on MongoDB.
     """
     
-    def __init__(self, connection_string: str = "mongodb://ec2-15-206-99-66.ap-south-1.compute.amazonaws.com:27017"):
+    def __init__(self, connection_string: str = "mongodb://18.207.13.85:27017"):
         """
         Initialize MongoDB connection.
         
@@ -406,8 +406,8 @@ class MongoDBHelper:
         
         # Clean the image path - remove S3 prefixes if present
         clean_path = image_path
-        if clean_path.startswith('s3://sparkassets/'):
-            clean_path = clean_path.replace('s3://sparkassets/', '')
+        if clean_path.startswith('s3://sparkassets-us/'):
+            clean_path = clean_path.replace('s3://sparkassets-us/', '')
         elif clean_path.startswith('s3://'):
             clean_path = clean_path.split('/', 2)[2] if '/' in clean_path[5:] else clean_path
         elif clean_path.startswith('https://'):

@@ -27,7 +27,7 @@ redis_ip = "172.31.8.113"
 celery_app = Celery("app", broker=f"redis://{redis_ip}:6379/0", backend=f"redis://{redis_ip}:6379/0")
 
 # --- MongoDB Configuration ---
-MONGO_URI = os.environ.get("MONGO_URI", "mongodb://sagar:KrSiDnSI9m8RgcHE@ec2-15-206-99-66.ap-south-1.compute.amazonaws.com:27017/World_builder?authSource=admin")
+MONGO_URI = os.environ.get("MONGO_URI", "mongodb://sagar:KrSiDnSI9m8RgcHE@18.207.13.85:27017/World_builder?authSource=admin")
 MONGO_DB_NAME = os.environ.get("MONGO_DB_NAME", "World_builder")
 
 # Initialize MongoDB client

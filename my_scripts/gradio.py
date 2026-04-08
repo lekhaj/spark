@@ -178,7 +178,7 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
     gr.Markdown("# AI-Powered 3D Asset Generator")
     gr.Markdown("This application uses Celery to run generation tasks in the background, keeping the Gradio app responsive. The generated assets are uploaded to S3.")
 
-    s3_bucket_input_global = gr.Textbox(label="S3 Bucket Name", value="sparkassets", interactive=True)
+    s3_bucket_input_global = gr.Textbox(label="S3 Bucket Name", value="sparkassets-us", interactive=True)
     
     # State variables to store task IDs
     task_id_state = gr.State(None)

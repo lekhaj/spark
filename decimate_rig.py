@@ -20,8 +20,8 @@ output_folder = "/home/ubuntu/sarthak/output"
 template_blend = "/home/ubuntu/sarthak/logs/royal1.blend"
 arm_name = "metarig.001"
 template_mesh_name = "villager"
-bucket = "sparkassets"
-mongo_uri = "mongodb://ec2-15-206-99-66.ap-south-1.compute.amazonaws.com:27017"
+bucket = "sparkassets-us"
+mongo_uri = "mongodb://18.207.13.85:27017"
 
 # Per-bone bias factors (0.0 = no move, 1.0 = full snap)
 bias_map = {
