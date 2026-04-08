@@ -15,21 +15,26 @@
 # Usage (run as ec2-user on L4):
 #   bash install_gpu.sh 2>&1 | tee /tmp/gpu_install.log
 # ════════════════════════════════════════════════════════════════════════════
-set -euo pipefail
+set -uo pipefail   # no -e: let dnf conflicts be non-fatal
 export DEBIAN_FRONTEND=noninteractive
 
 log() { echo ""; echo "════ $* ════"; echo ""; }
+ok()  { echo "  [OK] $*"; }
+warn(){ echo "  [WARN] $*"; }
 
 # ── 1. System packages ────────────────────────────────────────────────────────
 log "STEP 1: System packages"
-sudo dnf update -y
-sudo dnf install -y \
-  gcc gcc-c++ make cmake git wget curl \
-  kernel-devel-$(uname -r) kernel-headers-$(uname -r) \
+sudo dnf update -y 2>/dev/null || warn "dnf update had warnings (ok)"
+
+# Install packages individually so one conflict doesn't block the rest
+for pkg in gcc gcc-c++ make cmake git wget \
+  "kernel-devel-$(uname -r)" "kernel-headers-$(uname -r)" \
   python3-devel python3-pip \
   libGL libGLU mesa-libGL-devel \
   libXrender libXext libSM \
-  screen htop tmux unzip
+  screen htop tmux unzip; do
+  sudo dnf install -y "$pkg" 2>/dev/null && ok "$pkg" || warn "skipped: $pkg"
+done
 
 # ── 2. NVIDIA Driver + CUDA 12.4 ─────────────────────────────────────────────
 log "STEP 2: NVIDIA Driver + CUDA 12.4"
