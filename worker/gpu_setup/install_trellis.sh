@@ -78,14 +78,33 @@ log "STEP 7: nvdiffrast"
 $PIP install git+https://github.com/NVlabs/nvdiffrast.git 2>&1 | tail -3 && \
   ok "nvdiffrast installed" || warn "nvdiffrast failed — texture baking may fail"
 
-# ── 8. kaolin (NVIDIA 3D toolkit — optional, needed for mesh simplification) ──
-log "STEP 8: kaolin (NVIDIA 3D toolkit)"
-# Use a prebuilt wheel matching torch + CUDA versions
-TORCH_VER=$($PYTHON -c "import torch; print(torch.__version__.split('+')[0])")
-CUDA_VER=$($PYTHON -c "import torch; v=torch.version.cuda; print(''.join(v.split('.')[:2]))" 2>/dev/null || echo "121")
-KAOLIN_URL="https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-${TORCH_VER}_cu${CUDA_VER}/kaolin-0.17.0-cp311-cp311-linux_x86_64.whl"
-$PIP install "$KAOLIN_URL" 2>&1 | tail -3 && ok "kaolin installed" || \
-  warn "kaolin wheel not found for torch ${TORCH_VER}+cu${CUDA_VER} — mesh simplification may be slow"
+# ── 8. Patch TRELLIS flexicubes to remove kaolin dependency ──────────────────
+# kaolin prebuilt wheels only cover specific torch versions and break on upgrade.
+# TRELLIS only uses kaolin for one tensor validation check (check_tensor),
+# which we replace with a no-op shim.
+log "STEP 8: Patch flexicubes to remove kaolin dependency"
+$PYTHON << 'PATCHEOF'
+import sys, os
+trellis_root = os.getenv("TRELLIS_DIR", os.path.expanduser("~/trellis"))
+path = os.path.join(trellis_root,
+    "trellis/representations/mesh/flexicubes/flexicubes.py")
+if os.path.exists(path):
+    with open(path) as f:
+        code = f.read()
+    if "from kaolin.utils.testing" in code:
+        code = code.replace(
+            "from kaolin.utils.testing import check_tensor",
+            "# kaolin removed — no-op shim\ndef check_tensor(t, *a, **kw): return True"
+        )
+        with open(path, "w") as f:
+            f.write(code)
+        print(f"Patched: {path}")
+    else:
+        print("flexicubes.py already patched or kaolin not referenced.")
+else:
+    print(f"WARNING: flexicubes.py not found at {path}")
+PATCHEOF
+ok "flexicubes.py patched"
 
 # ── 9. Set TRELLIS_REPO_PATH in .env ─────────────────────────────────────────
 log "STEP 9: Update .env with TRELLIS config"
