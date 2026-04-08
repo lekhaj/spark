@@ -319,40 +319,13 @@ async def queue_status():
 
 @app.get("/orchestrate/status")
 async def get_orchestrator_status():
-    """Get orchestrator status"""
+    """Get orchestrator status (spot instance based)"""
     from app.services.orchestrator_service import orchestrator
 
     try:
-        # Get queue status
-        image_queue_length = r.llen("image_tasks")
-        model_queue_length = r.llen("model_tasks")
-
-        # Get GPU states
-        from app.services.aws_service import get_instance_state, is_gpu_worker_running
-
-        gpu_t4_state = get_instance_state("gpu_t4")
-        gpu_a10_state = get_instance_state("gpu_a10")
-
-        gpu_t4_worker = is_gpu_worker_running("gpu_t4") if gpu_t4_state == "running" else False
-        gpu_a10_worker = is_gpu_worker_running("gpu_a10") if gpu_a10_state == "running" else False
-
-        return {
-            "auto_mode": orchestrator.auto_mode,
-            "gpu_t4": {
-                "state": gpu_t4_state,
-                "worker_running": gpu_t4_worker
-            },
-            "gpu_a10": {
-                "state": gpu_a10_state,
-                "worker_running": gpu_a10_worker
-            },
-            "queues": {
-                "image_tasks": image_queue_length,
-                "model_tasks": model_queue_length,
-                "total_pending": image_queue_length + model_queue_length
-            },
-            "timestamp": datetime.now().isoformat()
-        }
+        status = orchestrator.get_status()
+        status["timestamp"] = datetime.now().isoformat()
+        return status
     except Exception as e:
         logger.error(f"Error getting orchestrator status: {e}")
         return {

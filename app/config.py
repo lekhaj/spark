@@ -31,18 +31,24 @@ class Settings(BaseSettings):
     AWS_ACCESS_KEY_ID: str
     AWS_SECRET_ACCESS_KEY: str
 
-    # AWS Instance IDs
-    AWS_CPU_INSTANCE_ID: Optional[str] = None
-    AWS_GPU_T4_INSTANCE_ID: Optional[str] = None
-    AWS_GPU_A10_INSTANCE_ID: Optional[str] = None
+    # ── EC2 Instance IDs ───────────────────────────────────────────────────
+    # See app/infra.py for all infra constants — these override defaults from .env
+    AWS_CPU_INSTANCE_ID: Optional[str] = None          # CPU — FastAPI / orchestrator
+    AWS_GPU_INSTANCE_ID: Optional[str] = None          # GPU — g5.2xlarge A10G (active)
 
-    # GPU SSH Configuration
-    GPU_T4_SSH_USER: str = "ubuntu"
-    GPU_T4_PUBLIC_IP: Optional[str] = None
-    GPU_A10_SSH_USER: str = "ubuntu"
-    GPU_A10_PUBLIC_IP: Optional[str] = None
-    # SSH key path on the server running the orchestrator (CPU instance)
+    # ── GPU SSH Configuration ──────────────────────────────────────────────
+    GPU_A10_PUBLIC_IP: Optional[str] = None            # Public IP of GPU instance
+    # SSH key path on the orchestrator (CPU instance) used to reach the GPU instance
     GPU_SSH_KEY_PATH: str = "/home/ubuntu/.ssh/s_spu_key.pem"
+
+    # ── Spot GPU Instance Config (FUTURE — disabled until custom AMI ready) ─
+    # SPOT_AMI_ID: Optional[str] = None
+    # SPOT_KEY_NAME: Optional[str] = None
+    # SPOT_SECURITY_GROUP_IDS: str = ""
+    # SPOT_SUBNET_ID: Optional[str] = None
+    # SPOT_IAM_INSTANCE_PROFILE: Optional[str] = None
+    # SPOT_SSH_USER: str = "ubuntu"
+    # SPOT_IDLE_TIMEOUT: int = 300
 
     # Optional explicit blender executable path (set in .env on the host that will run Blender)
     BLENDER_PATH: str | None = None
