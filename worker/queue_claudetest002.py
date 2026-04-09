@@ -67,15 +67,18 @@ CHARACTERS = {
         ),
 
         # Stage 1 — STRUCTURE ONLY ("boring but correct")
-        # Rule: plain language, ≤20 words, NO weighted syntax, NO lore, NO details
-        # CFG 5.5, CN 0.6, Steps 25 (see sd15_image_worker.py)
-        # Stage 1 output = anatomy + pose + clean silhouette. Details come in Stage 2.
+        # Positive: pose intent + anatomy intent + rendering intent ONLY
+        #   - NO style, lore, clothing details — those belong in Stage 2
+        #   - NO body-type preferences (wiry, lean) — let anatomy be neutral
+        # Negative: STRICT structural NO only (not preferences)
+        #   - Removed: muscular, bodybuilder, gym, modern clothing, pants, sportswear
+        #     (those are preferences, not structural failures)
+        #   - Keep: deformed anatomy, wrong rendering context, quality killers
         "stage1_prompt": (
-            "full body young male, thin wiry build, T-pose, arms horizontal, legs straight, "
-            "front view, centered, white background, simple loose robe, flat lighting"
+            "full body young male, T-pose, arms horizontal, legs straight, "
+            "front view, centered, white background, flat lighting"
         ),
         "stage1_negative": (
-            "muscular, bodybuilder, gym body, modern clothing, pants, sportswear, "
             "room, background, shadows, environment, "
             "bad hands, deformed, extra limbs, text, watermark"
         ),
@@ -116,16 +119,40 @@ CHARACTERS = {
             "Runic diamond mark between the horns. Majestic and serene, not aggressive."
         ),
 
-        # Stage 1 — ControlNet structure pass (~56 tokens, CLIP-safe ≤68)
-        # Stage 1 — STRUCTURE ONLY ("boring but correct")
-        # Rule: plain language, ≤20 words, side view for quadrupeds
+        # Stage 1 — STRUCTURE ONLY
+        # Positive: pose intent + anatomy intent + rendering intent
+        #   - Explicit body position (spine horizontal, legs vertical, paws flat)
+        #   - Profile view for quadruped ControlNet skeleton alignment
+        #   - Rendering context (white bg, flat lighting, clean silhouette)
+        #   - NO fantasy/lore/style — those are Stage 2
+        # Negative: STRICT structural NO only
+        #   - running/jumping = wrong pose type (structural)
+        #   - background/environment = wrong render context (structural)
+        #   - human/rider/wings = wrong anatomy (structural)
+        #   - deformed/extra limbs/text/watermark = quality killers (always)
         "stage1_prompt": (
-            "full body lion, side view, neutral standing, all four legs on ground, "
-            "centered, white background, flat lighting, clean silhouette"
+            "full body lion, "
+            "side view, strict profile view, "
+            "standing alert, "
+            "head level with body, "
+            "spine straight horizontal, "
+            "front legs vertical straight, "
+            "back legs natural feline stance, "
+            "all four paws flat on ground, "
+            "weight evenly distributed, "
+            "proportional lion anatomy, "
+            "clean silhouette, "
+            "neutral pose reference, "
+            "centered, "
+            "white background, "
+            "flat lighting, "
+            "no environment"
         ),
         "stage1_negative": (
-            "running, jumping, dynamic pose, background, shadows, environment, "
-            "human, rider, wings, deformed, extra limbs, text, watermark"
+            "running, jumping, "
+            "background, shadows, environment, "
+            "human, rider, wings, "
+            "deformed, extra limbs, text, watermark"
         ),
 
         # Stage 2 — img2img detail pass (~52 tokens with prefix, CLIP-safe ≤68)
