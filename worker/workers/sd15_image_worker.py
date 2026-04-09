@@ -176,11 +176,22 @@ class SD15Worker(BaseWorker):
         ).to("cuda")
 
         self.logger.info(f"Loading Animal Pose ControlNet (quadruped) from: {CONTROLNET_ANIMAL_ID}")
-        self.controlnet_animal = ControlNetModel.from_pretrained(
-            CONTROLNET_ANIMAL_ID,
-            torch_dtype=torch.float16,
-            local_files_only=True,
-        ).to("cuda")
+        # huchenlei/animal_openpose is distributed as a .pth checkpoint, not diffusers format.
+        # Use from_single_file() which handles both .pth and safetensors directly.
+        pth_path = os.path.join(CONTROLNET_ANIMAL_ID, "control_sd15_animal_openpose_fp16.pth")
+        if os.path.exists(pth_path):
+            self.logger.info(f"  Loading from .pth checkpoint: {pth_path}")
+            self.controlnet_animal = ControlNetModel.from_single_file(
+                pth_path,
+                torch_dtype=torch.float16,
+            ).to("cuda")
+        else:
+            self.logger.info(f"  .pth not found, trying from_pretrained at: {CONTROLNET_ANIMAL_ID}")
+            self.controlnet_animal = ControlNetModel.from_pretrained(
+                CONTROLNET_ANIMAL_ID,
+                torch_dtype=torch.float16,
+                local_files_only=True,
+            ).to("cuda")
 
         self.logger.info(f"Loading SD1.5 base from local: {SD15_MODEL_ID}")
         self.pipe_cn = StableDiffusionControlNetPipeline.from_pretrained(
