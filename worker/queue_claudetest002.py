@@ -66,41 +66,18 @@ CHARACTERS = {
             "cultivator at the very beginning of the immortal path."
         ),
 
-        # Stage 1 — ControlNet structure pass
-        # RULES (see memory/prompt_generation_rules.md):
-        #   - Body shape BEFORE pose tokens (lean wiry, NOT athletic)
-        #   - NO studio lighting (triggers room/environment)
-        #   - NO "fitted" clothing (triggers modern fashion prior)
-        #   - Explicit background suppression with high weights
-        #   - Hand fix tokens required for T-pose
-        #   - CFG 6.5, CN 0.9, Steps 30 (set in sd15_image_worker.py)
+        # Stage 1 — STRUCTURE ONLY ("boring but correct")
+        # Rule: plain language, ≤20 words, NO weighted syntax, NO lore, NO details
+        # CFG 5.5, CN 0.6, Steps 25 (see sd15_image_worker.py)
+        # Stage 1 output = anatomy + pose + clean silhouette. Details come in Stage 2.
         "stage1_prompt": (
-            # Background first — must survive CLIP 77-token cutoff
-            "(flat plain white background:1.5), (no environment:1.5), (no shadows:1.4), flat lighting, "
-            # Body shape before pose — overrides gym/bodybuilder prior
-            "(lean wiry build:1.4), (slightly underfed:1.3), "
-            "full body young male character, "
-            # Pose + view
-            "(T-pose:1.5), (arms straight horizontal:1.4), (legs straight:1.3), "
-            "(front view:1.5), (centered:1.4), (perfect symmetry:1.5), "
-            # Clothing — loose not fitted
-            "(simple loose robe:1.4), (rope belt:1.3), "
-            # Hand fix
-            "(relaxed open hands:1.3), "
-            # Quality + silhouette
-            "(clean silhouette:1.4), (best quality:1.2)"
+            "full body young male, thin wiry build, T-pose, arms horizontal, legs straight, "
+            "front view, centered, white background, simple loose robe, flat lighting"
         ),
         "stage1_negative": (
-            "muscular, bodybuilder, athletic, bulky, "
-            "modern clothing, pants, leggings, sportswear, shoes, "
-            "room, wall, floor, ceiling, studio, light panel, "
-            "shadows, gradient, environment, background details, "
-            "asymmetry, tilted pose, perspective, "
-            "bent arms, bent legs, "
-            "ornate, detailed fabric, silk, embroidery, "
-            "armor, accessories, weapons, "
-            "bad hands, fused fingers, extra fingers, missing fingers, deformed hands, "
-            "text, watermark, logo, nsfw"
+            "muscular, bodybuilder, gym body, modern clothing, pants, sportswear, "
+            "room, background, shadows, environment, "
+            "bad hands, deformed, extra limbs, text, watermark"
         ),
 
         # Stage 2 — img2img detail pass (~50 tokens with prefix, CLIP-safe ≤68)
@@ -140,25 +117,15 @@ CHARACTERS = {
         ),
 
         # Stage 1 — ControlNet structure pass (~56 tokens, CLIP-safe ≤68)
-        # Side view for quadruped — ControlNet reads quad skeleton best from side
+        # Stage 1 — STRUCTURE ONLY ("boring but correct")
+        # Rule: plain language, ≤20 words, side view for quadrupeds
         "stage1_prompt": (
-            "(best quality:1.2), (studio lighting:1.1), "
-            "full body quadruped creature, "
-            "(four-legged stance:1.4), (all four legs on ground:1.3), "
-            "(side view:1.4), (orthographic view:1.3), "
-            "(legs straight:1.2), (neutral standing pose:1.3), "
-            "(centered composition:1.3), (symmetrical legs:1.2), "
-            "(muscular feline body:1.2), (clean silhouette:1.3), "
-            "(smooth coat:1.1), "
-            "white background, flat lighting, no shadows"
+            "full body lion, side view, neutral standing, all four legs on ground, "
+            "centered, white background, flat lighting, clean silhouette"
         ),
         "stage1_negative": (
-            "asymmetry, dynamic pose, running, jumping, perspective, "
-            "bent legs, clutter, props, "
-            "ornate, detailed texture, accessories, wings, horns, "
-            "human, bipedal, person, rider, "
-            "shadow, gradient background, low quality, blur, noise, "
-            "text, watermark, extra limbs, deformed, nsfw"
+            "running, jumping, dynamic pose, background, shadows, environment, "
+            "human, rider, wings, deformed, extra limbs, text, watermark"
         ),
 
         # Stage 2 — img2img detail pass (~52 tokens with prefix, CLIP-safe ≤68)
