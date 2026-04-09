@@ -66,21 +66,20 @@ CHARACTERS = {
             "cultivator at the very beginning of the immortal path."
         ),
 
-        # Stage 1 — STRUCTURE ONLY ("boring but correct")
-        # Positive: pose intent + anatomy intent + rendering intent ONLY
-        #   - NO style, lore, clothing details — those belong in Stage 2
-        #   - NO body-type preferences (wiry, lean) — let anatomy be neutral
-        # Negative: STRICT structural NO only (not preferences)
-        #   - Removed: muscular, bodybuilder, gym, modern clothing, pants, sportswear
-        #     (those are preferences, not structural failures)
-        #   - Keep: deformed anatomy, wrong rendering context, quality killers
+        # Stage 1 — STRUCTURE PASS
+        # Formula: [distilled subject description] + [key pose/anatomy tags] + [render context]
+        # Distilled from full description: young male in hanfu robe, lean build, determined
+        # Key structural tags: T-pose, full body, front view
+        # Render: white background, flat lighting
+        # Negative: strict structural/quality failures only
         "stage1_prompt": (
-            "full body young male, T-pose, arms horizontal, legs straight, "
+            "young male in plain hanfu robe, lean build, calm expression, "
+            "T-pose, arms horizontal, legs straight, full body, "
             "front view, centered, white background, flat lighting"
         ),
         "stage1_negative": (
-            "room, background, shadows, environment, "
-            "bad hands, deformed, extra limbs, text, watermark"
+            "background, room, environment, shadows, "
+            "bad hands, extra fingers, deformed, extra limbs, text, watermark"
         ),
 
         # Stage 2 — img2img detail pass (~50 tokens with prefix, CLIP-safe ≤68)
@@ -119,38 +118,21 @@ CHARACTERS = {
             "Runic diamond mark between the horns. Majestic and serene, not aggressive."
         ),
 
-        # Stage 1 — STRUCTURE ONLY
-        # Positive: pose intent + anatomy intent + rendering intent
-        #   - Explicit body position (spine horizontal, legs vertical, paws flat)
-        #   - Profile view for quadruped ControlNet skeleton alignment
-        #   - Rendering context (white bg, flat lighting, clean silhouette)
-        #   - NO fantasy/lore/style — those are Stage 2
-        # Negative: STRICT structural NO only
-        #   - running/jumping = wrong pose type (structural)
-        #   - background/environment = wrong render context (structural)
-        #   - human/rider/wings = wrong anatomy (structural)
-        #   - deformed/extra limbs/text/watermark = quality killers (always)
+        # Stage 1 — STRUCTURE PASS
+        # Formula: [distilled subject description] + [key pose/anatomy tags] + [render context]
+        # Distilled from full description: large fantastical lion with mane and single horn
+        # Key structural tags: strict side profile, all four paws flat, spine horizontal
+        # Render: white background, flat lighting
+        # Negative: strict structural/quality failures only
         "stage1_prompt": (
-            "full body lion, "
-            "side view, strict profile view, "
-            "standing alert, "
-            "head level with body, "
-            "spine straight horizontal, "
-            "front legs vertical straight, "
-            "back legs natural feline stance, "
-            "all four paws flat on ground, "
-            "weight evenly distributed, "
-            "proportional lion anatomy, "
-            "clean silhouette, "
-            "neutral pose reference, "
-            "centered, "
-            "white background, "
-            "flat lighting, "
-            "no environment"
+            "large fantastical lion with flame mane and single horn on forehead, "
+            "majestic standing, strict side profile view, "
+            "all four paws flat on ground, spine horizontal, tail extended, "
+            "full body, centered, white background, flat lighting"
         ),
         "stage1_negative": (
-            "running, jumping, "
-            "background, shadows, environment, "
+            "running, jumping, dynamic pose, "
+            "background, environment, shadows, "
             "human, rider, wings, "
             "deformed, extra limbs, text, watermark"
         ),
