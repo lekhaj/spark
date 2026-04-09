@@ -155,11 +155,11 @@ def generation_viewer_ui():
                     allow_preview=True,
                 )
 
-        # ── Final prompts sent to SD1.5 (always visible) ──────────────────────
-        gr.Markdown("### 📝 Final Prompts → SD1.5")
+        # ── Final prompts actually used by SD1.5 (written back by GPU worker) ──
+        gr.Markdown("### 📝 Final Prompts used by SD1.5")
         gr.Markdown(
-            "_Exactly what is passed to SD1.5 + ControlNet — no additions, no prefix._",
-            elem_id="prompt-subtitle",
+            "**`final_prompt`** = exact string passed to SD1.5 + ControlNet by the GPU worker. "
+            "Written to MongoDB after generation. If blank, worker has not run yet."
         )
         prompts_md = gr.Markdown("_Load a biome to see prompts._")
 
@@ -262,18 +262,43 @@ def generation_viewer_ui():
                 s1_n = stage1.get("negative") or cd.get("stage1_negative") or "_not set_"
                 s2_n = stage2.get("negative") or cd.get("stage2_negative") or "_not set_"
 
-                # Final prompts panel (always visible)
-                prompt_parts.append(
-                    f"\n---\n#### `{char_name}` · {ctype} · stage: `{gen_st}`\n\n"
-                    f"**Stage 1 positive** *(sent to ControlNet pass)*:\n"
-                    f"```\n{s1_p}\n```\n"
-                    f"**Stage 1 negative**:\n"
-                    f"```\n{s1_n}\n```\n"
-                    f"**Stage 2 positive** *(sent to img2img pass)*:\n"
-                    f"```\n{s2_p}\n```\n"
-                    f"**Stage 2 negative**:\n"
-                    f"```\n{s2_n}\n```"
-                )
+                # Final prompts — what GPU worker actually sent to SD1.5
+                s1_final_p = stage1.get("final_prompt") or ""
+                s1_final_n = stage1.get("final_negative") or ""
+                s1_params  = stage1.get("params") or {}
+                params_str = ""
+                if s1_params:
+                    params_str = (
+                        f"  model=`{s1_params.get('model','?')}` · "
+                        f"cfg=`{s1_params.get('cfg','?')}` · "
+                        f"steps=`{s1_params.get('steps','?')}` · "
+                        f"cn_scale=`{s1_params.get('cn_scale','?')}` · "
+                        f"controlnet=`{s1_params.get('controlnet','?').split('/')[-1]}`"
+                    )
+
+                if s1_final_p:
+                    prompt_block = (
+                        f"\n---\n#### `{char_name}` · {ctype} · {_badge(s1_st)} `{s1_st}`\n\n"
+                        f"**✅ FINAL POSITIVE** *(exactly sent to SD1.5 by GPU worker)*:\n"
+                        f"```\n{s1_final_p}\n```\n"
+                        f"**✅ FINAL NEGATIVE**:\n"
+                        f"```\n{s1_final_n or '_none_'}\n```\n"
+                    )
+                    if params_str:
+                        prompt_block += f"**Params**: {params_str}\n"
+                else:
+                    # Worker hasn't run yet — show planned prompt from MongoDB
+                    prompt_block = (
+                        f"\n---\n#### `{char_name}` · {ctype} · {_badge(s1_st)} `{s1_st}`\n\n"
+                        f"⚠️ *Worker has not written final_prompt yet — showing planned prompt:*\n\n"
+                        f"**Planned Stage 1 positive**:\n"
+                        f"```\n{s1_p}\n```\n"
+                        f"**Planned Stage 1 negative**:\n"
+                        f"```\n{s1_n}\n```\n"
+                        f"**Planned Stage 2 positive**:\n"
+                        f"```\n{s2_p}\n```"
+                    )
+                prompt_parts.append(prompt_block)
 
                 # Character description accordion
                 detail_parts.append(

@@ -306,11 +306,24 @@ class SD15Worker(BaseWorker):
         )
         self.upload_image(base_img, base_key)
         self.mongo_update(biome_id, char_name, {
-            "generation_stage": "stage2_refine",
-            "stage1.status":    "complete",
-            "stage1.image_key": base_key,
-            "stage1.image_url": s3_base_url,
-            "images.base":      base_key,
+            "generation_stage":      "stage2_refine",
+            "stage1.status":         "complete",
+            "stage1.image_key":      base_key,
+            "stage1.image_url":      s3_base_url,
+            "images.base":           base_key,
+            # ── Exact strings passed to SD1.5 ─────────────────────────────────
+            # These are written by the GPU worker AFTER generation so the UI
+            # always shows what was actually used, not just what was planned.
+            "stage1.final_prompt":   s1_pos,
+            "stage1.final_negative": s1_neg,
+            "stage1.params": {
+                "model":      SD15_MODEL_ID,
+                "controlnet": CONTROLNET_OPENPOSE_ID if creature_category != "quadruped" else CONTROLNET_ANIMAL_ID,
+                "cfg":        STAGE1_CFG,
+                "steps":      STAGE1_STEPS,
+                "cn_scale":   STAGE1_CN_SCALE,
+                "img_size":   IMG_SIZE,
+            },
         })
         self.logger.info(f"[{char_name}] Stage 1 done → {base_key}")
 
