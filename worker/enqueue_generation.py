@@ -250,6 +250,19 @@ def main():
         print("\n[DRY RUN] No tasks pushed to Redis. Re-run without --dry-run to queue.")
         return
 
+    # ── Auto-start GPU FIRST ──────────────────────────────────────────────────
+    # Check + start GPU before pushing tasks so workers are already booting
+    # when tasks land in the queue.  Tasks sitting in Redis with workers not
+    # yet running is fine (workers block-pop), but starting early reduces
+    # total wall-clock time from "enqueue" to "first image done".
+    if not args.no_auto_start:
+        print()
+        gpu_ready = start_gpu_if_needed()
+        if not gpu_ready:
+            print("[WARNING] Could not confirm GPU is running — tasks will be queued anyway.")
+            print("          Start GPU manually and workers will pick up from Redis.")
+        print()
+
     # ── Push to Redis ─────────────────────────────────────────────────────────
     r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0, socket_connect_timeout=10)
     try:
@@ -265,12 +278,6 @@ def main():
 
     depth = r.llen(SD15_QUEUE)
     print(f"[Redis] {SD15_QUEUE} depth: {depth}")
-
-    # ── Auto-start GPU ────────────────────────────────────────────────────────
-    # All ML workloads run on GPU — not this CPU server.
-    if not args.no_auto_start:
-        print()
-        start_gpu_if_needed()
 
     print(f"\n✓  {len(tasks)} task(s) queued for biome '{biome_id}'")
     print(f"   Monitor: ssh ec2-user@<gpu-ip> 'tail -f /tmp/gpu_workers.log'")
