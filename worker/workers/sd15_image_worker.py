@@ -164,10 +164,10 @@ class SD15Worker(BaseWorker):
         self.logger.info("Loading ControlNet models...")
         self.controlnet_openpose = ControlNetModel.from_pretrained(
             CONTROLNET_OPENPOSE_ID, torch_dtype=torch.float16
-        )
+        ).to("cuda")
         self.controlnet_animal = ControlNetModel.from_pretrained(
             CONTROLNET_ANIMAL_ID, torch_dtype=torch.float16
-        )
+        ).to("cuda")
 
         self.logger.info(f"Loading SD1.5 base: {SD15_MODEL_ID}")
         self.pipe_cn = StableDiffusionControlNetPipeline.from_pretrained(

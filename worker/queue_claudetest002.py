@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
 """
-claudetest002 — Biome creation + task queue script
-===================================================
-Creates the 'claudetest002' biome in MongoDB with 2 characters,
-then queues their SD1.5 generation tasks to Redis.
+seed_claudetest002.py  (kept as queue_claudetest002.py for compatibility)
+=========================================================================
+Biome seeder for 'claudetest002' — creates / updates the biome document
+in MongoDB with 2 fully-defined cultivation-world characters.
+
+This script ONLY creates the biome.  To queue tasks use the generic handler:
+  python worker/enqueue_generation.py --biome-id claudetest002 [--stage1-only]
 
 Characters:
   1. cultivation_youth   — humanoid, early-stage neutral cultivation disciple
   2. suanni_lion         — quadruped, wuxia lion beast (Suanni-inspired)
 
-Run from repo root:
+Usage:
   python worker/queue_claudetest002.py [--dry-run] [--show-prompts-only]
 """
 
 import argparse
-import json
 import os
 import time
-import uuid
 
 import pymongo
-import redis
 from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
@@ -261,82 +261,40 @@ def show_prompts():
 
 
 def create_biome(db):
-    """Insert or replace the biome document."""
+    """Insert or replace the biome document in MongoDB."""
     db.biomes.replace_one({"_id": BIOME_ID}, BIOME_DOCUMENT, upsert=True)
     print(f"[MongoDB] Biome '{BIOME_ID}' created/updated.")
 
 
-def queue_tasks(r, stage1_only: bool = False):
-    """Push SD1.5 tasks to Redis sd15_tasks queue.
-
-    All 4 prompt fields are passed explicitly so sd15_image_worker.py
-    uses them directly for the 2-stage pipeline without falling back to
-    the default CREATURE_PROMPTS templates.
-
-    stage1_only=True  → worker stops after ControlNet pass, does NOT run img2img.
-                        Use this to verify Stage 1 output before committing Stage 2.
-    """
-    for char_name, char in CHARACTERS.items():
-        payload = {
-            "task_id":          str(uuid.uuid4()),
-            "biome_id":         BIOME_ID,
-            "character_name":   char_name,
-            "character_type":   char["character_type"],
-            # ── Stage 1: ControlNet structure pass ──────────────────────────
-            "stage1_prompt":    char["stage1_prompt"],
-            "stage1_negative":  char["stage1_negative"],
-            # ── Stage 2: img2img detail pass ────────────────────────────────
-            "stage2_prompt":    char["stage2_prompt"],
-            "stage2_negative":  char["stage2_negative"],
-            # ── Pipeline control ─────────────────────────────────────────────
-            "stage1_only":      stage1_only,
-            "timestamp":        time.time(),
-        }
-        r.rpush("sd15_tasks", json.dumps(payload))
-        label = "(Stage 1 only)" if stage1_only else "(full 2-stage)"
-        print(f"[Redis] Queued: {char_name} → sd15_tasks {label}  (task_id={payload['task_id'][:8]}...)")
-
-    depth = r.llen("sd15_tasks")
-    print(f"[Redis] sd15_tasks depth: {depth}")
-
-
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Seed the claudetest002 biome in MongoDB."
+    )
     parser.add_argument("--dry-run",           action="store_true",
-                        help="Show everything but don't write to MongoDB or Redis")
+                        help="Show prompts without writing to MongoDB")
     parser.add_argument("--show-prompts-only", action="store_true",
-                        help="Print prompts and exit without touching DB or queue")
-    parser.add_argument("--stage1-only",       action="store_true",
-                        help="Queue tasks with stage1_only=True — worker stops after "
-                             "ControlNet pass so you can verify images before Stage 2")
+                        help="Print prompts and exit")
     args = parser.parse_args()
 
     show_prompts()
 
     if args.show_prompts_only:
-        print("\n[INFO] --show-prompts-only: exiting without DB/queue writes.")
+        print("\n[INFO] --show-prompts-only: exiting without DB writes.")
         return
 
     if args.dry_run:
-        mode = "stage1-only" if args.stage1_only else "full 2-stage"
-        print(f"\n[DRY RUN] Would create biome + queue tasks ({mode}). Pass no flags to execute.")
+        print(f"\n[DRY RUN] Would create/update biome '{BIOME_ID}' in MongoDB.")
+        print("          Re-run without --dry-run to write.")
         return
 
-    # Connect
     client = pymongo.MongoClient(MONGO_URI)
     db     = client[MONGO_DB]
-    r      = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
-
     create_biome(db)
-    queue_tasks(r, stage1_only=args.stage1_only)
 
-    mode_label = "Stage 1 ONLY (ControlNet structure)" if args.stage1_only else "full 2-stage"
-    print(f"\n✓  claudetest002 queued — {mode_label}")
-    print(f"   Monitor GPU : tail -f /tmp/gpu_workers.log")
-    print(f"   Check MongoDB: db.biomes.findOne({{_id: '{BIOME_ID}'}})")
-    if args.stage1_only:
-        print(f"\n   After reviewing Stage 1 images, run Stage 2:")
-        print(f"   python worker/queue_claudetest002.py --stage2-resume")
+    print(f"\n✓  Biome '{BIOME_ID}' seeded in MongoDB.")
+    print(f"\n   To queue generation tasks, run:")
+    print(f"   python worker/enqueue_generation.py --biome-id {BIOME_ID} --stage1-only")
+    print(f"   python worker/enqueue_generation.py --biome-id {BIOME_ID}  # full pipeline")
 
 
 if __name__ == "__main__":
