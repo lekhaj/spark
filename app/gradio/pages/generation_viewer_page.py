@@ -313,13 +313,17 @@ def generation_viewer_ui():
         load_btn.click(fn=load, inputs=[biome_dd], outputs=_outputs)
 
         # ── Auto-refresh via Gradio timer (every 15s when checkbox on) ────────
-        timer = gr.Timer(value=15, active=False)
-        autopoll_cb.change(
-            fn=lambda active: gr.Timer(active=active),
-            inputs=[autopoll_cb],
-            outputs=[timer],
-        )
-        timer.tick(fn=load, inputs=[biome_dd], outputs=_outputs)
+        try:
+            timer = gr.Timer(value=15)
+            autopoll_cb.change(
+                fn=lambda active: gr.Timer(active=active),
+                inputs=[autopoll_cb],
+                outputs=[timer],
+            )
+            timer.tick(fn=load, inputs=[biome_dd], outputs=_outputs)
+        except Exception:
+            # gr.Timer not available in this Gradio build — skip auto-refresh
+            pass
 
         # ── Biome meta on dropdown change ─────────────────────────────────────
         def on_biome_select(bid):
