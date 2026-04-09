@@ -66,17 +66,26 @@ CHARACTERS = {
             "cultivator at the very beginning of the immortal path."
         ),
 
-        # Stage 1 — ControlNet structure pass (CLIP-safe, ~28 tokens with prefix)
+        # Stage 1 — ControlNet structure pass (~58 tokens, CLIP-safe ≤68)
+        # Weighted for pose accuracy and clean silhouette — ControlNet reads these strongly
         "stage1_prompt": (
-            "best quality, masterpiece, "
-            "young male, lean wiry build, T-pose, arms extended horizontally, "
-            "front view, full body, white background, flat lighting, "
-            "centered, plain gray robe, rope belt, character sheet"
+            "(best quality:1.2), (studio lighting:1.1), "
+            "full body male character, "
+            "(athletic proportional anatomy:1.3), "
+            "(T-pose:1.4), (arms extended horizontally:1.3), (legs straight:1.2), "
+            "(front view:1.4), (orthographic view:1.3), "
+            "(centered composition:1.3), (symmetrical:1.4), "
+            "(clean silhouette:1.3), (neutral stance:1.2), "
+            "(plain fitted robe:1.1), (rope belt:1.0), "
+            "white background, flat lighting, no shadows"
         ),
         "stage1_negative": (
-            "background, shadows, complex textures, accessories, jewelry, weapons, armor, "
-            "text, watermark, blurry, cropped, extra limbs, deformed, nsfw, "
-            "aura, glow, sparkles, magic effects, silk, brocade"
+            "asymmetry, tilted pose, perspective, dynamic pose, "
+            "bent arms, bent legs, clutter, props, weapons, "
+            "ornate, detailed fabric, accessories, cape, armor, "
+            "aura, glow, magic effects, silk, brocade, "
+            "shadow, gradient background, low quality, blur, noise, "
+            "text, watermark, extra limbs, deformed, nsfw"
         ),
 
         # Stage 2 — img2img detail pass (~50 tokens with prefix, CLIP-safe ≤68)
@@ -115,16 +124,26 @@ CHARACTERS = {
             "Runic diamond mark between the horns. Majestic and serene, not aggressive."
         ),
 
-        # Stage 1 — ControlNet structure pass (~26 tokens with prefix)
+        # Stage 1 — ControlNet structure pass (~56 tokens, CLIP-safe ≤68)
+        # Side view for quadruped — ControlNet reads quad skeleton best from side
         "stage1_prompt": (
-            "best quality, masterpiece, "
-            "four-legged lion creature, neutral standing pose, side view, "
-            "full body, white background, flat lighting, centered, "
-            "muscular feline form, creature design sheet"
+            "(best quality:1.2), (studio lighting:1.1), "
+            "full body quadruped creature, "
+            "(four-legged stance:1.4), (all four legs on ground:1.3), "
+            "(side view:1.4), (orthographic view:1.3), "
+            "(legs straight:1.2), (neutral standing pose:1.3), "
+            "(centered composition:1.3), (symmetrical legs:1.2), "
+            "(muscular feline body:1.2), (clean silhouette:1.3), "
+            "(smooth coat:1.1), "
+            "white background, flat lighting, no shadows"
         ),
         "stage1_negative": (
-            "background, shadows, complex textures, text, watermark, blurry, "
-            "cropped, extra limbs, deformed, human, bipedal, nsfw, wings spread"
+            "asymmetry, dynamic pose, running, jumping, perspective, "
+            "bent legs, clutter, props, "
+            "ornate, detailed texture, accessories, wings, horns, "
+            "human, bipedal, person, rider, "
+            "shadow, gradient background, low quality, blur, noise, "
+            "text, watermark, extra limbs, deformed, nsfw"
         ),
 
         # Stage 2 — img2img detail pass (~52 tokens with prefix, CLIP-safe ≤68)
@@ -247,12 +266,15 @@ def create_biome(db):
     print(f"[MongoDB] Biome '{BIOME_ID}' created/updated.")
 
 
-def queue_tasks(r):
+def queue_tasks(r, stage1_only: bool = False):
     """Push SD1.5 tasks to Redis sd15_tasks queue.
 
     All 4 prompt fields are passed explicitly so sd15_image_worker.py
     uses them directly for the 2-stage pipeline without falling back to
     the default CREATURE_PROMPTS templates.
+
+    stage1_only=True  → worker stops after ControlNet pass, does NOT run img2img.
+                        Use this to verify Stage 1 output before committing Stage 2.
     """
     for char_name, char in CHARACTERS.items():
         payload = {
@@ -266,10 +288,13 @@ def queue_tasks(r):
             # ── Stage 2: img2img detail pass ────────────────────────────────
             "stage2_prompt":    char["stage2_prompt"],
             "stage2_negative":  char["stage2_negative"],
+            # ── Pipeline control ─────────────────────────────────────────────
+            "stage1_only":      stage1_only,
             "timestamp":        time.time(),
         }
         r.rpush("sd15_tasks", json.dumps(payload))
-        print(f"[Redis] Queued: {char_name} → sd15_tasks  (task_id={payload['task_id'][:8]}...)")
+        label = "(Stage 1 only)" if stage1_only else "(full 2-stage)"
+        print(f"[Redis] Queued: {char_name} → sd15_tasks {label}  (task_id={payload['task_id'][:8]}...)")
 
     depth = r.llen("sd15_tasks")
     print(f"[Redis] sd15_tasks depth: {depth}")
@@ -281,6 +306,9 @@ def main():
                         help="Show everything but don't write to MongoDB or Redis")
     parser.add_argument("--show-prompts-only", action="store_true",
                         help="Print prompts and exit without touching DB or queue")
+    parser.add_argument("--stage1-only",       action="store_true",
+                        help="Queue tasks with stage1_only=True — worker stops after "
+                             "ControlNet pass so you can verify images before Stage 2")
     args = parser.parse_args()
 
     show_prompts()
@@ -290,7 +318,8 @@ def main():
         return
 
     if args.dry_run:
-        print("\n[DRY RUN] Would create biome + queue tasks. Pass no flags to execute.")
+        mode = "stage1-only" if args.stage1_only else "full 2-stage"
+        print(f"\n[DRY RUN] Would create biome + queue tasks ({mode}). Pass no flags to execute.")
         return
 
     # Connect
@@ -299,11 +328,15 @@ def main():
     r      = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
 
     create_biome(db)
-    queue_tasks(r)
+    queue_tasks(r, stage1_only=args.stage1_only)
 
-    print(f"\n✓  claudetest002 ready. Pipeline: sd15 → trellis → rig")
-    print(f"   Monitor GPU: tail -f /tmp/gpu_workers.log")
+    mode_label = "Stage 1 ONLY (ControlNet structure)" if args.stage1_only else "full 2-stage"
+    print(f"\n✓  claudetest002 queued — {mode_label}")
+    print(f"   Monitor GPU : tail -f /tmp/gpu_workers.log")
     print(f"   Check MongoDB: db.biomes.findOne({{_id: '{BIOME_ID}'}})")
+    if args.stage1_only:
+        print(f"\n   After reviewing Stage 1 images, run Stage 2:")
+        print(f"   python worker/queue_claudetest002.py --stage2-resume")
 
 
 if __name__ == "__main__":

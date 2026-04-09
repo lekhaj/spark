@@ -288,6 +288,20 @@ class SD15Worker(BaseWorker):
         })
         self.logger.info(f"[{char_name}] Stage 1 done → {base_key}")
 
+        # ── Stage 1 only? ─────────────────────────────────────────────────────
+        if task.get("stage1_only", False):
+            self.mongo_update(biome_id, char_name, {
+                "generation_stage": "stage1_complete",
+                "status":           "stage1_complete",
+                "stage1.status":    "complete",
+            })
+            self.logger.info(
+                f"[{char_name}] stage1_only=True — stopping here. "
+                f"Review image at: {s3_base_url}"
+            )
+            torch.cuda.empty_cache()
+            return
+
         # ── Stage 2: img2img detail pass ──────────────────────────────────────
         self.mongo_update(biome_id, char_name, {
             "stage2.prompt":   s2_pos,
