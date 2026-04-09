@@ -155,8 +155,16 @@ def generation_viewer_ui():
                     allow_preview=True,
                 )
 
-        # ── Character details (prompts + descriptions) ────────────────────────
-        with gr.Accordion("📋 Character Details & Prompts", open=False):
+        # ── Final prompts sent to SD1.5 (always visible) ──────────────────────
+        gr.Markdown("### 📝 Final Prompts → SD1.5")
+        gr.Markdown(
+            "_Exactly what is passed to SD1.5 + ControlNet — no additions, no prefix._",
+            elem_id="prompt-subtitle",
+        )
+        prompts_md = gr.Markdown("_Load a biome to see prompts._")
+
+        # ── Character details (descriptions + stage status) ───────────────────
+        with gr.Accordion("📋 Character Details & Descriptions", open=False):
             char_detail_md = gr.Markdown("_Load a biome to see character details._")
 
         # ── 3D & Rigged models ────────────────────────────────────────────────
@@ -169,13 +177,14 @@ def generation_viewer_ui():
         def load(biome_id):
             if not biome_id:
                 return (
-                    "",                # biome_meta
-                    "⚠️ No biome selected.",  # status_md
-                    [],                # gallery_s1
-                    [],                # gallery_s2
-                    "_No data._",      # char_detail_md
-                    "_No data._",      # models_md
-                    "",                # model_links
+                    "",                        # biome_meta
+                    "⚠️ No biome selected.",   # status_md
+                    [],                        # gallery_s1
+                    [],                        # gallery_s2
+                    "_No data._",              # prompts_md
+                    "_No data._",              # char_detail_md
+                    "_No data._",              # models_md
+                    "",                        # model_links
                 )
 
             doc = get_biome(biome_id)
@@ -185,7 +194,7 @@ def generation_viewer_ui():
                     "Run `python worker/queue_claudetest002.py --stage1-only` on the CPU server first.",
                     [], [],
                     "_Biome not created yet._",
-                    "_No data._", "",
+                    "_No data._", "_No data._", "",
                 )
 
             # ── Biome metadata ────────────────────────────────────────────────
@@ -205,6 +214,7 @@ def generation_viewer_ui():
                     "⚠️ No characters found under `possible_structures.characters`.",
                     [], [],
                     "_No characters._",
+                    "_No characters._",
                     "_No data._", "",
                 )
 
@@ -212,6 +222,7 @@ def generation_viewer_ui():
             s1_imgs, s2_imgs    = [], []
             table_rows          = ["| Character | Type | Stage 1 | Stage 2 | 3D | Rigged |",
                                    "|---|---|---|---|---|---|"]
+            prompt_parts        = []
             detail_parts        = []
             model_md_parts      = []
             model_html_parts    = []
@@ -249,16 +260,25 @@ def generation_viewer_ui():
                 s1_p = stage1.get("prompt") or cd.get("stage1_prompt") or "_not set_"
                 s2_p = stage2.get("prompt") or cd.get("stage2_prompt") or "_not set_"
                 s1_n = stage1.get("negative") or cd.get("stage1_negative") or "_not set_"
-                detail_parts.append(
-                    f"\n---\n### `{char_name}` · {ctype}\n"
-                    f"**Stage**: `{gen_st}`\n\n"
-                    f"> {desc}\n\n"
-                    f"**Stage 1 prompt** ({_badge(s1_st)} {s1_st}):\n"
-                    f"```\n{s1_p}\n```\n\n"
+                s2_n = stage2.get("negative") or cd.get("stage2_negative") or "_not set_"
+
+                # Final prompts panel (always visible)
+                prompt_parts.append(
+                    f"\n---\n#### `{char_name}` · {ctype} · stage: `{gen_st}`\n\n"
+                    f"**Stage 1 positive** *(sent to ControlNet pass)*:\n"
+                    f"```\n{s1_p}\n```\n"
                     f"**Stage 1 negative**:\n"
-                    f"```\n{s1_n}\n```\n\n"
-                    f"**Stage 2 prompt** ({_badge(s2_st)} {s2_st}):\n"
-                    f"```\n{s2_p}\n```"
+                    f"```\n{s1_n}\n```\n"
+                    f"**Stage 2 positive** *(sent to img2img pass)*:\n"
+                    f"```\n{s2_p}\n```\n"
+                    f"**Stage 2 negative**:\n"
+                    f"```\n{s2_n}\n```"
+                )
+
+                # Character description accordion
+                detail_parts.append(
+                    f"\n---\n### `{char_name}` · {ctype}\n\n"
+                    f"> {desc}"
                 )
 
                 # 3D model links
@@ -301,6 +321,7 @@ def generation_viewer_ui():
                 table_md,
                 s1_imgs or [],
                 s2_imgs or [],
+                "\n".join(prompt_parts) or "_No prompts found._",
                 "\n".join(detail_parts) or "_No details available._",
                 "\n".join(model_md_parts) or "_No 3D models generated yet._",
                 "<div style='margin:8px 0'>" + "".join(model_html_parts) + "</div>" if model_html_parts else "",
@@ -308,7 +329,7 @@ def generation_viewer_ui():
 
         # ── Wire load button ──────────────────────────────────────────────────
         _outputs = [biome_meta, status_md, gallery_s1, gallery_s2,
-                    char_detail_md, models_md, model_links]
+                    prompts_md, char_detail_md, models_md, model_links]
 
         load_btn.click(fn=load, inputs=[biome_dd], outputs=_outputs)
 
