@@ -77,6 +77,26 @@ def s3_asset_viewer_ui():
                         visible=False
                     )
 
+        # ── Generation Images (Stage 1 & Stage 2 side-by-side) ──────────────────
+        with gr.Accordion("🎨 Generation Images — Stage 1 & Stage 2", open=True):
+            gr.Markdown(
+                "Shows ControlNet structure pass (Stage 1) and img2img detail pass "
+                "(Stage 2) side-by-side for each character."
+            )
+            fetch_gen_images_btn = gr.Button("Load Generation Images", variant="primary")
+            gen_status_md = gr.Markdown("", visible=False)
+            with gr.Row():
+                gen_gallery_s1 = gr.Gallery(
+                    label="Stage 1 — ControlNet Structure",
+                    columns=2, rows=1, height=380,
+                    show_label=True, visible=False
+                )
+                gen_gallery_s2 = gr.Gallery(
+                    label="Stage 2 — img2img Detail",
+                    columns=2, rows=1, height=380,
+                    show_label=True, visible=False
+                )
+
         # Asset Quality Rating Accordion
         with gr.Accordion("Asset Quality Rating", open=False):
             gr.Markdown("Rate the quality of the selected asset")
@@ -199,8 +219,20 @@ def s3_asset_viewer_ui():
             return None
 
         def get_image_url_from_asset(asset):
-            """Extract image URL from asset"""
-            image_keys = ("image_s3_url", "image_url", "s3_image_url", "image_s3_uri")
+            """Extract image URL from asset.
+            Priority: stage2.image_url → stage1.image_url → image_url → legacy keys.
+            """
+            if not isinstance(asset, dict):
+                return None
+            # 2-layer pipeline: prefer Stage 2 (most refined), fall back to Stage 1
+            stage2 = asset.get("stage2") or {}
+            if isinstance(stage2, dict) and stage2.get("image_url"):
+                return s3_to_https(stage2["image_url"])
+            stage1 = asset.get("stage1") or {}
+            if isinstance(stage1, dict) and stage1.get("image_url"):
+                return s3_to_https(stage1["image_url"])
+            # legacy / top-level fields
+            image_keys = ("image_url", "image_s3_url", "s3_image_url", "image_s3_uri")
             image_extensions = (".png", ".jpg", ".jpeg", ".webp")
             return _get_url_from_asset(asset, image_keys, image_extensions)
 
@@ -720,6 +752,64 @@ def s3_asset_viewer_ui():
             )
             return html
 
+        def fetch_gen_images(biome_id, asset_name):
+            """Fetch Stage 1 and Stage 2 images for all characters in the biome.
+            Returns two galleries: left=Stage1, right=Stage2, plus a status summary.
+            """
+            try:
+                if not biome_id or biome_id == "none":
+                    return (
+                        gr.update(visible=True, value="⚠️ No biome selected."),
+                        gr.update(visible=False), gr.update(visible=False)
+                    )
+
+                assets_map = get_biome_assets(biome_id, asset_name)
+                if not assets_map:
+                    return (
+                        gr.update(visible=True, value="⚠️ No assets found in this biome."),
+                        gr.update(visible=False), gr.update(visible=False)
+                    )
+
+                s1_images, s2_images = [], []
+                status_lines = ["| Character | Stage 1 | Stage 2 |", "|---|---|---|"]
+
+                for char_name, char_data in assets_map.items():
+                    if not isinstance(char_data, dict):
+                        continue
+
+                    stage1 = char_data.get("stage1") or {}
+                    stage2 = char_data.get("stage2") or {}
+
+                    s1_url    = s3_to_https(stage1.get("image_url", "")) if stage1 else None
+                    s2_url    = s3_to_https(stage2.get("image_url", "")) if stage2 else None
+                    s1_status = stage1.get("status", "—") if stage1 else "—"
+                    s2_status = stage2.get("status", "—") if stage2 else "—"
+
+                    if s1_url:
+                        s1_images.append((s1_url, f"{char_name}"))
+                    if s2_url:
+                        s2_images.append((s2_url, f"{char_name}"))
+
+                    s1_icon = "✅" if s1_status == "complete" else ("⏳" if s1_status == "generating" else "⭕")
+                    s2_icon = "✅" if s2_status == "complete" else ("⏳" if s2_status == "generating" else "⭕")
+                    status_lines.append(f"| **{char_name}** | {s1_icon} {s1_status} | {s2_icon} {s2_status} |")
+
+                status_md = "\n".join(status_lines)
+                no_s1 = len(s1_images) == 0
+                no_s2 = len(s2_images) == 0
+
+                return (
+                    gr.update(visible=True, value=status_md),
+                    gr.update(visible=not no_s1, value=s1_images if s1_images else None),
+                    gr.update(visible=not no_s2, value=s2_images if s2_images else None),
+                )
+
+            except Exception as e:
+                return (
+                    gr.update(visible=True, value=f"❌ Error: {e}"),
+                    gr.update(visible=False), gr.update(visible=False)
+                )
+
         def refresh_biome_choices():
             """Refresh the biome dropdown choices"""
             try:
@@ -735,6 +825,14 @@ def s3_asset_viewer_ui():
                 return gr.update(choices=[])
 
         # Event Handlers
+
+        # Generation Images — Stage 1 & 2
+        fetch_gen_images_btn.click(
+            fn=fetch_gen_images,
+            inputs=[biome_dropdown, asset_name_box],
+            outputs=[gen_status_md, gen_gallery_s1, gen_gallery_s2]
+        )
+
         quality_good_btn.click(
             fn=rate_good,
             inputs=[image_selector, biome_dropdown, asset_name_box],
