@@ -2,44 +2,42 @@
 """
 Generation Viewer V2
 ====================
-Purpose-built viewer for the SD1.5 → TRELLIS.2 → Auto-Rig Pro pipeline.
+Purpose-built for the SD1.5 → TRELLIS.2 → Auto-Rig Pro character pipeline.
 
-Supports the 2-layer MongoDB structure written by sd15_image_worker.py:
-  biome.possible_structures.characters.{char_name}:
-    stage1  : { prompt, negative, status, image_key, image_url }
-    stage2  : { prompt, negative, status, image_key, image_url }
-    images  : { base, refined, final }
-    image_url  (top-level, Gradio legacy)
-    model_path / model_url
-    rigged_model_url
-    status / generation_stage
+Reads possible_structures.characters.{char_name} from MongoDB biomes collection.
+Supports 2-layer structure:
+  stage1 : { prompt, negative, status, image_key, image_url }
+  stage2 : { prompt, negative, status, image_key, image_url }
+  model_path / model_url / rigged_model_url
 
-Works with both string _id (new: "claudetest002") and ObjectId (old biomes).
+Works with Gradio 5.x — no Row/Accordion visibility hacks.
 """
 
 import os
 import urllib.parse
+import logging
 
 import gradio as gr
 from pymongo import MongoClient
 from dotenv import load_dotenv
 
 load_dotenv()
+logger = logging.getLogger("generation_viewer")
 
 MONGO_URI = os.getenv("MONGO_URI") or os.getenv("MONGODB_URL", "")
 MONGO_DB  = os.getenv("MONGO_DB")  or os.getenv("MONGODB_DB_NAME", "World_builder")
 
+# ── DB helpers ────────────────────────────────────────────────────────────────
 
-def _get_db():
+def _db():
     try:
-        client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=4000)
-        return client[MONGO_DB]
+        return MongoClient(MONGO_URI, serverSelectionTimeoutMS=4000)[MONGO_DB]
     except Exception as e:
-        print(f"[GenViewer] MongoDB connect error: {e}")
+        logger.error(f"MongoDB connect error: {e}")
         return None
 
 
-def _s3_https(url):
+def _s3(url):
     if url and url.startswith("s3://"):
         parts = url[5:].split("/", 1)
         if len(parts) == 2:
@@ -47,301 +45,303 @@ def _s3_https(url):
     return url or ""
 
 
-def _list_biomes():
-    """Return [(display_label, biome_id)] for every doc in biomes collection."""
-    db = _get_db()
+def _badge(status):
+    s = (status or "").lower()
+    if s in ("complete", "image_complete", "stage1_complete", "model_complete"):
+        return "✅"
+    if "generat" in s or "pending" in s:
+        return "⏳"
+    return "⭕"
+
+
+# ── Data fetchers ─────────────────────────────────────────────────────────────
+
+def list_biomes():
+    db = _db()
     if db is None:
         return []
     try:
         docs = list(db.biomes.find({}, {"_id": 1, "biome_name": 1, "biome_type": 1}))
-        choices = []
-        for doc in docs:
-            raw_id = doc["_id"]
-            biome_id = str(raw_id)
-            name = doc.get("biome_name") or biome_id
-            btype = doc.get("biome_type", "")
-            label = f"{name}  [{biome_id}]" if btype == "" else f"{name}  ({btype})  [{biome_id}]"
-            choices.append((label, biome_id))
-        return choices
+        out = []
+        for d in docs:
+            bid   = str(d["_id"])
+            name  = d.get("biome_name") or bid
+            btype = d.get("biome_type", "")
+            label = f"{name}  [{bid}]" if not btype else f"{name}  ({btype})  [{bid}]"
+            out.append((label, bid))
+        return out
     except Exception as e:
-        print(f"[GenViewer] list_biomes error: {e}")
+        logger.error(f"list_biomes: {e}")
         return []
 
 
-def _get_biome_doc(biome_id: str):
-    """Fetch biome document by string or ObjectId."""
-    db = _get_db()
+def get_biome(biome_id):
+    db = _db()
     if db is None:
         return None
     try:
         doc = db.biomes.find_one({"_id": biome_id})
         if doc is None:
-            # try ObjectId
             from bson import ObjectId
-            doc = db.biomes.find_one({"_id": ObjectId(biome_id)})
+            try:
+                doc = db.biomes.find_one({"_id": ObjectId(biome_id)})
+            except Exception:
+                pass
         return doc
-    except Exception:
+    except Exception as e:
+        logger.error(f"get_biome: {e}")
         return None
 
 
-def _extract_characters(biome_doc) -> dict:
-    """Return {char_name: char_data} from possible_structures.characters."""
-    if not biome_doc:
+def get_characters(doc):
+    if not doc:
         return {}
-    ps = biome_doc.get("possible_structures", {})
-    # New pipeline: possible_structures.characters
-    chars = ps.get("characters", {})
-    if chars:
-        return chars
-    # Fallback: flatten all categories (old pipeline)
-    flat = {}
-    for cat_data in ps.values():
-        if isinstance(cat_data, dict):
-            flat.update(cat_data)
-    return flat
+    return doc.get("possible_structures", {}).get("characters", {})
 
 
-# ── Status badge helper ──────────────────────────────────────────────────────
-
-def _badge(status):
-    status = (status or "").lower()
-    if status in ("complete", "image_complete", "stage1_complete", "model_complete"):
-        return "✅"
-    if status in ("generating", "model_generating"):
-        return "⏳"
-    if status in ("not_started", "none", ""):
-        return "⭕"
-    return "🔷"
-
-
-# ── Gradio page factory ──────────────────────────────────────────────────────
+# ── UI builder ────────────────────────────────────────────────────────────────
 
 def generation_viewer_ui():
 
     with gr.Blocks() as page:
-        gr.Markdown("## 🎨 Generation Viewer V2")
+
         gr.Markdown(
-            "Live view of the **SD1.5 → TRELLIS.2 → Auto-Rig Pro** pipeline. "
-            "Shows Stage 1 (ControlNet structure) and Stage 2 (img2img detail) "
-            "images side-by-side, plus 3D model status for each character."
+            "## 🎨 Generation Viewer V2\n"
+            "Live view of the **SD1.5 → TRELLIS.2 → Auto-Rig Pro** character pipeline.\n"
+            "Reads directly from MongoDB — refresh anytime to check progress."
         )
 
-        # ── Biome selector ────────────────────────────────────────────────────
+        # ── Biome selector row ────────────────────────────────────────────────
         with gr.Row():
-            biome_dropdown = gr.Dropdown(
-                label="Select Biome",
-                choices=_list_biomes(),
+            biome_dd = gr.Dropdown(
+                label="Biome",
+                choices=list_biomes(),
                 interactive=True,
-                scale=4,
+                scale=5,
             )
-            refresh_btn = gr.Button("🔄 Refresh", scale=1)
+            gr.Button("🔄 Refresh list", scale=1).click(
+                fn=lambda: gr.update(choices=list_biomes()),
+                outputs=[biome_dd],
+            )
 
-        biome_info_md = gr.Markdown("", visible=False)
+        biome_meta = gr.Markdown("")
 
-        # ── Load button ───────────────────────────────────────────────────────
-        load_btn = gr.Button("Load Characters", variant="primary")
+        # ── Load + Auto-poll ──────────────────────────────────────────────────
+        with gr.Row():
+            load_btn    = gr.Button("▶ Load / Refresh", variant="primary", scale=3)
+            autopoll_cb = gr.Checkbox(label="Auto-refresh every 15s", value=False, scale=1)
 
-        # ── Per-character output area ─────────────────────────────────────────
-        status_table_md = gr.Markdown("", visible=False)
+        # ── Status summary ────────────────────────────────────────────────────
+        status_md = gr.Markdown("_Select a biome and click Load._")
 
-        with gr.Row(visible=False) as gallery_row:
+        # ── Stage 1 / Stage 2 galleries (always visible, empty when no images) ─
+        with gr.Row():
             with gr.Column():
-                gr.Markdown("### Stage 1 — ControlNet Structure")
+                gr.Markdown("### Stage 1 — ControlNet structure")
                 gallery_s1 = gr.Gallery(
                     show_label=False,
-                    columns=2, rows=2,
-                    height=420,
+                    columns=2,
+                    height=400,
                     object_fit="contain",
+                    allow_preview=True,
                 )
             with gr.Column():
-                gr.Markdown("### Stage 2 — img2img Detail")
+                gr.Markdown("### Stage 2 — img2img detail")
                 gallery_s2 = gr.Gallery(
                     show_label=False,
-                    columns=2, rows=2,
-                    height=420,
+                    columns=2,
+                    height=400,
                     object_fit="contain",
+                    allow_preview=True,
                 )
 
-        # ── Character detail accordion ────────────────────────────────────────
-        char_detail_md = gr.Markdown("", visible=False)
+        # ── Character details (prompts + descriptions) ────────────────────────
+        with gr.Accordion("📋 Character Details & Prompts", open=False):
+            char_detail_md = gr.Markdown("_Load a biome to see character details._")
 
-        # ── 3D / Rigged model section ─────────────────────────────────────────
-        with gr.Accordion("🧊 3D Models & Rigging", open=False, visible=False) as models_accordion:
-            models_md   = gr.Markdown("")
+        # ── 3D & Rigged models ────────────────────────────────────────────────
+        with gr.Accordion("🧊 3D Models", open=False):
+            models_md   = gr.Markdown("_No 3D models yet._")
             model_links = gr.HTML("")
 
-        # ── Handlers ─────────────────────────────────────────────────────────
+        # ── Core load function ────────────────────────────────────────────────
 
-        def on_refresh():
-            choices = _list_biomes()
-            return gr.update(choices=choices, value=choices[0][1] if choices else None)
-
-        def on_biome_change(biome_id):
-            """Show biome description when biome is selected."""
+        def load(biome_id):
             if not biome_id:
-                return gr.update(visible=False, value="")
-            doc = _get_biome_doc(biome_id)
+                return (
+                    "",                # biome_meta
+                    "⚠️ No biome selected.",  # status_md
+                    [],                # gallery_s1
+                    [],                # gallery_s2
+                    "_No data._",      # char_detail_md
+                    "_No data._",      # models_md
+                    "",                # model_links
+                )
+
+            doc = get_biome(biome_id)
             if not doc:
-                return gr.update(visible=True, value=f"⚠️ Biome `{biome_id}` not found in MongoDB.")
+                return (
+                    f"⚠️ Biome `{biome_id}` not found in MongoDB.",
+                    "Run `python worker/queue_claudetest002.py --stage1-only` on the CPU server first.",
+                    [], [],
+                    "_Biome not created yet._",
+                    "_No data._", "",
+                )
+
+            # ── Biome metadata ────────────────────────────────────────────────
             name  = doc.get("biome_name", biome_id)
             btype = doc.get("biome_type", "—")
             desc  = doc.get("description", "")
-            chars = _extract_characters(doc)
-            md = (
-                f"**{name}** · type: `{btype}` · id: `{biome_id}`\n\n"
+            chars = get_characters(doc)
+            meta_md = (
+                f"**{name}**  ·  type: `{btype}`  ·  id: `{biome_id}`\n\n"
                 f"{desc}\n\n"
-                f"**Characters**: {', '.join(f'`{c}`' for c in chars) or '_(none yet)_'}"
-            )
-            return gr.update(visible=True, value=md)
-
-        def on_load(biome_id):
-            """Load all characters and return gallery images + status table."""
-            empty = (
-                gr.update(visible=False, value=""),  # status_table_md
-                gr.update(visible=False),             # gallery_row
-                [],                                   # gallery_s1
-                [],                                   # gallery_s2
-                gr.update(visible=False, value=""),   # char_detail_md
-                gr.update(visible=False),             # models_accordion
-                "",                                   # models_md
-                "",                                   # model_links
+                f"**Characters in pipeline**: {', '.join(f'`{c}`' for c in chars) or '_(none)_'}"
             )
 
-            if not biome_id:
-                return empty
-
-            doc = _get_biome_doc(biome_id)
-            if not doc:
-                return (
-                    gr.update(visible=True, value=f"⚠️ Biome `{biome_id}` not found."),
-                    gr.update(visible=False), [], [],
-                    gr.update(visible=False, value=""),
-                    gr.update(visible=False), "", "",
-                )
-
-            chars = _extract_characters(doc)
             if not chars:
                 return (
-                    gr.update(visible=True, value="⚠️ No characters found in `possible_structures.characters`."),
-                    gr.update(visible=False), [], [],
-                    gr.update(visible=False, value=""),
-                    gr.update(visible=False), "", "",
+                    meta_md,
+                    "⚠️ No characters found under `possible_structures.characters`.",
+                    [], [],
+                    "_No characters._",
+                    "_No data._", "",
                 )
 
-            # ── Build gallery images ──────────────────────────────────────────
-            s1_imgs, s2_imgs = [], []
-            table_rows = ["| Character | Type | Stage 1 | Stage 2 | 3D | Rigged |", "|---|---|---|---|---|---|"]
-            detail_sections = []
-            model_lines = []
-            model_html_parts = []
+            # ── Build output per character ────────────────────────────────────
+            s1_imgs, s2_imgs    = [], []
+            table_rows          = ["| Character | Type | Stage 1 | Stage 2 | 3D | Rigged |",
+                                   "|---|---|---|---|---|---|"]
+            detail_parts        = []
+            model_md_parts      = []
+            model_html_parts    = []
 
-            for char_name, char_data in chars.items():
-                if not isinstance(char_data, dict):
+            for char_name, cd in chars.items():
+                if not isinstance(cd, dict):
                     continue
 
-                stage1 = char_data.get("stage1") or {}
-                stage2 = char_data.get("stage2") or {}
-                s1_url    = _s3_https(stage1.get("image_url", ""))
-                s2_url    = _s3_https(stage2.get("image_url", ""))
-                s1_status = stage1.get("status") or "—"
-                s2_status = stage2.get("status") or "—"
-                overall   = char_data.get("status") or "—"
-                gen_stage = char_data.get("generation_stage") or "—"
-                ctype     = char_data.get("character_type") or char_data.get("creature_category") or "—"
-                model_url = _s3_https(char_data.get("model_url") or char_data.get("model_path") or "")
-                rigged_url= _s3_https(char_data.get("rigged_model_url") or "")
-                desc      = char_data.get("description", "")
+                stage1 = cd.get("stage1") or {}
+                stage2 = cd.get("stage2") or {}
+                s1_url = _s3(stage1.get("image_url") or "")
+                s2_url = _s3(stage2.get("image_url") or "")
+                s1_st  = stage1.get("status") or "not_started"
+                s2_st  = stage2.get("status") or "not_started"
+                gen_st = cd.get("generation_stage") or "—"
+                ctype  = cd.get("character_type") or cd.get("creature_category") or "—"
+                m_url  = _s3(cd.get("model_url") or "")
+                r_url  = _s3(cd.get("rigged_model_url") or "")
+                desc   = cd.get("description", "")
 
                 if s1_url:
                     s1_imgs.append((s1_url, char_name))
                 if s2_url:
                     s2_imgs.append((s2_url, char_name))
 
-                s1_b = _badge(s1_status)
-                s2_b = _badge(s2_status)
-                m_b  = "✅" if model_url else "⭕"
-                r_b  = "✅" if rigged_url else "⭕"
                 table_rows.append(
-                    f"| **{char_name}** | {ctype} | {s1_b} {s1_status} "
-                    f"| {s2_b} {s2_status} | {m_b} | {r_b} |"
+                    f"| **{char_name}** | {ctype} "
+                    f"| {_badge(s1_st)} `{s1_st}` "
+                    f"| {_badge(s2_st)} `{s2_st}` "
+                    f"| {'✅' if m_url else '⭕'} "
+                    f"| {'✅' if r_url else '⭕'} |"
                 )
 
-                # Detail section per character
-                s1_prompt_txt = stage1.get("prompt", "_not set_")
-                s2_prompt_txt = stage2.get("prompt", "_not set_")
-                detail_sections.append(
+                # Prompt details
+                s1_p = stage1.get("prompt") or cd.get("stage1_prompt") or "_not set_"
+                s2_p = stage2.get("prompt") or cd.get("stage2_prompt") or "_not set_"
+                s1_n = stage1.get("negative") or cd.get("stage1_negative") or "_not set_"
+                detail_parts.append(
                     f"\n---\n### `{char_name}` · {ctype}\n"
-                    f"**Status**: {_badge(overall)} `{overall}` · stage: `{gen_stage}`\n\n"
-                    f"**Description**:\n> {desc}\n\n"
-                    f"**Stage 1 prompt** ({s1_b} {s1_status}):\n```\n{s1_prompt_txt}\n```\n\n"
-                    f"**Stage 2 prompt** ({s2_b} {s2_status}):\n```\n{s2_prompt_txt}\n```"
+                    f"**Stage**: `{gen_st}`\n\n"
+                    f"> {desc}\n\n"
+                    f"**Stage 1 prompt** ({_badge(s1_st)} {s1_st}):\n"
+                    f"```\n{s1_p}\n```\n\n"
+                    f"**Stage 1 negative**:\n"
+                    f"```\n{s1_n}\n```\n\n"
+                    f"**Stage 2 prompt** ({_badge(s2_st)} {s2_st}):\n"
+                    f"```\n{s2_p}\n```"
                 )
 
                 # 3D model links
-                if model_url or rigged_url:
-                    model_lines.append(f"**{char_name}**")
-                    if model_url:
-                        enc = urllib.parse.quote(model_url, safe=':/')
-                        model_lines.append(f"  - [TRELLIS.2 GLB]({model_url})")
-                        model_html_parts.append(
-                            f'<a href="https://3dviewer.net/#model={enc}" target="_blank" '
-                            f'style="padding:6px 12px;background:#0b5fff;color:#fff;'
-                            f'border-radius:5px;text-decoration:none;margin:4px;display:inline-block">'
-                            f'🔍 {char_name} — View 3D</a>'
-                            f'<a href="{model_url}" target="_blank" '
-                            f'style="padding:6px 12px;background:#1f7f46;color:#fff;'
-                            f'border-radius:5px;text-decoration:none;margin:4px;display:inline-block">'
-                            f'⬇️ Download GLB</a>'
-                        )
-                    if rigged_url:
-                        enc_r = urllib.parse.quote(rigged_url, safe=':/')
-                        model_lines.append(f"  - [Rigged GLB]({rigged_url})")
-                        model_html_parts.append(
-                            f'<a href="https://3dviewer.net/#model={enc_r}" target="_blank" '
-                            f'style="padding:6px 12px;background:#7c3aed;color:#fff;'
-                            f'border-radius:5px;text-decoration:none;margin:4px;display:inline-block">'
-                            f'🦴 {char_name} — View Rigged</a>'
-                        )
+                if m_url:
+                    enc = urllib.parse.quote(m_url, safe=':/')
+                    model_md_parts.append(f"- **{char_name}** TRELLIS.2 GLB: [view]({m_url})")
+                    model_html_parts.append(
+                        f'<a href="https://3dviewer.net/#model={enc}" target="_blank" '
+                        f'style="display:inline-block;margin:4px;padding:7px 14px;'
+                        f'background:#0b5fff;color:#fff;border-radius:5px;text-decoration:none;">'
+                        f'🔍 {char_name} — 3D View</a>'
+                        f'<a href="{m_url}" target="_blank" '
+                        f'style="display:inline-block;margin:4px;padding:7px 14px;'
+                        f'background:#1f7f46;color:#fff;border-radius:5px;text-decoration:none;">'
+                        f'⬇️ Download GLB</a> '
+                    )
+                if r_url:
+                    enc_r = urllib.parse.quote(r_url, safe=':/')
+                    model_md_parts.append(f"- **{char_name}** Rigged GLB: [view]({r_url})")
+                    model_html_parts.append(
+                        f'<a href="https://3dviewer.net/#model={enc_r}" target="_blank" '
+                        f'style="display:inline-block;margin:4px;padding:7px 14px;'
+                        f'background:#7c3aed;color:#fff;border-radius:5px;text-decoration:none;">'
+                        f'🦴 {char_name} — Rigged View</a> '
+                    )
 
-            has_models = bool(model_lines)
-            status_md  = "\n".join(table_rows)
-            detail_md  = "\n".join(detail_sections) if detail_sections else "No character details available."
-            models_md_val = "\n".join(model_lines) if model_lines else "No 3D models generated yet."
-            html_val   = "<div>" + "".join(model_html_parts) + "</div>" if model_html_parts else ""
+            # ── Assemble outputs ──────────────────────────────────────────────
+            s1_count = len(s1_imgs)
+            s2_count = len(s2_imgs)
+            table_md = "\n".join(table_rows)
+            table_md += (
+                f"\n\n**Stage 1 images ready**: {s1_count} / {len(chars)}  "
+                f"| **Stage 2 images ready**: {s2_count} / {len(chars)}"
+            )
+            if s1_count == 0:
+                table_md += "\n\n⚠️ _No Stage 1 images yet — GPU workers may still be processing._"
 
             return (
-                gr.update(visible=True, value=status_md),
-                gr.update(visible=True),
-                s1_imgs if s1_imgs else [],
-                s2_imgs if s2_imgs else [],
-                gr.update(visible=True, value=detail_md),
-                gr.update(visible=has_models),
-                models_md_val,
-                html_val,
+                meta_md,
+                table_md,
+                s1_imgs or [],
+                s2_imgs or [],
+                "\n".join(detail_parts) or "_No details available._",
+                "\n".join(model_md_parts) or "_No 3D models generated yet._",
+                "<div style='margin:8px 0'>" + "".join(model_html_parts) + "</div>" if model_html_parts else "",
             )
 
-        # Wire events
-        refresh_btn.click(fn=on_refresh, outputs=[biome_dropdown])
+        # ── Wire load button ──────────────────────────────────────────────────
+        _outputs = [biome_meta, status_md, gallery_s1, gallery_s2,
+                    char_detail_md, models_md, model_links]
 
-        biome_dropdown.change(
-            fn=on_biome_change,
-            inputs=[biome_dropdown],
-            outputs=[biome_info_md],
-        )
+        load_btn.click(fn=load, inputs=[biome_dd], outputs=_outputs)
 
-        load_btn.click(
-            fn=on_load,
-            inputs=[biome_dropdown],
-            outputs=[
-                status_table_md,
-                gallery_row,
-                gallery_s1,
-                gallery_s2,
-                char_detail_md,
-                models_accordion,
-                models_md,
-                model_links,
-            ],
+        # ── Auto-refresh via Gradio timer (every 15s when checkbox on) ────────
+        timer = gr.Timer(value=15, active=False)
+        autopoll_cb.change(
+            fn=lambda active: gr.Timer(active=active),
+            inputs=[autopoll_cb],
+            outputs=[timer],
         )
+        timer.tick(fn=load, inputs=[biome_dd], outputs=_outputs)
+
+        # ── Biome meta on dropdown change ─────────────────────────────────────
+        def on_biome_select(bid):
+            if not bid:
+                return ""
+            doc = get_biome(bid)
+            if not doc:
+                return f"⚠️ Biome `{bid}` not found in MongoDB — run the queue script first."
+            name  = doc.get("biome_name", bid)
+            btype = doc.get("biome_type", "—")
+            chars = get_characters(doc)
+            statuses = {
+                cn: (cd.get("status") or "not_started")
+                for cn, cd in chars.items()
+                if isinstance(cd, dict)
+            }
+            status_str = "  ".join(f"`{n}` {_badge(s)}" for n, s in statuses.items()) or "_none_"
+            return (
+                f"**{name}** · type: `{btype}` · `{len(chars)}` character(s)\n\n"
+                f"{status_str}"
+            )
+
+        biome_dd.change(fn=on_biome_select, inputs=[biome_dd], outputs=[biome_meta])
 
     return page
