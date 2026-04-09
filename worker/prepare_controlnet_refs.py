@@ -303,19 +303,68 @@ def try_controlnet_aux(out_dir: Path):
 # MAIN
 # ════════════════════════════════════════════════════════════════════════════
 
+# ════════════════════════════════════════════════════════════════════════════
+# DOWNLOAD REAL REFERENCE IMAGES (for best skeleton quality)
+# ════════════════════════════════════════════════════════════════════════════
+
+# CC0 / public domain reference images used to extract real skeletons.
+# Lion in strict side profile neutral stand — Wikimedia Commons CC0
+LION_REF_URL  = "https://upload.wikimedia.org/wikipedia/commons/thumb/7/73/Lion_waiting_in_Namibia.jpg/800px-Lion_waiting_in_Namibia.jpg"
+LION_REF_PATH = Path("/tmp/lion_ref.jpg")
+
+
+def download_ref_images():
+    """Download reference photos used to extract real skeletons via controlnet_aux."""
+    import urllib.request
+    log.info(f"Downloading lion reference image from Wikimedia Commons...")
+    try:
+        urllib.request.urlretrieve(LION_REF_URL, LION_REF_PATH)
+        log.info(f"Lion reference saved → {LION_REF_PATH}  ({LION_REF_PATH.stat().st_size // 1024} KB)")
+        return True
+    except Exception as e:
+        log.error(f"Failed to download lion reference: {e}")
+        return False
+
+
+def generate_quad_skeleton_from_ref(ref_path: Path, out_path: Path) -> bool:
+    """
+    Run AnimalPosePreprocessor on a real animal photo to produce a proper
+    AP10K-17 skeleton image. This is the correct input for huchenlei/animal_openpose.
+    Falls back to programmatic draw if controlnet_aux is unavailable.
+    """
+    try:
+        from controlnet_aux import AnimalPosePreprocessor
+        log.info(f"Running AnimalPosePreprocessor on {ref_path}...")
+        estimator = AnimalPosePreprocessor()
+        ref_img   = Image.open(ref_path).convert("RGB")
+        skeleton  = estimator(ref_img, detect_resolution=512, image_resolution=512)
+        skeleton.save(out_path)
+        log.info(f"Real animal skeleton saved → {out_path}")
+        return True
+    except (ImportError, AttributeError, Exception) as e:
+        log.warning(f"AnimalPosePreprocessor failed ({e}) — falling back to programmatic draw")
+        return False
+
+
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Generate ControlNet reference skeleton images.")
+    parser.add_argument("--download-ref", action="store_true",
+                        help="Download real reference photos and extract proper skeletons using controlnet_aux. "
+                             "Produces better quality than programmatic draw — always run this on first setup.")
+    parser.add_argument("--force", action="store_true",
+                        help="Regenerate even if skeleton files already exist.")
+    args = parser.parse_args()
+
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     # ── T-pose ────────────────────────────────────────────────────────────────
-    if TPOSE_PATH.exists():
-        log.info(f"T-pose skeleton already exists at {TPOSE_PATH} — skipping.")
-        log.info("  Delete the file and re-run to regenerate.")
+    if TPOSE_PATH.exists() and not args.force:
+        log.info(f"T-pose skeleton already exists at {TPOSE_PATH} — skipping (use --force to regen).")
     else:
-        # Try controlnet_aux first (uses real reference photo if env var set)
         aux_ok = False
-        if os.getenv("TPOSE_REF_IMAGE"):
+        if args.download_ref or os.getenv("TPOSE_REF_IMAGE"):
             aux_ok = try_controlnet_aux(OUT_DIR)
-
         if not aux_ok or not TPOSE_PATH.exists():
             log.info("Generating T-pose skeleton programmatically (COCO-18 OpenPose format)…")
             img = draw_tpose_openpose()
@@ -323,13 +372,18 @@ def main():
             log.info(f"Saved → {TPOSE_PATH}")
 
     # ── Quadruped ─────────────────────────────────────────────────────────────
-    if QUAD_PATH.exists():
-        log.info(f"Quad skeleton already exists at {QUAD_PATH} — skipping.")
+    if QUAD_PATH.exists() and not args.force:
+        log.info(f"Quad skeleton already exists at {QUAD_PATH} — skipping (use --force to regen).")
     else:
         aux_ok = False
-        if os.getenv("QUAD_REF_IMAGE"):
-            aux_ok = try_controlnet_aux(OUT_DIR)
-
+        if args.download_ref:
+            # Download real lion reference and extract proper AP10K skeleton
+            if download_ref_images():
+                aux_ok = generate_quad_skeleton_from_ref(LION_REF_PATH, QUAD_PATH)
+        elif os.getenv("QUAD_REF_IMAGE"):
+            ref = Path(os.getenv("QUAD_REF_IMAGE"))
+            if ref.exists():
+                aux_ok = generate_quad_skeleton_from_ref(ref, QUAD_PATH)
         if not aux_ok or not QUAD_PATH.exists():
             log.info("Generating quadruped skeleton programmatically (AP10K-17 format)…")
             img = draw_quad_animalpose()

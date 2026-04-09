@@ -29,9 +29,15 @@ MODELS = [
         "ignore":  ["*.ckpt", "*.safetensors.bak"],
     },
     {
-        "name":    "ControlNet OpenPose SD1.5",
+        "name":    "ControlNet OpenPose SD1.5 (bipedal/humanoid)",
         "repo_id": "lllyasviel/control_v11p_sd15_openpose",
         "subdir":  "controlnet_openpose",
+        "ignore":  [],
+    },
+    {
+        "name":    "ControlNet Animal Pose SD1.5 (quadruped)",
+        "repo_id": "huchenlei/animal_openpose",
+        "subdir":  "animal_openpose",
         "ignore":  [],
     },
 ]
@@ -70,6 +76,7 @@ def download_all(models_root: str):
     print(f"  MODELS_ROOT={models_root}")
     print(f"  SD15_MODEL_PATH={os.path.join(models_root, 'dreamshaper')}")
     print(f"  CONTROLNET_OPENPOSE_PATH={os.path.join(models_root, 'controlnet_openpose')}")
+    print(f"  CONTROLNET_ANIMAL_PATH={os.path.join(models_root, 'animal_openpose')}")
 
 
 def main():

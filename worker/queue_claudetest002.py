@@ -67,18 +67,18 @@ CHARACTERS = {
         ),
 
         # Stage 1 — STRUCTURE PASS
-        # Formula: [distilled subject description] + [key pose/anatomy tags] + [render context]
-        # Distilled from full description: young male in hanfu robe, lean build, determined
-        # Key structural tags: T-pose, full body, front view
-        # Render: white background, flat lighting
-        # Negative: strict structural/quality failures only
+        # Formula: [distilled subject] + [pose tags] + [3D render context]
+        # Subject: donghua/cultivation novel male character — no specific clothing detail
+        # 3D render tags: character sheet, orthographic, no shadows — signals SD to output
+        #                 clean flat reference suitable for 3D model extraction
         "stage1_prompt": (
-            "young male in plain hanfu robe, lean build, calm expression, "
+            "young male cultivation novel character, donghua anime style, lean figure, "
             "T-pose, arms horizontal, legs straight, full body, "
-            "front view, centered, white background, flat lighting"
+            "front view, centered, white background, flat lighting, "
+            "3d character model sheet, orthographic, no shadows"
         ),
         "stage1_negative": (
-            "background, room, environment, shadows, "
+            "background, room, environment, shadows, perspective distortion, "
             "bad hands, extra fingers, deformed, extra limbs, text, watermark"
         ),
 
@@ -119,21 +119,23 @@ CHARACTERS = {
         ),
 
         # Stage 1 — STRUCTURE PASS
-        # Formula: [distilled subject description] + [key pose/anatomy tags] + [render context]
-        # Distilled from full description: large fantastical lion with mane and single horn
-        # Key structural tags: strict side profile, all four paws flat, spine horizontal
-        # Render: white background, flat lighting
-        # Negative: strict structural/quality failures only
+        # Formula: [distilled subject] + [pose tags] + [3D render context]
+        # Subject: large powerful lion, feline body, heavy mane — enough for SD to
+        #          understand anatomy scale and proportions for ControlNet guidance
+        # Uses huchenlei/animal_openpose ControlNet (AP10K-17 quadruped keypoints)
+        # + real lion reference skeleton from prepare_controlnet_refs.py --download-ref
+        # 3D render tags: creature sheet, orthographic — clean for Trellis extraction
         "stage1_prompt": (
-            "large fantastical lion with flame mane and single horn on forehead, "
-            "majestic standing, strict side profile view, "
-            "all four paws flat on ground, spine horizontal, tail extended, "
-            "full body, centered, white background, flat lighting"
+            "large powerful lion, heavy mane, thick muscular feline body, long tail, "
+            "neutral standing pose, strict side profile view, "
+            "all four legs straight, paws flat on ground, spine horizontal, "
+            "full body, centered, white background, flat lighting, "
+            "3d creature model sheet, orthographic, no shadows"
         ),
         "stage1_negative": (
-            "running, jumping, dynamic pose, "
-            "background, environment, shadows, "
-            "human, rider, wings, "
+            "running, jumping, crouching, dynamic pose, "
+            "background, environment, shadows, perspective distortion, "
+            "human, rider, wings, horn, fantasy, "
             "deformed, extra limbs, text, watermark"
         ),
 
