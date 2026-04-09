@@ -9,23 +9,26 @@ def get_logger():
     return logging.getLogger("rpg_fast_api.llm_inference")
 logger = get_logger()
 
-# -- conditional import for LLM -- 
-if config.LLM_PROVIDER == "api":
-    import openai
-    # Initialize the OpenAI client once
-    try:
-        openai_client = openai.OpenAI(api_key=config.OPENAI_API_KEY)
-    except Exception as e:
-        logger.error(f"Failed to initialize OpenAI client: {e}")
-        openai_client = None
+# -- conditional import for LLM (lazy — only import when actually configured) --
+openai_client    = None
+_local_pipeline  = None
+_local_tokenizer = None
 
-elif config.LLM_PROVIDER == "local":
-    import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline, BitsAndBytesConfig
-    from transformers.utils import is_flash_attn_2_available
-    
-    _local_pipeline = None
-    _local_tokenizer = None
+if not config.LLM_CONFIG_ERROR:
+    if config.LLM_PROVIDER == "api":
+        try:
+            import openai
+            openai_client = openai.OpenAI(api_key=config.OPENAI_API_KEY)
+        except Exception as e:
+            logger.error(f"Failed to initialize OpenAI client: {e}")
+
+    elif config.LLM_PROVIDER == "local":
+        try:
+            import torch
+            from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline, BitsAndBytesConfig
+            from transformers.utils import is_flash_attn_2_available
+        except ImportError:
+            logger.warning("[llm_inference] transformers/torch not installed — local LLM unavailable.")
 
 
 # --- Private Helper Functions ---
@@ -148,7 +151,10 @@ def _call_claude_bedrock(prompt: str, max_tokens: int = 8000) -> str | None:
 def generate_structured_output(prompt: str) -> str | None:
     """
     The main, public function to generate a response from the configured LLM.
+    Raises ValueError (lazily) if LLM is misconfigured — app startup is unaffected.
     """
+    if config.LLM_CONFIG_ERROR:
+        raise ValueError(f"LLM not configured: {config.LLM_CONFIG_ERROR}")
     logger.info(f"Generating structured output using '{config.LLM_PROVIDER}' provider.")
     provider = config.LLM_PROVIDER.lower()
     if provider == "api":
