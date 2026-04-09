@@ -66,26 +66,38 @@ CHARACTERS = {
             "cultivator at the very beginning of the immortal path."
         ),
 
-        # Stage 1 — ControlNet structure pass (~58 tokens, CLIP-safe ≤68)
-        # Weighted for pose accuracy and clean silhouette — ControlNet reads these strongly
+        # Stage 1 — ControlNet structure pass
+        # RULES (see memory/prompt_generation_rules.md):
+        #   - Body shape BEFORE pose tokens (lean wiry, NOT athletic)
+        #   - NO studio lighting (triggers room/environment)
+        #   - NO "fitted" clothing (triggers modern fashion prior)
+        #   - Explicit background suppression with high weights
+        #   - Hand fix tokens required for T-pose
+        #   - CFG 6.5, CN 0.9, Steps 30 (set in sd15_image_worker.py)
         "stage1_prompt": (
-            "(best quality:1.2), (studio lighting:1.1), "
-            "full body male character, "
-            "(athletic proportional anatomy:1.3), "
-            "(T-pose:1.4), (arms extended horizontally:1.3), (legs straight:1.2), "
-            "(front view:1.4), (orthographic view:1.3), "
-            "(centered composition:1.3), (symmetrical:1.4), "
-            "(clean silhouette:1.3), (neutral stance:1.2), "
-            "(plain fitted robe:1.1), (rope belt:1.0), "
-            "white background, flat lighting, no shadows"
+            "(best quality:1.2), "
+            "full body young male character, "
+            "(lean wiry build:1.4), (slightly underfed:1.3), (narrow shoulders:1.2), (slim limbs:1.3), "
+            "natural human proportions, "
+            "(T-pose:1.5), (arms straight horizontal:1.4), (legs straight:1.3), "
+            "(front view:1.5), (orthographic:1.4), "
+            "(centered:1.4), (perfect symmetry:1.5), "
+            "(simple loose robe:1.4), (coarse fabric:1.3), (crossover collar:1.2), (knee length robe:1.2), (simple rope belt:1.3), "
+            "(relaxed open hands:1.3), (clear fingers:1.2), "
+            "(flat plain white background:1.5), (no environment:1.5), (no shadows:1.4), (even flat lighting:1.4), "
+            "(clean silhouette:1.4)"
         ),
         "stage1_negative": (
-            "asymmetry, tilted pose, perspective, dynamic pose, "
-            "bent arms, bent legs, clutter, props, weapons, "
-            "ornate, detailed fabric, accessories, cape, armor, "
-            "aura, glow, magic effects, silk, brocade, "
-            "shadow, gradient background, low quality, blur, noise, "
-            "text, watermark, extra limbs, deformed, nsfw"
+            "muscular, bodybuilder, athletic, bulky, "
+            "modern clothing, pants, leggings, sportswear, shoes, "
+            "room, wall, floor, ceiling, studio, light panel, "
+            "shadows, gradient, environment, background details, "
+            "asymmetry, tilted pose, perspective, "
+            "bent arms, bent legs, "
+            "ornate, detailed fabric, silk, embroidery, "
+            "armor, accessories, weapons, "
+            "bad hands, fused fingers, extra fingers, missing fingers, deformed hands, "
+            "text, watermark, logo, nsfw"
         ),
 
         # Stage 2 — img2img detail pass (~50 tokens with prefix, CLIP-safe ≤68)

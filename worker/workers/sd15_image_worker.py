@@ -48,9 +48,9 @@ QUAD_ANIMALPOSE_PATH = os.getenv(
 
 # ── Generation hyper-params ───────────────────────────────────────────────────
 IMG_SIZE        = 512
-STAGE1_STEPS    = 25
-STAGE1_CFG      = 7.5
-STAGE1_CN_SCALE = 1.0
+STAGE1_STEPS    = 30     # 28-32 range; more steps → cleaner structure
+STAGE1_CFG      = 6.5   # lower than Stage2; high CFG causes over-stylization
+STAGE1_CN_SCALE = 0.9   # 1.0 can over-constrain; 0.9 lets SD breathe slightly
 STAGE2_STEPS    = 20
 STAGE2_CFG      = 7.5
 STAGE2_STRENGTH = 0.35
