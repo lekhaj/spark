@@ -73,7 +73,7 @@ class BaseWorker(ABC):
                 db=0,
                 decode_responses=True,
                 socket_connect_timeout=10,
-                socket_timeout=10,
+                socket_timeout=None,   # no read timeout — blpop blocks indefinitely
             )
         return self._redis
 
