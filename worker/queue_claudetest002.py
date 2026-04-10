@@ -66,20 +66,16 @@ CHARACTERS = {
             "cultivator at the very beginning of the immortal path."
         ),
 
-        # Stage 1 — ControlNet structure pass
-        # Style tag "semi-realistic, 3D game character" steers SD away from anime.
-        # Negative explicitly blocks anime/cartoon/cel-shading.
+        # Stage 1 — ControlNet POSE CORRECTION ONLY (very light touch)
+        # KEY RULE: SD should not redesign — only correct T-pose and symmetry.
+        # Flux image provides the design; SD just nudges with ControlNet.
+        # Denoise 0.20 = barely touches the image. Minimal prompt = minimal drift.
         "stage1_prompt": (
-            "best quality, masterpiece, semi-realistic, 3D game character, stylized realism, "
-            "young male, lean build, T-pose, arms extended horizontally, "
-            "front view, full body, white background, flat lighting, "
-            "centered, plain gray robe, rope belt, relaxed open hands, character sheet"
+            "same character, T-pose, arms extended horizontally, "
+            "front view, orthographic, symmetrical, clean silhouette, white background"
         ),
         "stage1_negative": (
-            "anime, cartoon, cel shading, 2D illustration, manga, flat art, sketch, "
-            "room, environment, background, shadows, accessories, jewelry, weapons, armor, "
-            "text, watermark, blurry, cropped, extra limbs, deformed, nsfw, "
-            "aura, glow, sparkles, magic effects, silk, brocade"
+            "deformed, extra limbs, text, watermark, background, shadows, blurry, nsfw"
         ),
 
         # Stage 2 — img2img detail pass
@@ -118,18 +114,16 @@ CHARACTERS = {
             "Runic diamond mark between the horns. Majestic and serene, not aggressive."
         ),
 
-        # Stage 1 — ControlNet structure pass
+        # Stage 1 — ControlNet POSE CORRECTION ONLY (Canny-only for quads)
+        # Uses Canny edges extracted from the Flux image — no OpenPose skeleton needed.
+        # Flux already has correct standing side-profile; SD just locks the silhouette.
         "stage1_prompt": (
-            "best quality, masterpiece, semi-realistic, 3D game character, stylized realism, "
-            "four-legged lion creature, muscular feline form, "
-            "neutral standing pose, side view, "
-            "all four paws flat on ground, spine horizontal, tail extended, "
-            "full body, white background, flat lighting, centered, creature design sheet"
+            "same creature, neutral standing, side profile view, "
+            "orthographic, all four legs planted, clean silhouette, white background"
         ),
         "stage1_negative": (
-            "anime, cartoon, cel shading, 2D illustration, manga, flat art, sketch, "
-            "room, environment, background, shadows, text, watermark, blurry, "
-            "cropped, extra limbs, deformed, human, bipedal, nsfw, wings, running, jumping"
+            "deformed, extra limbs, text, watermark, background, shadows, blurry, "
+            "human, bipedal, nsfw, running, jumping, sitting"
         ),
 
         # Stage 2 — img2img detail pass
@@ -247,9 +241,28 @@ def show_prompts():
 
 
 def create_biome(db):
-    """Insert or replace the biome document."""
+    """Upsert the biome document — preserves existing flux_concept fields."""
+    existing = db.biomes.find_one({"_id": BIOME_ID}) or {}
+    existing_chars = (
+        existing.get("possible_structures", {}).get("characters", {})
+    )
+
+    # Merge flux_concept data back in before replacing
+    for char_name, char_doc in BIOME_DOCUMENT["possible_structures"]["characters"].items():
+        ex = existing_chars.get(char_name, {})
+        # Preserve flux_concept block if already generated
+        if ex.get("flux_concept"):
+            char_doc["flux_concept"] = ex["flux_concept"]
+        # Preserve flux_concept S3 key in images dict
+        flux_key = ex.get("images", {}).get("flux_concept")
+        if flux_key:
+            char_doc["images"]["flux_concept"] = flux_key
+        # Preserve top-level image_url if flux was the last generated image
+        if ex.get("flux_concept", {}).get("image_url") and not ex.get("image_url"):
+            char_doc["image_url"] = ex["flux_concept"]["image_url"]
+
     db.biomes.replace_one({"_id": BIOME_ID}, BIOME_DOCUMENT, upsert=True)
-    print(f"[MongoDB] Biome '{BIOME_ID}' created/updated.")
+    print(f"[MongoDB] Biome '{BIOME_ID}' created/updated (flux_concept preserved).")
 
 
 def queue_tasks(r):

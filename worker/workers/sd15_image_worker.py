@@ -66,12 +66,18 @@ QUAD_ANIMALPOSE_PATH = os.getenv(
 # ── Generation hyper-params ───────────────────────────────────────────────────
 IMG_SIZE = 512   # SD1.5 native — do NOT use 768 to avoid OOM
 
-# Stage 1 — img2img + dual ControlNet (Flux concept as init)
-STAGE1_STEPS          = 25
-STAGE1_CFG            = 6.5    # slightly lower than pure txt2img (Flux provides structure)
-STAGE1_STRENGTH       = 0.30   # low denoise → preserve Flux anatomy
-STAGE1_CN_OPENPOSE    = 0.9    # OpenPose locks pose precisely
-STAGE1_CN_CANNY       = 0.65   # Canny locks silhouette from Flux image
+# Stage 1 — img2img + ControlNet (Flux concept as init)
+# KEY RULE: SD should NOT redesign — only correct pose/symmetry.
+# Very light denoise preserves the Flux design completely.
+STAGE1_STEPS       = 20
+STAGE1_CFG         = 5.5    # low CFG — don't fight the Flux image
+STAGE1_STRENGTH    = 0.20   # VERY light touch — 0.15–0.25 range
+STAGE1_CN_OPENPOSE = 0.85   # OpenPose nudges pose (bipedal only)
+STAGE1_CN_CANNY    = 0.55   # Canny locks Flux silhouette (both types)
+
+# For quadrupeds: Canny-only from Flux image (skeleton ref may be wrong/sitting)
+# Higher weight compensates for no OpenPose
+STAGE1_CN_CANNY_QUAD = 0.70
 
 # Stage 1 fallback (no Flux) — txt2img + single OpenPose CN
 STAGE1_CN_SCALE_FALLBACK = 0.85
@@ -190,9 +196,13 @@ CREATURE_PROMPTS = {
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def build_prompt(template: str, override: str | None, max_tokens: int = 65) -> str:
-    """Prepend quality prefix; use override if supplied. Truncate to max_tokens."""
-    base  = QUALITY_PREFIX + (override if override else template)
-    words = base.split()
+    """Prepend quality prefix; use override if supplied. Truncate to max_tokens.
+    Avoids double-prefix if the override already starts with quality tokens."""
+    text = override if override else template
+    # Don't double-prepend — task-supplied prompts may already have the prefix
+    if not text.lstrip().lower().startswith("best quality"):
+        text = QUALITY_PREFIX + text
+    words = text.split()
     if len(words) * 1.3 > max_tokens:
         words = words[:int(max_tokens / 1.3)]
     return " ".join(words)
@@ -352,28 +362,41 @@ class SD15Worker(BaseWorker):
         )
 
         if flux_concept_img is not None:
-            # ── Dual CN img2img path (preferred) ─────────────────────────────
-            self.logger.info(
-                f"Stage 1 — img2img + dual CN  "
-                f"[OpenPose={STAGE1_CN_OPENPOSE}  Canny={STAGE1_CN_CANNY}  "
-                f"denoise={STAGE1_STRENGTH}]"
-            )
             init_img  = flux_concept_img.resize((IMG_SIZE, IMG_SIZE))
             canny_img = extract_canny(flux_concept_img)
 
-            # Swap pipe_cn_i2i's controlnet to quad-appropriate CN for pose
-            self.pipe_cn_i2i.controlnet = [pose_cn, self.controlnet_canny]
+            if is_quad:
+                # ── Quadruped: Canny-only from Flux ──────────────────────────
+                # Skip OpenPose — quad skeleton ref may be wrong/sitting.
+                # Flux image's Canny already captures the correct standing pose.
+                self.logger.info(
+                    f"Stage 1 — img2img + Canny-only (quad)  "
+                    f"[Canny={STAGE1_CN_CANNY_QUAD}  denoise={STAGE1_STRENGTH}]"
+                )
+                self.pipe_cn_i2i.controlnet = [self.controlnet_canny]
+                cn_scales = STAGE1_CN_CANNY_QUAD
+                ctrl_images = canny_img
+            else:
+                # ── Bipedal: OpenPose + Canny dual CN ────────────────────────
+                self.logger.info(
+                    f"Stage 1 — img2img + dual CN (bipedal)  "
+                    f"[OpenPose={STAGE1_CN_OPENPOSE}  Canny={STAGE1_CN_CANNY}  "
+                    f"denoise={STAGE1_STRENGTH}]"
+                )
+                self.pipe_cn_i2i.controlnet = [pose_cn, self.controlnet_canny]
+                cn_scales   = [STAGE1_CN_OPENPOSE, STAGE1_CN_CANNY]
+                ctrl_images = [openpose_img, canny_img]
 
             with torch.no_grad():
                 result = self.pipe_cn_i2i(
                     prompt=positive,
                     negative_prompt=negative,
                     image=init_img,
-                    control_image=[openpose_img, canny_img],
+                    control_image=ctrl_images,
                     strength=STAGE1_STRENGTH,
                     num_inference_steps=STAGE1_STEPS,
                     guidance_scale=STAGE1_CFG,
-                    controlnet_conditioning_scale=[STAGE1_CN_OPENPOSE, STAGE1_CN_CANNY],
+                    controlnet_conditioning_scale=cn_scales,
                     width=IMG_SIZE,
                     height=IMG_SIZE,
                 )
