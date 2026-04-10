@@ -30,6 +30,10 @@ import torch
 from diffusers import FluxPipeline
 from dotenv import load_dotenv
 from PIL import Image
+from transformers import T5EncoderModel
+
+# Reduce VRAM fragmentation
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 # ── Load environment ──────────────────────────────────────────────────────────
 _ENV_PATH = os.path.join(os.path.dirname(__file__), "..", ".env")
@@ -218,14 +222,24 @@ def main():
 
     # ── Load Flux Schnell ─────────────────────────────────────────────────────
     print(f"\n[Flux] Loading {MODEL_ID} ...")
-    print("  Using enable_model_cpu_offload() — fits safely on 23 GB L4 VRAM")
+    print("  T5-XXL in 8-bit quantization (~4.5 GB) + transformer bf16 (~12 GB)")
+    print("  Total VRAM budget: ~17 GB — fits L4 23 GB")
+
+    # Load T5-XXL (9GB normally) in 8-bit to save ~4.5GB VRAM
+    text_encoder_2 = T5EncoderModel.from_pretrained(
+        MODEL_ID,
+        subfolder="text_encoder_2",
+        load_in_8bit=True,
+        device_map="auto",
+    )
 
     pipe = FluxPipeline.from_pretrained(
         MODEL_ID,
+        text_encoder_2=text_encoder_2,
         torch_dtype=torch.bfloat16,
     )
-    pipe.enable_model_cpu_offload()
-    # Faster VAE decode
+    pipe.to("cuda")
+    # Sliced VAE decode to avoid spikes on large images
     pipe.vae.enable_slicing()
     print("[Flux] Model ready.\n")
 
