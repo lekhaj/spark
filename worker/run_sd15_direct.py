@@ -153,6 +153,7 @@ def main():
     pipe_cn.scheduler = UniPCMultistepScheduler.from_config(pipe_cn.scheduler.config)
     pipe_cn.enable_xformers_memory_efficient_attention()
     pipe_cn.to("cuda")
+    cn_canny.to("cuda")   # move to CUDA before building shared pipelines
 
     # Shared-weight pipelines — controlnet list must be set at init, not swapped after
     base_components = dict(pipe_cn.components)
