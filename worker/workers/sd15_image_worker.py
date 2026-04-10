@@ -306,7 +306,9 @@ class SD15Worker(BaseWorker):
         )
 
         # Plain img2img — Stage 2 (shares UNet, no extra VRAM)
-        self.pipe_i2i = StableDiffusionImg2ImgPipeline(**self.pipe_cn.components)
+        # Exclude 'controlnet' — StableDiffusionImg2ImgPipeline doesn't accept it
+        i2i_components = {k: v for k, v in self.pipe_cn.components.items() if k != "controlnet"}
+        self.pipe_i2i = StableDiffusionImg2ImgPipeline(**i2i_components)
         self.pipe_i2i.scheduler = UniPCMultistepScheduler.from_config(
             self.pipe_i2i.scheduler.config
         )
