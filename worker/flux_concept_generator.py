@@ -32,7 +32,7 @@ from dotenv import load_dotenv
 from PIL import Image
 
 # ── Load environment ──────────────────────────────────────────────────────────
-_ENV_PATH = os.path.join(os.path.dirname(__file__), "Hunyuan3D-2", ".env")
+_ENV_PATH = os.path.join(os.path.dirname(__file__), "..", ".env")
 if os.path.exists(_ENV_PATH):
     load_dotenv(_ENV_PATH)
 
