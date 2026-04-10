@@ -154,13 +154,21 @@ def main():
     pipe_cn.enable_xformers_memory_efficient_attention()
     pipe_cn.to("cuda")
 
-    # Shared-weight pipelines
-    cn_i2i_components = dict(pipe_cn.components)
-    cn_i2i_components["controlnet"] = [cn_openpose, cn_canny]
-    pipe_cn_i2i = StableDiffusionControlNetImg2ImgPipeline(**cn_i2i_components)
-    pipe_cn_i2i.scheduler = UniPCMultistepScheduler.from_config(pipe_cn_i2i.scheduler.config)
+    # Shared-weight pipelines — controlnet list must be set at init, not swapped after
+    base_components = dict(pipe_cn.components)
 
-    i2i_components = {k: v for k, v in pipe_cn.components.items() if k != "controlnet"}
+    # Bipedal: OpenPose + Canny dual
+    biped_components = {**base_components, "controlnet": [cn_openpose, cn_canny]}
+    pipe_biped_i2i = StableDiffusionControlNetImg2ImgPipeline(**biped_components)
+    pipe_biped_i2i.scheduler = UniPCMultistepScheduler.from_config(pipe_biped_i2i.scheduler.config)
+
+    # Quadruped: Canny-only (correct standing pose from Flux, no broken skeleton)
+    quad_components = {**base_components, "controlnet": cn_canny}
+    pipe_quad_i2i = StableDiffusionControlNetImg2ImgPipeline(**quad_components)
+    pipe_quad_i2i.scheduler = UniPCMultistepScheduler.from_config(pipe_quad_i2i.scheduler.config)
+
+    # Stage 2: plain img2img (no controlnet)
+    i2i_components = {k: v for k, v in base_components.items() if k != "controlnet"}
     pipe_i2i = StableDiffusionImg2ImgPipeline(**i2i_components)
     pipe_i2i.scheduler = UniPCMultistepScheduler.from_config(pipe_i2i.scheduler.config)
 
@@ -209,9 +217,8 @@ def main():
             if is_quad:
                 # Canny-only — Flux already captured correct standing pose
                 print(f"  [Stage 1] Quad: Canny-only  CN={STAGE1_CN_CANNY_QUAD}")
-                pipe_cn_i2i.controlnet = [cn_canny]
                 with torch.no_grad():
-                    result = pipe_cn_i2i(
+                    result = pipe_quad_i2i(
                         prompt=s1_pos, negative_prompt=s1_neg,
                         image=init_img, control_image=canny_img,
                         strength=STAGE1_STRENGTH, num_inference_steps=STAGE1_STEPS,
@@ -222,9 +229,8 @@ def main():
             else:
                 # OpenPose + Canny dual
                 print(f"  [Stage 1] Bipedal: OpenPose={STAGE1_CN_OPENPOSE} + Canny={STAGE1_CN_CANNY}")
-                pipe_cn_i2i.controlnet = [cn_openpose, cn_canny]
                 with torch.no_grad():
-                    result = pipe_cn_i2i(
+                    result = pipe_biped_i2i(
                         prompt=s1_pos, negative_prompt=s1_neg,
                         image=init_img, control_image=[openpose_ref, canny_img],
                         strength=STAGE1_STRENGTH, num_inference_steps=STAGE1_STEPS,
