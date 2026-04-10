@@ -66,30 +66,33 @@ CHARACTERS = {
             "cultivator at the very beginning of the immortal path."
         ),
 
-        # Stage 1 — ControlNet structure pass (CLIP-safe, ~28 tokens with prefix)
+        # Stage 1 — ControlNet structure pass
+        # Style tag "semi-realistic, 3D game character" steers SD away from anime.
+        # Negative explicitly blocks anime/cartoon/cel-shading.
         "stage1_prompt": (
-            "best quality, masterpiece, "
-            "young male, lean wiry build, T-pose, arms extended horizontally, "
+            "best quality, masterpiece, semi-realistic, 3D game character, stylized realism, "
+            "young male, lean build, T-pose, arms extended horizontally, "
             "front view, full body, white background, flat lighting, "
-            "centered, plain gray robe, rope belt, character sheet"
+            "centered, plain gray robe, rope belt, relaxed open hands, character sheet"
         ),
         "stage1_negative": (
-            "background, shadows, complex textures, accessories, jewelry, weapons, armor, "
+            "anime, cartoon, cel shading, 2D illustration, manga, flat art, sketch, "
+            "room, environment, background, shadows, accessories, jewelry, weapons, armor, "
             "text, watermark, blurry, cropped, extra limbs, deformed, nsfw, "
             "aura, glow, sparkles, magic effects, silk, brocade"
         ),
 
-        # Stage 2 — img2img detail pass (~50 tokens with prefix, CLIP-safe ≤68)
+        # Stage 2 — img2img detail pass
         "stage2_prompt": (
-            "best quality, masterpiece, "
+            "best quality, masterpiece, semi-realistic, 3D game character, stylized realism, "
             "young male cultivator, ash gray linen hanfu robe, crossover collar, "
             "rope belt, half-up topknot wooden hairpin, "
-            "lean wiry build, dark sharp eyes, calm determined expression, "
-            "faded sect patch chest, outer disciple beginner, "
-            "neutral xianxia fantasy, no aura, "
+            "lean build, dark sharp eyes, calm determined expression, "
+            "faded sect patch chest, outer disciple, "
             "front view, white background, clean game asset"
         ),
         "stage2_negative": (
+            "anime, cartoon, cel shading, 2D illustration, manga, flat art, "
             "background, photorealistic, blurry, extra limbs, text, watermark, deformed, "
             "ugly, nsfw, silk, brocade, embroidery, aura, glow, magic, western armor, "
             "chinese opera, heavy ornament, master robes"
@@ -115,30 +118,32 @@ CHARACTERS = {
             "Runic diamond mark between the horns. Majestic and serene, not aggressive."
         ),
 
-        # Stage 1 — ControlNet structure pass (~26 tokens with prefix)
+        # Stage 1 — ControlNet structure pass
         "stage1_prompt": (
-            "best quality, masterpiece, "
-            "four-legged lion creature, neutral standing pose, side view, "
-            "full body, white background, flat lighting, centered, "
-            "muscular feline form, creature design sheet"
+            "best quality, masterpiece, semi-realistic, 3D game character, stylized realism, "
+            "four-legged lion creature, muscular feline form, "
+            "neutral standing pose, side view, "
+            "all four paws flat on ground, spine horizontal, tail extended, "
+            "full body, white background, flat lighting, centered, creature design sheet"
         ),
         "stage1_negative": (
-            "background, shadows, complex textures, text, watermark, blurry, "
-            "cropped, extra limbs, deformed, human, bipedal, nsfw, wings spread"
+            "anime, cartoon, cel shading, 2D illustration, manga, flat art, sketch, "
+            "room, environment, background, shadows, text, watermark, blurry, "
+            "cropped, extra limbs, deformed, human, bipedal, nsfw, wings, running, jumping"
         ),
 
-        # Stage 2 — img2img detail pass (~52 tokens with prefix, CLIP-safe ≤68)
+        # Stage 2 — img2img detail pass
         "stage2_prompt": (
-            "best quality, masterpiece, "
+            "best quality, masterpiece, semi-realistic, 3D game character, stylized realism, "
             "fantastical lion beast xianxia, amber golden fur, "
             "flame-shaped rust-orange mane, bone-white spiral horn forehead, "
             "dragon scales on chest and knees, "
             "blue luminous spine markings, dragon whiskers, "
             "cloven rear hooves, tasseled tail, amber slit-pupil eyes, "
-            "incense smoke paws, runic mark, "
             "majestic serene, white background, clean game asset"
         ),
         "stage2_negative": (
+            "anime, cartoon, cel shading, 2D illustration, manga, flat art, "
             "background, photorealistic, blurry, extra limbs, text, watermark, deformed, "
             "ugly, nsfw, mundane lion, wings, human figure, regular animal"
         ),
