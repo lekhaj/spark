@@ -30,7 +30,7 @@ import torch
 from diffusers import FluxPipeline
 from dotenv import load_dotenv
 from PIL import Image
-from transformers import T5EncoderModel
+from transformers import T5EncoderModel, BitsAndBytesConfig
 
 # Reduce VRAM fragmentation
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
@@ -226,10 +226,11 @@ def main():
     print("  Total VRAM budget: ~17 GB — fits L4 23 GB")
 
     # Load T5-XXL (9GB normally) in 8-bit to save ~4.5GB VRAM
+    bnb_cfg = BitsAndBytesConfig(load_in_8bit=True)
     text_encoder_2 = T5EncoderModel.from_pretrained(
         MODEL_ID,
         subfolder="text_encoder_2",
-        load_in_8bit=True,
+        quantization_config=bnb_cfg,
         device_map="auto",
     )
 
