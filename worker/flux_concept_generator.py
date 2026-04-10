@@ -30,7 +30,6 @@ import torch
 from diffusers import FluxPipeline
 from dotenv import load_dotenv
 from PIL import Image
-from transformers import T5EncoderModel, BitsAndBytesConfig
 
 # Reduce VRAM fragmentation
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
@@ -222,25 +221,17 @@ def main():
 
     # ── Load Flux Schnell ─────────────────────────────────────────────────────
     print(f"\n[Flux] Loading {MODEL_ID} ...")
-    print("  T5-XXL in 8-bit quantization (~4.5 GB) + transformer bf16 (~12 GB)")
-    print("  Total VRAM budget: ~17 GB — fits L4 23 GB")
-
-    # Load T5-XXL (9GB normally) in 8-bit to save ~4.5GB VRAM
-    bnb_cfg = BitsAndBytesConfig(load_in_8bit=True)
-    text_encoder_2 = T5EncoderModel.from_pretrained(
-        MODEL_ID,
-        subfolder="text_encoder_2",
-        quantization_config=bnb_cfg,
-        device_map="auto",
-    )
+    print("  Using enable_sequential_cpu_offload() — each layer moved to GPU")
+    print("  one at a time during forward pass. Fits any VRAM, ~3-5 min/image.")
 
     pipe = FluxPipeline.from_pretrained(
         MODEL_ID,
-        text_encoder_2=text_encoder_2,
         torch_dtype=torch.bfloat16,
     )
-    pipe.to("cuda")
-    # Sliced VAE decode to avoid spikes on large images
+    # Sequential offload: moves each sub-module to GPU one at a time.
+    # Much more memory-safe than model_cpu_offload (which loads whole components).
+    pipe.enable_sequential_cpu_offload()
+    # Sliced VAE decode to avoid VRAM spikes on large images
     pipe.vae.enable_slicing()
     print("[Flux] Model ready.\n")
 
