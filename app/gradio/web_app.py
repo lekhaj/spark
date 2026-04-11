@@ -14,6 +14,7 @@ from app.gradio.pages.decimation_page import decimation_page_ui
 from app.gradio.pages.biome_generation_page import mount_into as mount_generator_ui
 from app.gradio.pages.orchestrator_control_page import create_orchestrator_ui
 from app.gradio.pages.biome_editor import biome_editor_ui
+from app.gradio.pages.pipeline_dashboard_page import pipeline_dashboard_ui
 from app.services.mongo_service import get_db, get_biome_choices_live
 
 # Load environment variables from .env file
@@ -432,6 +433,10 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
         # Asset Decimation Tab
         with gr.TabItem("Asset Decimation"):
             decimation_page_ui()
+
+        # Pipeline Dashboard Tab
+        with gr.TabItem("Pipeline Dashboard"):
+            pipeline_dashboard_ui()
 
 
             
