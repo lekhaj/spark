@@ -15,6 +15,7 @@ from app.gradio.pages.biome_generation_page import mount_into as mount_generator
 from app.gradio.pages.orchestrator_control_page import create_orchestrator_ui
 from app.gradio.pages.biome_editor import biome_editor_ui
 from app.gradio.pages.pipeline_dashboard_page import pipeline_dashboard_ui
+from app.gradio.pages.generation_studio_page import generation_studio_ui
 from app.services.mongo_service import get_db, get_biome_choices_live
 
 # Load environment variables from .env file
@@ -438,7 +439,10 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
         with gr.TabItem("Pipeline Dashboard"):
             pipeline_dashboard_ui()
 
+        # Generation Studio Tab — manual stage-by-stage generation
+        with gr.TabItem("🎨 Generation Studio"):
+            generation_studio_ui()
 
-            
+
 # Launch the Gradio application
 demo.launch(server_name="0.0.0.0", server_port=7860)# share=True
