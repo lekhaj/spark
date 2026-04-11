@@ -9,14 +9,16 @@ Collections (all in World_builder DB):
   prompt_templates     — tested prompt templates with variable slots
 """
 
+import os
 import time
 from typing import Optional
 
 import pymongo
 
 # ── defaults ─────────────────────────────────────────────────────────────────
-MONGO_URI = "mongodb://kartik:Kartikg421@18.207.13.85:27017"
-MONGO_DB  = "World_builder"
+# Reads from env so the same code works from local (public IP) and on-instance (localhost)
+MONGO_URI = os.getenv("MONGO_URI", "mongodb://kartik:Kartikg421@localhost:27017")
+MONGO_DB  = os.getenv("MONGO_DB",  "World_builder")
 
 
 # ── connection ───────────────────────────────────────────────────────────────

@@ -40,7 +40,7 @@ from lib.spec_schema import (
 )
 
 # ── Config ────────────────────────────────────────────────────────────────────
-MONGO_URI   = os.getenv("MONGO_URI", "mongodb://kartik:Kartikg421@18.207.13.85:27017")
+MONGO_URI   = os.getenv("MONGO_URI", "mongodb://kartik:Kartikg421@localhost:27017")
 MONGO_DB    = os.getenv("MONGO_DB",  "World_builder")
 S3_BUCKET   = "sparkassets-us"
 S3_BASE     = f"https://{S3_BUCKET}.s3.us-east-1.amazonaws.com"
