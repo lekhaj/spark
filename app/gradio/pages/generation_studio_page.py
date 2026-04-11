@@ -15,6 +15,7 @@ Stages:
 import json
 import os
 import sys
+import threading
 import time
 import uuid
 from io import BytesIO
@@ -37,13 +38,25 @@ from lib.manual_gen_schema import (
 # ── Config ────────────────────────────────────────────────────────────────────
 MONGO_URI   = os.getenv("MONGO_URI",   "mongodb://kartik:Kartikg421@localhost:27017")
 MONGO_DB    = os.getenv("MONGO_DB",    "World_builder")
-REDIS_HOST  = os.getenv("REDIS_HOST",  "18.207.13.85")
-REDIS_PORT  = int(os.getenv("REDIS_PORT", 6380))
-S3_BUCKET   = "sparkassets-us"
-S3_BASE_URL = f"https://{S3_BUCKET}.s3.us-east-1.amazonaws.com"
+REDIS_HOST  = os.getenv("REDIS_HOST",  "localhost")
+REDIS_PORT  = int(os.getenv("REDIS_PORT", 6379))
+S3_BUCKET   = os.getenv("S3_BUCKET",   "sparkassets-us")
+S3_REGION   = os.getenv("AWS_REGION",  "ap-south-1")
+S3_BASE_URL = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com"
 
 REDIS_QUEUE_MANUAL = "manual_gen_tasks"
 REDIS_QUEUE_MODEL  = "model_tasks"
+
+# GPU instance config — reads from .env (same names as other workers)
+GPU_INSTANCE_ID = (
+    os.getenv("AWS_GPU_INSTANCE_ID") or
+    os.getenv("GPU") or
+    "i-0e029990527fa2b73"
+)
+AWS_REGION = os.getenv("AWS_REGION", "ap-south-1")
+# boto3 standard key names
+_AWS_KEY    = os.getenv("AWS_ACCESS_KEY_ID")    or os.getenv("AWS_ACCESS_KEY")
+_AWS_SECRET = os.getenv("AWS_SECRET_ACCESS_KEY") or os.getenv("AWS_SECRET_KEY")
 
 
 # ── MongoDB helper ────────────────────────────────────────────────────────────
@@ -52,15 +65,63 @@ def _db():
     return get_db(MONGO_URI, MONGO_DB)
 
 
+# ── GPU auto-start (fire-and-forget background thread) ───────────────────────
+
+def _ensure_gpu_running_bg():
+    """
+    Check if the GPU EC2 instance is running; start it if stopped.
+    Runs in a daemon thread so the UI never blocks waiting for EC2.
+    """
+    def _start():
+        try:
+            import boto3
+            ec2 = boto3.client(
+                "ec2",
+                region_name=AWS_REGION,
+                aws_access_key_id=_AWS_KEY,
+                aws_secret_access_key=_AWS_SECRET,
+            )
+            resp  = ec2.describe_instances(InstanceIds=[GPU_INSTANCE_ID])
+            inst  = resp["Reservations"][0]["Instances"][0]
+            state = inst["State"]["Name"]
+            print(f"[GPU] Instance {GPU_INSTANCE_ID} state: {state}")
+            if state == "running":
+                return
+            if state in ("stopped", "stopping"):
+                print(f"[GPU] Starting instance {GPU_INSTANCE_ID}…")
+                ec2.start_instances(InstanceIds=[GPU_INSTANCE_ID])
+                waiter = ec2.get_waiter("instance_running")
+                waiter.wait(
+                    InstanceIds=[GPU_INSTANCE_ID],
+                    WaiterConfig={"Delay": 10, "MaxAttempts": 30},
+                )
+                resp2 = ec2.describe_instances(InstanceIds=[GPU_INSTANCE_ID])
+                ip    = resp2["Reservations"][0]["Instances"][0].get("PublicIpAddress", "?")
+                print(f"[GPU] Instance running at {ip}. Workers start in ~2-3 min.")
+        except Exception as exc:
+            print(f"[GPU] Could not check/start GPU instance: {exc}")
+            print("[GPU] Task queued anyway — start GPU manually if needed.")
+
+    t = threading.Thread(target=_start, daemon=True, name="gpu-start-thread")
+    t.start()
+
+
 # ── Redis push ────────────────────────────────────────────────────────────────
 
-def _push_task(payload: dict, queue: str = REDIS_QUEUE_MANUAL) -> str:
-    """Push a task dict to Redis and return the task_id."""
+def _push_task(payload: dict, queue: str = REDIS_QUEUE_MANUAL,
+               start_gpu: bool = True) -> str:
+    """Push a task dict to Redis and return the task_id.
+
+    If start_gpu=True, also fires a background thread to ensure the GPU
+    EC2 instance is running so workers can pick up the task.
+    """
     import redis
     r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0, decode_responses=True)
     payload.setdefault("task_id", str(uuid.uuid4()))
     payload.setdefault("timestamp", time.time())
     r.rpush(queue, json.dumps(payload))
+    if start_gpu:
+        _ensure_gpu_running_bg()
     return payload["task_id"]
 
 
@@ -270,7 +331,9 @@ def _save_all_prompts(
 def _queue_flux(session_id, prompt, negative, width, height, steps, guidance) -> tuple:
     """Queue Flux task. Returns (task_id_or_error, status_msg)."""
     if not session_id:
-        return "", "No session loaded."
+        return "", "No session loaded. Click 'Load Session' first."
+    if not prompt.strip():
+        return "", "Prompt is empty — please enter a prompt."
     try:
         db = _db()
         save_stage_prompts(db, session_id, "flux", prompt, negative,
@@ -289,9 +352,9 @@ def _queue_flux(session_id, prompt, negative, width, height, steps, guidance) ->
                 "guidance_scale": float(guidance),
             },
         }
-        task_id = _push_task(payload)
+        task_id = _push_task(payload, start_gpu=True)
         mark_queued(db, session_id, "flux", task_id)
-        return task_id, f"queued  task_id={task_id}"
+        return task_id, f"queued ✓  GPU starting if needed…  task_id={task_id[:8]}…"
     except Exception as exc:
         return "", f"ERROR: {exc}"
 
@@ -330,9 +393,9 @@ def _run_normalize_cpu(session_id: str, resize_w: int, resize_h: int,
 
         s3 = boto3.client(
             "s3",
-            aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-            aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
-            region_name=os.getenv("AWS_DEFAULT_REGION", "us-east-1"),
+            aws_access_key_id=_AWS_KEY,
+            aws_secret_access_key=_AWS_SECRET,
+            region_name=S3_REGION,
         )
         s3.upload_fileobj(buf, S3_BUCKET, s3_key,
                           ExtraArgs={"ContentType": "image/png"})
@@ -358,12 +421,16 @@ def _queue_sd(session_id, stage, prompt, negative, params: dict,
               input_source: str) -> tuple:
     """Queue sd_stage1 or sd_stage2 task. Returns (task_id, status_msg)."""
     if not session_id:
-        return "", "No session loaded."
+        return "", "No session loaded. Click 'Load Session' first."
+    if not prompt.strip():
+        return "", "Prompt is empty — please enter a prompt."
     try:
         db = _db()
         save_stage_prompts(db, session_id, stage, prompt, negative, params)
         # Resolve input image URL
         input_url = get_stage_image_url(db, session_id, input_source)
+        if not input_url:
+            return "", f"No image found in source stage '{input_source}'. Run that stage first."
         payload = {
             "type":        "sd_stage",
             "session_id":  session_id,
@@ -372,11 +439,11 @@ def _queue_sd(session_id, stage, prompt, negative, params: dict,
             "negative":    negative,
             "params":      params,
             "input_stage": input_source,
-            "input_url":   input_url or "",
+            "input_url":   input_url,
         }
-        task_id = _push_task(payload)
+        task_id = _push_task(payload, start_gpu=True)
         mark_queued(db, session_id, stage, task_id)
-        return task_id, f"queued  task_id={task_id}"
+        return task_id, f"queued ✓  GPU starting if needed…  task_id={task_id[:8]}…"
     except Exception as exc:
         return "", f"ERROR: {exc}"
 
@@ -386,12 +453,16 @@ def _queue_multiview(session_id, side_or_back: str, prompt, negative,
     """Queue multiview_side or multiview_back task. Returns (task_id, status_msg)."""
     stage = f"multiview_{side_or_back}"
     if not session_id:
-        return "", "No session loaded."
+        return "", "No session loaded. Click 'Load Session' first."
+    if not prompt.strip():
+        return "", "Prompt is empty — please enter a prompt."
     try:
         db     = _db()
         params = {"denoise": float(denoise), "cfg": float(cfg), "steps": 20}
         save_stage_prompts(db, session_id, stage, prompt, negative, params)
         input_url = get_stage_image_url(db, session_id, input_source)
+        if not input_url:
+            return "", f"No image found in source stage '{input_source}'. Run that stage first."
         payload = {
             "type":        "multiview",
             "session_id":  session_id,
@@ -401,11 +472,11 @@ def _queue_multiview(session_id, side_or_back: str, prompt, negative,
             "negative":    negative,
             "params":      params,
             "input_stage": input_source,
-            "input_url":   input_url or "",
+            "input_url":   input_url,
         }
-        task_id = _push_task(payload)
+        task_id = _push_task(payload, start_gpu=True)
         mark_queued(db, session_id, stage, task_id)
-        return task_id, f"queued  task_id={task_id}"
+        return task_id, f"queued ✓  GPU starting if needed…  task_id={task_id[:8]}…"
     except Exception as exc:
         return "", f"ERROR: {exc}"
 
@@ -413,12 +484,15 @@ def _queue_multiview(session_id, side_or_back: str, prompt, negative,
 def _queue_trellis(session_id, front_src, side_src, back_src) -> tuple:
     """Queue TRELLIS task to model_tasks queue. Returns (task_id, status_msg)."""
     if not session_id:
-        return "", "No session loaded."
+        return "", "No session loaded. Click 'Load Session' first."
     try:
         db        = _db()
         front_url = get_stage_image_url(db, session_id, front_src) or ""
         side_url  = get_stage_image_url(db, session_id, side_src)  or ""
         back_url  = get_stage_image_url(db, session_id, back_src)  or ""
+
+        if not any([front_url, side_url, back_url]):
+            return "", "No source images found. Run at least one image stage first."
 
         payload = {
             "type":       "trellis",
@@ -433,9 +507,9 @@ def _queue_trellis(session_id, front_src, side_src, back_src) -> tuple:
                 "input_back":  back_src,
             },
         }
-        task_id = _push_task(payload, queue=REDIS_QUEUE_MODEL)
+        task_id = _push_task(payload, queue=REDIS_QUEUE_MODEL, start_gpu=True)
         mark_queued(db, session_id, "trellis", task_id)
-        return task_id, f"queued  task_id={task_id}"
+        return task_id, f"queued ✓  GPU starting if needed…  task_id={task_id[:8]}…"
     except Exception as exc:
         return "", f"ERROR: {exc}"
 
@@ -500,14 +574,24 @@ def generation_studio_ui():
     """Build and return the Generation Studio Gradio Blocks tab."""
 
     with gr.Blocks() as tab:
-        gr.Markdown("# Generation Studio")
+        gr.Markdown("# 🎨 Generation Studio")
         gr.Markdown(
             "Manual stage-by-stage generation. "
-            "Each stage is independent — trigger in any order."
+            "Each stage is independent — trigger in any order. "
+            "**Queuing any GPU stage automatically starts the GPU instance.**"
         )
 
         # ── Hidden state ──────────────────────────────────────────────────────
         session_id_state = gr.State(None)
+
+        # ── GPU status banner ─────────────────────────────────────────────────
+        with gr.Row():
+            gpu_status_box = gr.Textbox(
+                label="GPU Instance", value="unknown — click Check GPU",
+                interactive=False, scale=4,
+            )
+            gpu_check_btn  = gr.Button("Check GPU", size="sm", scale=1)
+            gpu_start_btn  = gr.Button("Start GPU", size="sm", variant="primary", scale=1)
 
         # ══════════════════════════════════════════════════════════════════════
         #  SESSION
@@ -962,5 +1046,29 @@ def generation_studio_ui():
             [session_id_state],
             [trellis_status, trellis_url],
         )
+
+        # ── GPU: Check + Start ────────────────────────────────────────────────
+        def _check_gpu_status():
+            try:
+                import boto3
+                ec2   = boto3.client(
+                    "ec2", region_name=AWS_REGION,
+                    aws_access_key_id=_AWS_KEY,
+                    aws_secret_access_key=_AWS_SECRET,
+                )
+                resp  = ec2.describe_instances(InstanceIds=[GPU_INSTANCE_ID])
+                inst  = resp["Reservations"][0]["Instances"][0]
+                state = inst["State"]["Name"]
+                ip    = inst.get("PublicIpAddress") or "no-ip"
+                return f"{state}  ({ip})"
+            except Exception as exc:
+                return f"error: {exc}"
+
+        def _start_gpu_now():
+            _ensure_gpu_running_bg()
+            return "Starting GPU in background… check again in 2-3 min."
+
+        gpu_check_btn.click(_check_gpu_status, [], [gpu_status_box])
+        gpu_start_btn.click(_start_gpu_now,    [], [gpu_status_box])
 
     return tab

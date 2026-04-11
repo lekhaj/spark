@@ -32,14 +32,18 @@ logging.basicConfig(
 
 # ── Shared Config (reads from .env) ───────────────────────────────────────────
 class WorkerConfig:
-    REDIS_HOST     = os.getenv("REDIS_HOST",   "18.207.13.85")
-    REDIS_PORT     = int(os.getenv("REDIS_PORT", 6380))
-    MONGO_URI      = os.getenv("MONGO_URI",    "mongodb://kartik:Kartikg421@18.207.13.85:27017")
+    REDIS_HOST     = os.getenv("REDIS_HOST",   "localhost")
+    REDIS_PORT     = int(os.getenv("REDIS_PORT", 6379))
+    MONGO_URI      = os.getenv("MONGO_URI",    "mongodb://kartik:Kartikg421@localhost:27017")
     MONGO_DB       = os.getenv("MONGO_DB",     "World_builder")
-    S3_BUCKET      = os.getenv("AWS_S3_BUCKET","sparkassets-us")
-    S3_REGION      = os.getenv("AWS_REGION",   "us-east-1")
+    S3_BUCKET      = os.getenv("AWS_S3_BUCKET", os.getenv("S3_BUCKET", "sparkassets-us"))
+    S3_REGION      = os.getenv("AWS_REGION",   "ap-south-1")
     TASK_TTL       = int(os.getenv("TASK_TTL", 14400))   # 4 hours
-    INSTANCE_ID    = os.getenv("AWS_GPU_INSTANCE_ID", "i-0d6b9d6d34ccc053d")
+    INSTANCE_ID    = (
+        os.getenv("AWS_GPU_INSTANCE_ID") or
+        os.getenv("GPU") or
+        "i-0e029990527fa2b73"
+    )
 
 
 # ── Base Worker ───────────────────────────────────────────────────────────────
@@ -85,11 +89,14 @@ class BaseWorker(ABC):
 
     def get_s3(self):
         if self._s3 is None:
+            # Support both standard boto3 names and the project's shorter names
+            key    = os.getenv("AWS_ACCESS_KEY_ID")    or os.getenv("AWS_ACCESS_KEY")
+            secret = os.getenv("AWS_SECRET_ACCESS_KEY") or os.getenv("AWS_SECRET_KEY")
             self._s3 = boto3.client(
                 "s3",
                 region_name=self.cfg.S3_REGION,
-                aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-                aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+                aws_access_key_id=key,
+                aws_secret_access_key=secret,
             )
         return self._s3
 

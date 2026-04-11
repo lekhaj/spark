@@ -67,8 +67,8 @@ def main() -> None:
     """Instantiate ManualGenWorker and run its blocking poll loop."""
 
     # Print startup banner so ops can confirm the right process is running.
-    redis_host = os.getenv("REDIS_HOST", "18.207.13.85")
-    redis_port = os.getenv("REDIS_PORT", "6380")
+    redis_host = os.getenv("REDIS_HOST", "localhost")
+    redis_port = os.getenv("REDIS_PORT", "6379")
     mongo_db   = os.getenv("MONGO_DB",   "World_builder")
 
     logger.info("=" * 60)
