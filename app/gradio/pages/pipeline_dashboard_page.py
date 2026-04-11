@@ -204,19 +204,20 @@ def new_spec_template():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def load_style_fields(style_id):
-    """Load style into individual editable fields."""
+    """Load style into individual editable fields + raw JSON."""
     try:
         s = get_style(_db(), style_id)
         if not s:
-            return "", "", "", ""
+            return "", "", "", "", ""
         return (
             s.get("name", ""),
             s.get("positive_tags", ""),
             s.get("negative_tags", ""),
             s.get("description", ""),
+            _json_pretty(s),
         )
     except Exception as e:
-        return str(e), "", "", ""
+        return str(e), "", "", "", ""
 
 
 def save_style_fields(style_id, name, pos_tags, neg_tags, description):
@@ -422,6 +423,23 @@ def pipeline_dashboard_ui():
 
     _first = lambda lst: lst[0] if lst else None
 
+    # ── Pre-load initial values so page renders with data already populated ──
+    _sid0  = _first(spec_ids)
+    _i_spec = load_spec(_sid0) if _sid0 else ("","","","","","")
+    # _i_spec = (json, name, notes, lore, body, clothing)
+
+    _stid0  = _first(style_ids)
+    _i_st   = load_style_fields(_stid0) if _stid0 else ("","","","","")
+    # _i_st = (name, pos, neg, desc, json)
+
+    _tid0   = _first(tpl_ids)
+    _i_tpl  = load_template(_tid0) if _tid0 else ("","","","","")
+    # _i_tpl = (template, negative, notes, stage, vars)
+
+    _rid0   = _first(ref_ids)
+    _i_ref_fields = load_ref_edit(_rid0) if _rid0 else ("","","","","")
+    # _i_ref_fields = (desc, tags, usage, s3, meta)
+
     with gr.Blocks() as tab:
         gr.Markdown("## Character Pipeline Dashboard\n"
                     "Manage specs · styles · templates · references · trigger generation")
@@ -464,132 +482,123 @@ def pipeline_dashboard_ui():
             cmd_btn.click(gpu_command,            [biome_dd, stage_dd],         [cmd_out])
 
         # ══════════════════════════════════════════════════════════════════════
-        #  CHARACTER SPECS — two tabs: Quick Edit + Raw JSON
+        #  CHARACTER SPECS — JSON editor + quick fields, auto-loads on select
         # ══════════════════════════════════════════════════════════════════════
         with gr.Accordion("🧩 Character Specs", open=False):
             with gr.Row():
-                spec_dd      = gr.Dropdown(choices=spec_ids, value=_first(spec_ids),
-                                           label="Spec ID", interactive=True)
+                spec_dd      = gr.Dropdown(choices=spec_ids, value=_sid0,
+                                           label="Select Spec", interactive=True)
                 spec_refresh = gr.Button("↻", size="sm")
-                spec_new_btn = gr.Button("+ New Template", size="sm")
+                spec_new_btn = gr.Button("+ New", size="sm")
 
             spec_save_out = gr.Textbox(label="", interactive=False, lines=1)
 
-            with gr.Tabs():
-                # ── Quick Edit tab ──────────────────────────────────────
-                with gr.TabItem("✏️ Quick Edit"):
-                    gr.Markdown("*Edit display name, notes and lore — leaves body/face/clothing JSON intact.*")
-                    with gr.Row():
-                        with gr.Column():
-                            sq_name  = gr.Textbox(label="Display Name", interactive=True)
-                            sq_notes = gr.Textbox(label="Notes", lines=3, interactive=True)
-                            sq_lore  = gr.Textbox(label="Lore / Backstory", lines=3, interactive=True)
-                            sq_save  = gr.Button("Save Quick Fields", variant="primary")
-                        with gr.Column():
-                            sq_body     = gr.Textbox(label="Body (auto-parsed)", lines=2, interactive=False)
-                            sq_clothing = gr.Textbox(label="Clothing (auto-parsed)", lines=3, interactive=False)
-                            gr.Markdown("*Body/clothing shown for reference. Edit in Raw JSON tab to change.*")
+            # JSON editor — pre-loaded with first spec, updates on every dropdown change
+            spec_json = gr.Textbox(label="📄 Full JSON — edit and Save below",
+                                   lines=28, interactive=True,
+                                   value=_i_spec[0])
 
-                    sq_save.click(save_spec_quick,
-                                  [spec_dd, sq_name, sq_notes, sq_lore],
-                                  [spec_save_out])
+            with gr.Row():
+                spec_json_btn = gr.Button("💾 Save JSON to MongoDB", variant="primary")
 
-                # ── Raw JSON tab ────────────────────────────────────────
-                with gr.TabItem("📄 Raw JSON"):
-                    gr.Markdown("*Edit full JSON structure — all fields including body, face, hair, clothing.*")
-                    spec_json     = gr.Textbox(label="Full Spec JSON", lines=28, interactive=True)
-                    spec_json_btn = gr.Button("Save Full JSON", variant="primary")
-                    spec_json_btn.click(save_spec_json, [spec_json], [spec_save_out])
+            gr.Markdown("---\n**Quick fields** (edit without touching full JSON):")
+            with gr.Row():
+                with gr.Column():
+                    sq_name  = gr.Textbox(label="Display Name", interactive=True,  value=_i_spec[1])
+                    sq_notes = gr.Textbox(label="Notes",  lines=3, interactive=True, value=_i_spec[2])
+                    sq_lore  = gr.Textbox(label="Lore / Backstory", lines=3, interactive=True, value=_i_spec[3])
+                    sq_save  = gr.Button("💾 Save Quick Fields", variant="secondary")
+                with gr.Column():
+                    sq_body     = gr.Textbox(label="Body (auto)", lines=2,  interactive=False, value=_i_spec[4])
+                    sq_clothing = gr.Textbox(label="Clothing (auto)", lines=3, interactive=False, value=_i_spec[5])
 
-            # wire dropdown → load all outputs
-            def _load_spec(sid):
-                raw, name, notes, lore, body, clothing = load_spec(sid)
-                return raw, name, notes, lore, body, clothing
-
-            spec_dd.change(_load_spec, [spec_dd],
+            # Events
+            spec_dd.change(load_spec, [spec_dd],
                            [spec_json, sq_name, sq_notes, sq_lore, sq_body, sq_clothing])
             spec_refresh.click(lambda: gr.update(choices=_spec_ids()), [], [spec_dd])
             spec_new_btn.click(new_spec_template, [],
                                [spec_json, sq_name, sq_notes, sq_lore, sq_body, sq_clothing])
+            spec_json_btn.click(save_spec_json,  [spec_json],                        [spec_save_out])
+            sq_save.click(save_spec_quick, [spec_dd, sq_name, sq_notes, sq_lore],    [spec_save_out])
 
         # ══════════════════════════════════════════════════════════════════════
-        #  STYLE LIBRARY — fully field-based (no JSON)
+        #  STYLE LIBRARY — fields + JSON, auto-loads on select
         # ══════════════════════════════════════════════════════════════════════
         with gr.Accordion("🎨 Style Library", open=False):
             gr.Markdown("*Lock one style block and use it in every generation for consistency.*")
             with gr.Row():
-                style_dd      = gr.Dropdown(choices=style_ids, value=_first(style_ids),
-                                            label="Style ID", interactive=True)
+                style_dd      = gr.Dropdown(choices=style_ids, value=_stid0,
+                                            label="Select Style", interactive=True)
                 style_refresh = gr.Button("↻", size="sm")
-                style_new_btn = gr.Button("+ New Style", size="sm")
 
-            style_id_edit  = gr.Textbox(label="Style ID (only for new styles)", interactive=True, visible=False)
+            st_out = gr.Textbox(label="", interactive=False, lines=1)
 
+            # Editable fields — update on dropdown change
             with gr.Row():
                 with gr.Column(scale=1):
-                    st_name = gr.Textbox(label="Name", interactive=True)
-                    st_desc = gr.Textbox(label="Description", lines=2, interactive=True)
+                    st_name = gr.Textbox(label="Name", interactive=True, value=_i_st[0])
+                    st_desc = gr.Textbox(label="Description", lines=2, interactive=True, value=_i_st[3])
                 with gr.Column(scale=2):
-                    st_pos  = gr.Textbox(label="Positive tags  ← edit directly here",
-                                         lines=4, interactive=True)
-                    st_neg  = gr.Textbox(label="Negative tags  ← edit directly here",
-                                         lines=3, interactive=True)
-
-            gr.Markdown("💡 *Tip: Keep SD1.5 style tags short (< 15 words total). Flux has no limit.*")
+                    st_pos  = gr.Textbox(label="✏️ Positive tags — edit here",
+                                         lines=5, interactive=True, value=_i_st[1])
+                    st_neg  = gr.Textbox(label="✏️ Negative tags — edit here",
+                                         lines=3, interactive=True, value=_i_st[2])
 
             with gr.Row():
                 st_save = gr.Button("💾 Save Style", variant="primary")
-                st_out  = gr.Textbox(label="", interactive=False, scale=2)
 
-            def _load_style(sid):
-                name, pos, neg, desc = load_style_fields(sid)
-                return name, pos, neg, desc
+            gr.Markdown("💡 *SD1.5: keep style tags short (<15 words). Flux T5: no limit.*")
 
-            def _save_style(sid, name, pos, neg, desc):
-                return save_style_fields(sid, name, pos, neg, desc)
+            # Full JSON view (read + editable)
+            st_json = gr.Textbox(label="📄 Full JSON (editable — Save JSON also writes to MongoDB)",
+                                 lines=12, interactive=True, value=_i_st[4])
+            st_json_btn = gr.Button("💾 Save JSON", variant="secondary")
 
-            style_dd.change(_load_style,  [style_dd],                              [st_name, st_pos, st_neg, st_desc])
-            style_refresh.click(lambda: gr.update(choices=_style_ids()), [],       [style_dd])
-            style_new_btn.click(lambda: gr.update(visible=True),         [],       [style_id_edit])
-            st_save.click(_save_style, [style_dd, st_name, st_pos, st_neg, st_desc], [st_out])
+            def _load_style_all(sid):
+                name, pos, neg, desc, js = load_style_fields(sid)
+                return name, pos, neg, desc, js
+
+            style_dd.change(_load_style_all, [style_dd], [st_name, st_pos, st_neg, st_desc, st_json])
+            style_refresh.click(lambda: gr.update(choices=_style_ids()), [], [style_dd])
+            st_save.click(save_style_fields, [style_dd, st_name, st_pos, st_neg, st_desc], [st_out])
+            st_json_btn.click(save_spec_json, [st_json], [st_out])   # reuse JSON save (same upsert logic)
 
         # ══════════════════════════════════════════════════════════════════════
-        #  PROMPT TEMPLATES — editable template strings
+        #  PROMPT TEMPLATES — editable, auto-loads on select
         # ══════════════════════════════════════════════════════════════════════
         with gr.Accordion("📝 Prompt Templates", open=False):
-            gr.Markdown("*Edit the template strings directly. Variables like `{body_desc}` are filled at build time.*")
+            gr.Markdown("*Edit template strings directly. Variables filled at build time.*")
             with gr.Row():
-                tpl_dd      = gr.Dropdown(choices=tpl_ids, value=_first(tpl_ids),
-                                          label="Template ID", interactive=True)
+                tpl_dd      = gr.Dropdown(choices=tpl_ids, value=_tid0,
+                                          label="Select Template", interactive=True)
                 tpl_refresh = gr.Button("↻", size="sm")
 
-            with gr.Row():
-                tpl_stage    = gr.Textbox(label="Stage", interactive=False, scale=1)
-                tpl_vars     = gr.Textbox(label="Available variables", interactive=False, scale=3)
+            tpl_out = gr.Textbox(label="", interactive=False, lines=1)
 
-            tpl_template = gr.Textbox(label="Template  ← edit here", lines=6, interactive=True)
-            tpl_negative = gr.Textbox(label="Negative template  ← edit here", lines=3, interactive=True)
-            tpl_notes    = gr.Textbox(label="Notes  ← edit here", lines=2, interactive=True)
+            with gr.Row():
+                tpl_stage = gr.Textbox(label="Stage",    interactive=False, scale=1, value=_i_tpl[3])
+                tpl_vars  = gr.Textbox(label="Variables", interactive=False, scale=3, value=_i_tpl[4])
+
+            tpl_template = gr.Textbox(label="✏️ Template — edit here", lines=7,
+                                      interactive=True, value=_i_tpl[0])
+            tpl_negative = gr.Textbox(label="✏️ Negative — edit here", lines=3,
+                                      interactive=True, value=_i_tpl[1])
+            tpl_notes    = gr.Textbox(label="✏️ Notes", lines=2,
+                                      interactive=True, value=_i_tpl[2])
 
             gr.Markdown(
-                "**All available `{variable}` slots:** "
+                "**Variable slots:** "
                 "`{body_desc}` `{face_desc}` `{hair_desc}` `{clothing_desc}` "
                 "`{creature_desc}` `{style_tags}` `{extra_tags}` `{char_name}` `{theme}`"
             )
 
-            with gr.Row():
-                tpl_save = gr.Button("💾 Save Template", variant="primary")
-                tpl_out  = gr.Textbox(label="", interactive=False, scale=2)
+            tpl_save = gr.Button("💾 Save Template", variant="primary")
 
-            def _load_tpl(tid):
-                tmpl, neg, notes, stage, vars_hint = load_template(tid)
-                return tmpl, neg, notes, stage, vars_hint
-
-            tpl_dd.change(_load_tpl, [tpl_dd], [tpl_template, tpl_negative, tpl_notes, tpl_stage, tpl_vars])
+            tpl_dd.change(load_template, [tpl_dd],
+                          [tpl_template, tpl_negative, tpl_notes, tpl_stage, tpl_vars])
             tpl_refresh.click(lambda: gr.update(choices=_tpl_ids()), [], [tpl_dd])
             tpl_save.click(save_template_fields,
-                           [tpl_dd, tpl_template, tpl_negative, tpl_notes],
-                           [tpl_out])
+                           [tpl_dd, tpl_template, tpl_negative, tpl_notes], [tpl_out])
 
         # ══════════════════════════════════════════════════════════════════════
         #  REFERENCE IMAGE BANK
@@ -609,35 +618,34 @@ def pipeline_dashboard_ui():
 
             gr.Markdown("---\n**Edit a reference entry:**")
             with gr.Row():
-                ref_edit_dd      = gr.Dropdown(choices=ref_ids, value=_first(ref_ids),
-                                               label="Reference ID", interactive=True)
-                ref_edit_load    = gr.Button("Load", size="sm")
+                ref_edit_dd      = gr.Dropdown(choices=ref_ids, value=_rid0,
+                                               label="Select Reference", interactive=True)
                 ref_edit_refresh = gr.Button("↻", size="sm")
 
-            with gr.Row():
-                with gr.Column():
-                    ref_desc  = gr.Textbox(label="Description", lines=3, interactive=True)
-                    ref_tags  = gr.Textbox(label="Tags (comma-separated)", interactive=True)
-                with gr.Column():
-                    ref_usage = gr.Textbox(label="Usage notes", lines=2, interactive=True)
-                    ref_s3    = gr.Textbox(label="S3 key (path after bucket)", interactive=True)
+            ref_out = gr.Textbox(label="", interactive=False, lines=1)
 
             with gr.Row():
-                ref_save = gr.Button("💾 Save Reference", variant="primary")
-                ref_out  = gr.Textbox(label="", interactive=False, scale=2)
+                with gr.Column():
+                    ref_desc  = gr.Textbox(label="✏️ Description", lines=3, interactive=True,
+                                           value=_i_ref_fields[0])
+                    ref_tags  = gr.Textbox(label="✏️ Tags (comma-separated)", interactive=True,
+                                           value=_i_ref_fields[1])
+                with gr.Column():
+                    ref_usage = gr.Textbox(label="✏️ Usage notes", lines=2, interactive=True,
+                                           value=_i_ref_fields[2])
+                    ref_s3    = gr.Textbox(label="✏️ S3 key (path after bucket/)", interactive=True,
+                                           value=_i_ref_fields[3])
+
+            ref_save = gr.Button("💾 Save Reference", variant="primary")
 
             def _load_ref(rid):
                 desc, tags, usage, s3, _meta = load_ref_edit(rid)
                 return desc, tags, usage, s3
 
-            ref_edit_load.click(_load_ref, [ref_edit_dd],
-                                [ref_desc, ref_tags, ref_usage, ref_s3])
-            ref_edit_dd.change(_load_ref, [ref_edit_dd],
-                               [ref_desc, ref_tags, ref_usage, ref_s3])
+            ref_edit_dd.change(_load_ref, [ref_edit_dd], [ref_desc, ref_tags, ref_usage, ref_s3])
             ref_edit_refresh.click(lambda: gr.update(choices=_ref_ids()), [], [ref_edit_dd])
             ref_save.click(save_ref_edit,
-                           [ref_edit_dd, ref_desc, ref_tags, ref_usage, ref_s3],
-                           [ref_out])
+                           [ref_edit_dd, ref_desc, ref_tags, ref_usage, ref_s3], [ref_out])
 
         # ══════════════════════════════════════════════════════════════════════
         #  PROMPT BUILDER — assemble + preview
