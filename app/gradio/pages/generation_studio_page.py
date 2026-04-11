@@ -15,7 +15,6 @@ Stages:
 import json
 import os
 import sys
-import threading
 import time
 import uuid
 from io import BytesIO
@@ -47,14 +46,7 @@ S3_BASE_URL = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com"
 REDIS_QUEUE_MANUAL = "manual_gen_tasks"
 REDIS_QUEUE_MODEL  = "model_tasks"
 
-# GPU instance config — reads from .env (same names as other workers)
-GPU_INSTANCE_ID = (
-    os.getenv("AWS_GPU_INSTANCE_ID") or
-    os.getenv("GPU") or
-    "i-0e029990527fa2b73"
-)
-AWS_REGION = os.getenv("AWS_REGION", "ap-south-1")
-# boto3 standard key names
+# AWS keys (S3 upload only — no EC2 management)
 _AWS_KEY    = os.getenv("AWS_ACCESS_KEY_ID")    or os.getenv("AWS_ACCESS_KEY")
 _AWS_SECRET = os.getenv("AWS_SECRET_ACCESS_KEY") or os.getenv("AWS_SECRET_KEY")
 
@@ -65,63 +57,15 @@ def _db():
     return get_db(MONGO_URI, MONGO_DB)
 
 
-# ── GPU auto-start (fire-and-forget background thread) ───────────────────────
-
-def _ensure_gpu_running_bg():
-    """
-    Check if the GPU EC2 instance is running; start it if stopped.
-    Runs in a daemon thread so the UI never blocks waiting for EC2.
-    """
-    def _start():
-        try:
-            import boto3
-            ec2 = boto3.client(
-                "ec2",
-                region_name=AWS_REGION,
-                aws_access_key_id=_AWS_KEY,
-                aws_secret_access_key=_AWS_SECRET,
-            )
-            resp  = ec2.describe_instances(InstanceIds=[GPU_INSTANCE_ID])
-            inst  = resp["Reservations"][0]["Instances"][0]
-            state = inst["State"]["Name"]
-            print(f"[GPU] Instance {GPU_INSTANCE_ID} state: {state}")
-            if state == "running":
-                return
-            if state in ("stopped", "stopping"):
-                print(f"[GPU] Starting instance {GPU_INSTANCE_ID}…")
-                ec2.start_instances(InstanceIds=[GPU_INSTANCE_ID])
-                waiter = ec2.get_waiter("instance_running")
-                waiter.wait(
-                    InstanceIds=[GPU_INSTANCE_ID],
-                    WaiterConfig={"Delay": 10, "MaxAttempts": 30},
-                )
-                resp2 = ec2.describe_instances(InstanceIds=[GPU_INSTANCE_ID])
-                ip    = resp2["Reservations"][0]["Instances"][0].get("PublicIpAddress", "?")
-                print(f"[GPU] Instance running at {ip}. Workers start in ~2-3 min.")
-        except Exception as exc:
-            print(f"[GPU] Could not check/start GPU instance: {exc}")
-            print("[GPU] Task queued anyway — start GPU manually if needed.")
-
-    t = threading.Thread(target=_start, daemon=True, name="gpu-start-thread")
-    t.start()
-
-
 # ── Redis push ────────────────────────────────────────────────────────────────
 
-def _push_task(payload: dict, queue: str = REDIS_QUEUE_MANUAL,
-               start_gpu: bool = True) -> str:
-    """Push a task dict to Redis and return the task_id.
-
-    If start_gpu=True, also fires a background thread to ensure the GPU
-    EC2 instance is running so workers can pick up the task.
-    """
+def _push_task(payload: dict, queue: str = REDIS_QUEUE_MANUAL) -> str:
+    """Push a task dict to Redis and return the task_id."""
     import redis
     r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0, decode_responses=True)
     payload.setdefault("task_id", str(uuid.uuid4()))
     payload.setdefault("timestamp", time.time())
     r.rpush(queue, json.dumps(payload))
-    if start_gpu:
-        _ensure_gpu_running_bg()
     return payload["task_id"]
 
 
@@ -352,9 +296,9 @@ def _queue_flux(session_id, prompt, negative, width, height, steps, guidance) ->
                 "guidance_scale": float(guidance),
             },
         }
-        task_id = _push_task(payload, start_gpu=True)
+        task_id = _push_task(payload, )
         mark_queued(db, session_id, "flux", task_id)
-        return task_id, f"queued ✓  GPU starting if needed…  task_id={task_id[:8]}…"
+        return task_id, f"queued ✓  task_id={task_id[:8]}…"
     except Exception as exc:
         return "", f"ERROR: {exc}"
 
@@ -441,9 +385,9 @@ def _queue_sd(session_id, stage, prompt, negative, params: dict,
             "input_stage": input_source,
             "input_url":   input_url,
         }
-        task_id = _push_task(payload, start_gpu=True)
+        task_id = _push_task(payload, )
         mark_queued(db, session_id, stage, task_id)
-        return task_id, f"queued ✓  GPU starting if needed…  task_id={task_id[:8]}…"
+        return task_id, f"queued ✓  task_id={task_id[:8]}…"
     except Exception as exc:
         return "", f"ERROR: {exc}"
 
@@ -474,9 +418,9 @@ def _queue_multiview(session_id, side_or_back: str, prompt, negative,
             "input_stage": input_source,
             "input_url":   input_url,
         }
-        task_id = _push_task(payload, start_gpu=True)
+        task_id = _push_task(payload, )
         mark_queued(db, session_id, stage, task_id)
-        return task_id, f"queued ✓  GPU starting if needed…  task_id={task_id[:8]}…"
+        return task_id, f"queued ✓  task_id={task_id[:8]}…"
     except Exception as exc:
         return "", f"ERROR: {exc}"
 
@@ -507,9 +451,9 @@ def _queue_trellis(session_id, front_src, side_src, back_src) -> tuple:
                 "input_back":  back_src,
             },
         }
-        task_id = _push_task(payload, queue=REDIS_QUEUE_MODEL, start_gpu=True)
+        task_id = _push_task(payload, queue=REDIS_QUEUE_MODEL, )
         mark_queued(db, session_id, "trellis", task_id)
-        return task_id, f"queued ✓  GPU starting if needed…  task_id={task_id[:8]}…"
+        return task_id, f"queued ✓  task_id={task_id[:8]}…"
     except Exception as exc:
         return "", f"ERROR: {exc}"
 
@@ -583,15 +527,6 @@ def generation_studio_ui():
 
         # ── Hidden state ──────────────────────────────────────────────────────
         session_id_state = gr.State(None)
-
-        # ── GPU status banner ─────────────────────────────────────────────────
-        with gr.Row():
-            gpu_status_box = gr.Textbox(
-                label="GPU Instance", value="unknown — click Check GPU",
-                interactive=False, scale=4,
-            )
-            gpu_check_btn  = gr.Button("Check GPU", size="sm", scale=1)
-            gpu_start_btn  = gr.Button("Start GPU", size="sm", variant="primary", scale=1)
 
         # ══════════════════════════════════════════════════════════════════════
         #  SESSION
@@ -1046,29 +981,5 @@ def generation_studio_ui():
             [session_id_state],
             [trellis_status, trellis_url],
         )
-
-        # ── GPU: Check + Start ────────────────────────────────────────────────
-        def _check_gpu_status():
-            try:
-                import boto3
-                ec2   = boto3.client(
-                    "ec2", region_name=AWS_REGION,
-                    aws_access_key_id=_AWS_KEY,
-                    aws_secret_access_key=_AWS_SECRET,
-                )
-                resp  = ec2.describe_instances(InstanceIds=[GPU_INSTANCE_ID])
-                inst  = resp["Reservations"][0]["Instances"][0]
-                state = inst["State"]["Name"]
-                ip    = inst.get("PublicIpAddress") or "no-ip"
-                return f"{state}  ({ip})"
-            except Exception as exc:
-                return f"error: {exc}"
-
-        def _start_gpu_now():
-            _ensure_gpu_running_bg()
-            return "Starting GPU in background… check again in 2-3 min."
-
-        gpu_check_btn.click(_check_gpu_status, [], [gpu_status_box])
-        gpu_start_btn.click(_start_gpu_now,    [], [gpu_status_box])
 
     return tab
