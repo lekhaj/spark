@@ -283,7 +283,7 @@ class ManualGenWorker(BaseWorker):
         prompt           = task.get("prompt", "")
         negative         = task.get("negative", "")
         params           = task.get("params") or {}
-        input_image_url  = task.get("input_image_url", "")
+        input_image_url  = task.get("input_url") or task.get("input_image_url", "")
 
         denoise          = float(params.get("denoise",          0.20))
         cfg              = float(params.get("cfg",              5.5))
@@ -356,7 +356,7 @@ class ManualGenWorker(BaseWorker):
         prompt          = task.get("prompt", "")
         negative        = task.get("negative", "")
         params          = task.get("params") or {}
-        input_image_url = task.get("input_image_url", "")
+        input_image_url = task.get("input_url") or task.get("input_image_url", "")
 
         denoise = float(params.get("denoise", 0.35))
         cfg     = float(params.get("cfg",     7.0))
@@ -405,7 +405,7 @@ class ManualGenWorker(BaseWorker):
         prompt          = task.get("prompt", "")
         negative        = task.get("negative", "")
         params          = task.get("params") or {}
-        input_image_url = task.get("input_image_url", "")
+        input_image_url = task.get("input_url") or task.get("input_image_url", "")
 
         denoise = float(params.get("denoise", 0.45))
         cfg     = float(params.get("cfg",     7.0))
@@ -462,9 +462,10 @@ class ManualGenWorker(BaseWorker):
         stage      = task["stage"]   # "trellis"
         params     = task.get("params") or {}
 
-        front_url  = params.get("front_url",  "")
-        side_url   = params.get("side_url",   "")
-        back_url   = params.get("back_url",   "")
+        # UI sends top-level input_front/input_side/input_back
+        front_url  = (task.get("input_front") or params.get("front_url",  ""))
+        side_url   = (task.get("input_side")  or params.get("side_url",   ""))
+        back_url   = (task.get("input_back")  or params.get("back_url",   ""))
         output_key = f"manual_gen/{session_id}/trellis.glb"
 
         if not front_url:
