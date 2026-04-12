@@ -15,6 +15,7 @@ Stages:
 import json
 import os
 import sys
+import threading
 import time
 import uuid
 from io import BytesIO
@@ -46,9 +47,9 @@ S3_BASE_URL = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com"
 REDIS_QUEUE_MANUAL = "manual_gen_tasks"
 REDIS_QUEUE_MODEL  = "model_tasks"
 
-# AWS keys (S3 upload only — no EC2 management)
-_AWS_KEY    = os.getenv("AWS_ACCESS_KEY_ID")    or os.getenv("AWS_ACCESS_KEY")
-_AWS_SECRET = os.getenv("AWS_SECRET_ACCESS_KEY") or os.getenv("AWS_SECRET_KEY")
+# GPU instance — IAM role on the CPU instance handles auth (no explicit keys needed)
+GPU_INSTANCE_ID = os.getenv("GPU_INSTANCE_ID", "i-0d6b9d6d34ccc053d")
+GPU_REGION      = os.getenv("GPU_REGION", "us-east-1")
 
 
 # ── MongoDB helper ────────────────────────────────────────────────────────────
@@ -57,15 +58,38 @@ def _db():
     return get_db(MONGO_URI, MONGO_DB)
 
 
+# ── GPU start (fire-and-forget, uses IAM role — no credentials in code) ───────
+
+def _ensure_gpu_running_bg():
+    """Start GPU EC2 instance if stopped. Uses instance IAM role — no hardcoded keys."""
+    def _run():
+        try:
+            import boto3
+            ec2   = boto3.client("ec2", region_name=GPU_REGION)  # IAM role from instance metadata
+            resp  = ec2.describe_instances(InstanceIds=[GPU_INSTANCE_ID])
+            state = resp["Reservations"][0]["Instances"][0]["State"]["Name"]
+            if state == "running":
+                return
+            if state in ("stopped", "stopping"):
+                ec2.start_instances(InstanceIds=[GPU_INSTANCE_ID])
+                print(f"[GPU] Starting {GPU_INSTANCE_ID}…")
+        except Exception as e:
+            print(f"[GPU] check/start skipped: {e}")
+    threading.Thread(target=_run, daemon=True).start()
+
+
 # ── Redis push ────────────────────────────────────────────────────────────────
 
-def _push_task(payload: dict, queue: str = REDIS_QUEUE_MANUAL) -> str:
-    """Push a task dict to Redis and return the task_id."""
+def _push_task(payload: dict, queue: str = REDIS_QUEUE_MANUAL,
+               check_gpu: bool = True) -> str:
+    """Push task to Redis. Fires GPU start check in background if check_gpu=True."""
     import redis
     r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0, decode_responses=True)
     payload.setdefault("task_id", str(uuid.uuid4()))
     payload.setdefault("timestamp", time.time())
     r.rpush(queue, json.dumps(payload))
+    if check_gpu:
+        _ensure_gpu_running_bg()
     return payload["task_id"]
 
 
@@ -296,7 +320,7 @@ def _queue_flux(session_id, prompt, negative, width, height, steps, guidance) ->
                 "guidance_scale": float(guidance),
             },
         }
-        task_id = _push_task(payload, )
+        task_id = _push_task(payload, check_gpu=True)
         mark_queued(db, session_id, "flux", task_id)
         return task_id, f"queued ✓  task_id={task_id[:8]}…"
     except Exception as exc:
@@ -385,7 +409,7 @@ def _queue_sd(session_id, stage, prompt, negative, params: dict,
             "input_stage": input_source,
             "input_url":   input_url,
         }
-        task_id = _push_task(payload, )
+        task_id = _push_task(payload, check_gpu=True)
         mark_queued(db, session_id, stage, task_id)
         return task_id, f"queued ✓  task_id={task_id[:8]}…"
     except Exception as exc:
@@ -418,7 +442,7 @@ def _queue_multiview(session_id, side_or_back: str, prompt, negative,
             "input_stage": input_source,
             "input_url":   input_url,
         }
-        task_id = _push_task(payload, )
+        task_id = _push_task(payload, check_gpu=True)
         mark_queued(db, session_id, stage, task_id)
         return task_id, f"queued ✓  task_id={task_id[:8]}…"
     except Exception as exc:
@@ -451,7 +475,7 @@ def _queue_trellis(session_id, front_src, side_src, back_src) -> tuple:
                 "input_back":  back_src,
             },
         }
-        task_id = _push_task(payload, queue=REDIS_QUEUE_MODEL, )
+        task_id = _push_task(payload, queue=REDIS_QUEUE_MODEL, check_gpu=True)
         mark_queued(db, session_id, "trellis", task_id)
         return task_id, f"queued ✓  task_id={task_id[:8]}…"
     except Exception as exc:
@@ -981,5 +1005,8 @@ def generation_studio_ui():
             [session_id_state],
             [trellis_status, trellis_url],
         )
+
+        # ── Auto-load session on page open ────────────────────────────────────
+        tab.load(_do_load, [char_label, version_dd], _load_outputs)
 
     return tab
