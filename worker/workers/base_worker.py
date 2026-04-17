@@ -77,7 +77,7 @@ class BaseWorker(ABC):
                 db=0,
                 decode_responses=True,
                 socket_connect_timeout=10,
-                socket_timeout=10,
+                socket_timeout=35,  # must be > BLPOP timeout (30s) to avoid spurious timeouts
             )
         return self._redis
 
