@@ -359,10 +359,12 @@ def _run_normalize_cpu(session_id: str, resize_w: int, resize_h: int,
         img.save(buf, format="PNG")
         buf.seek(0)
 
+        _key    = os.getenv("AWS_ACCESS_KEY_ID") or os.getenv("AWS_ACCESS_KEY")
+        _secret = os.getenv("AWS_SECRET_ACCESS_KEY") or os.getenv("AWS_SECRET_KEY")
         s3 = boto3.client(
             "s3",
-            aws_access_key_id=_AWS_KEY,
-            aws_secret_access_key=_AWS_SECRET,
+            aws_access_key_id=_key,
+            aws_secret_access_key=_secret,
             region_name=S3_REGION,
         )
         s3.upload_fileobj(buf, S3_BUCKET, s3_key,
