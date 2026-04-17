@@ -531,9 +531,25 @@ def _next_version(char_label: str) -> str:
 #  UI helpers
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _url_to_img(url: str):
-    """Return url as-is; Gradio Image accepts http URLs directly."""
-    return url or None
+def _url_to_img(url: str, height: int = 400) -> str:
+    """Return an HTML <img> tag so the *browser* fetches the image directly.
+
+    Gradio 5.x downloads image URLs server-side (SSRF protection) which
+    crashes on S3 redirects. Using gr.HTML + <img src> sidesteps this entirely.
+    Returns empty-state HTML when url is falsy.
+    """
+    if not url:
+        return (
+            "<div style='color:#888;padding:16px;text-align:center;"
+            "border:1px dashed #ccc;border-radius:8px;'>"
+            "No image yet</div>"
+        )
+    return (
+        f"<div style='text-align:center;'>"
+        f"<img src='{url}' style='max-height:{height}px;max-width:100%;"
+        f"border-radius:6px;object-fit:contain;' />"
+        f"</div>"
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -588,7 +604,7 @@ def generation_studio_ui():
                 flux_queue_btn  = gr.Button("Queue Flux", variant="primary")
                 flux_status     = gr.Textbox(label="Status", value="idle", interactive=False, scale=2)
                 flux_refresh_btn = gr.Button("Refresh", size="sm")
-            flux_img = gr.Image(label="Flux Output", height=400)
+            flux_img = gr.HTML(label="Flux Output", value=_url_to_img(""))
             flux_url = gr.Textbox(label="Image URL", interactive=False)
 
         # ══════════════════════════════════════════════════════════════════════
@@ -605,7 +621,7 @@ def generation_studio_ui():
             with gr.Row():
                 norm_run_btn = gr.Button("Run Normalize", variant="primary")
                 norm_status  = gr.Textbox(label="Status", value="idle", interactive=False, scale=2)
-            norm_img  = gr.Image(label="Normalized Output", height=300)
+            norm_img  = gr.HTML(label="Normalized Output", value=_url_to_img("", 300))
             norm_info = gr.Textbox(label="Info", interactive=False)
 
         # ══════════════════════════════════════════════════════════════════════
@@ -643,7 +659,7 @@ def generation_studio_ui():
                 sd1_queue_btn   = gr.Button("Queue SD Stage 1", variant="primary")
                 sd1_status      = gr.Textbox(label="Status", value="idle", interactive=False, scale=2)
                 sd1_refresh_btn = gr.Button("Refresh", size="sm")
-            sd1_img = gr.Image(label="Stage 1 Output", height=350)
+            sd1_img = gr.HTML(label="Stage 1 Output", value=_url_to_img("", 350))
             sd1_url = gr.Textbox(label="URL", interactive=False)
 
         # ══════════════════════════════════════════════════════════════════════
@@ -667,7 +683,7 @@ def generation_studio_ui():
                 sd2_queue_btn   = gr.Button("Queue SD Stage 2", variant="primary")
                 sd2_status      = gr.Textbox(label="Status", value="idle", interactive=False, scale=2)
                 sd2_refresh_btn = gr.Button("Refresh", size="sm")
-            sd2_img = gr.Image(label="Stage 2 Output", height=350)
+            sd2_img = gr.HTML(label="Stage 2 Output", value=_url_to_img("", 350))
             sd2_url = gr.Textbox(label="URL", interactive=False)
 
         # ══════════════════════════════════════════════════════════════════════
@@ -691,7 +707,7 @@ def generation_studio_ui():
                     mv_side_btn   = gr.Button("Queue Side View", variant="primary")
                     mv_side_status = gr.Textbox(label="Status", value="idle", interactive=False)
                     mv_side_refresh = gr.Button("Refresh", size="sm")
-                    mv_side_img   = gr.Image(label="Side View", height=300)
+                    mv_side_img   = gr.HTML(label="Side View", value=_url_to_img("", 300))
                 with gr.Column():
                     mv_back_prompt = gr.Textbox(
                         label="Back view prompt", lines=3, interactive=True,
@@ -701,7 +717,7 @@ def generation_studio_ui():
                     mv_back_btn   = gr.Button("Queue Back View", variant="primary")
                     mv_back_status = gr.Textbox(label="Status", value="idle", interactive=False)
                     mv_back_refresh = gr.Button("Refresh", size="sm")
-                    mv_back_img   = gr.Image(label="Back View", height=300)
+                    mv_back_img   = gr.HTML(label="Back View", value=_url_to_img("", 300))
             mv_denoise = gr.Slider(0.30, 0.70, value=0.45, step=0.01, label="Denoise (both views)")
             mv_cfg     = gr.Slider(1.0, 15.0,  value=7.0,  step=0.5,  label="CFG (both views)")
 
@@ -756,12 +772,12 @@ def generation_studio_ui():
                 state["flux_guidance"],
                 state["flux_status"],
                 state["flux_image_url"],
-                _url_to_img(state["flux_image_url"]),
+                _url_to_img(state["flux_image_url"], 400),
                 # normalize
                 state["norm_w"],
                 state["norm_h"],
                 state["norm_status"],
-                _url_to_img(state["norm_image_url"]),
+                _url_to_img(state["norm_image_url"], 300),
                 # sd_stage1
                 state["sd1_prompt"],
                 state["sd1_negative"],
@@ -773,7 +789,7 @@ def generation_studio_ui():
                 state["sd1_category"],
                 state["sd1_status"],
                 state["sd1_image_url"],
-                _url_to_img(state["sd1_image_url"]),
+                _url_to_img(state["sd1_image_url"], 350),
                 # sd_stage2
                 state["sd2_prompt"],
                 state["sd2_negative"],
@@ -782,16 +798,16 @@ def generation_studio_ui():
                 state["sd2_steps"],
                 state["sd2_status"],
                 state["sd2_image_url"],
-                _url_to_img(state["sd2_image_url"]),
+                _url_to_img(state["sd2_image_url"], 350),
                 # multiview
                 state["mv_side_prompt"],
                 state["mv_back_prompt"],
                 state["mv_denoise"],
                 state["mv_cfg"],
                 state["mv_side_status"],
-                _url_to_img(state["mv_side_url"]),
+                _url_to_img(state["mv_side_url"], 300),
                 state["mv_back_status"],
-                _url_to_img(state["mv_back_url"]),
+                _url_to_img(state["mv_back_url"], 300),
                 # trellis
                 state["trellis_status"],
                 state["trellis_url"],
@@ -868,7 +884,7 @@ def generation_studio_ui():
 
         def _do_refresh_flux(sid):
             status, url = _refresh_stage(sid, "flux")
-            return status, url, _url_to_img(url)
+            return status, url, _url_to_img(url, 400)
 
         flux_refresh_btn.click(
             _do_refresh_flux,
@@ -879,7 +895,7 @@ def generation_studio_ui():
         # ── Normalize: Run ────────────────────────────────────────────────────
         def _do_normalize(sid, w, h, src):
             status, url, info = _run_normalize_cpu(sid, int(w), int(h), src)
-            return status, _url_to_img(url), info
+            return status, _url_to_img(url, 300), info
 
         norm_run_btn.click(
             _do_normalize,
@@ -910,7 +926,7 @@ def generation_studio_ui():
 
         def _do_refresh_sd1(sid):
             status, url = _refresh_stage(sid, "sd_stage1")
-            return status, url, _url_to_img(url)
+            return status, url, _url_to_img(url, 350)
 
         sd1_refresh_btn.click(
             _do_refresh_sd1,
@@ -937,7 +953,7 @@ def generation_studio_ui():
 
         def _do_refresh_sd2(sid):
             status, url = _refresh_stage(sid, "sd_stage2")
-            return status, url, _url_to_img(url)
+            return status, url, _url_to_img(url, 350)
 
         sd2_refresh_btn.click(
             _do_refresh_sd2,
@@ -958,7 +974,7 @@ def generation_studio_ui():
 
         def _do_refresh_mv_side(sid):
             status, url = _refresh_stage(sid, "multiview_side")
-            return status, _url_to_img(url)
+            return status, _url_to_img(url, 300)
 
         mv_side_refresh.click(
             _do_refresh_mv_side,
@@ -979,7 +995,7 @@ def generation_studio_ui():
 
         def _do_refresh_mv_back(sid):
             status, url = _refresh_stage(sid, "multiview_back")
-            return status, _url_to_img(url)
+            return status, _url_to_img(url, 300)
 
         mv_back_refresh.click(
             _do_refresh_mv_back,
