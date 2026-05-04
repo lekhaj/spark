@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     
     AWS_ACCESS_KEY_ID: str
     AWS_SECRET_ACCESS_KEY: str
+    AWS_SESSION_TOKEN: Optional[str] = None
 
     # ── EC2 Instance IDs ───────────────────────────────────────────────────
     # See app/infra.py for all infra constants — these override defaults from .env
