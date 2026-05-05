@@ -26,7 +26,7 @@ from lib.spec_schema import get_db as get_spec_db, assemble_prompt, assemble_neg
 from lib.manual_gen_schema import get_db, COLLECTION, create_session, save_stage_prompts, mark_queued
 
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT  = int(os.getenv("REDIS_PORT", "6380"))
+REDIS_PORT  = int(os.getenv("REDIS_PORT", "6379"))
 REDIS_QUEUE = "manual_gen_tasks"
 
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://kartik:Kartikg421@localhost:27017")
