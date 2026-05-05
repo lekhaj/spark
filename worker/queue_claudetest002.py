@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
 """
-seed_claudetest002.py  (kept as queue_claudetest002.py for compatibility)
-=========================================================================
-Biome seeder for 'claudetest002' — creates / updates the biome document
-in MongoDB with 2 fully-defined cultivation-world characters.
-
-This script ONLY creates the biome.  To queue tasks use the generic handler:
-  python worker/enqueue_generation.py --biome-id claudetest002 [--stage1-only]
+claudetest002 — Biome creation + task queue script
+===================================================
+Creates the 'claudetest002' biome in MongoDB with 2 characters,
+then queues their SD1.5 generation tasks to Redis.
 
 Characters:
   1. cultivation_youth   — humanoid, early-stage neutral cultivation disciple
   2. suanni_lion         — quadruped, wuxia lion beast (Suanni-inspired)
 
-Usage:
+Run from repo root:
   python worker/queue_claudetest002.py [--dry-run] [--show-prompts-only]
 """
 
 import argparse
+import json
 import os
 import time
+import uuid
 
 import pymongo
+import redis
 from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
@@ -66,33 +66,29 @@ CHARACTERS = {
             "cultivator at the very beginning of the immortal path."
         ),
 
-        # Stage 1 — STRUCTURE PASS
-        # Formula: [distilled subject] + [pose tags] + [3D render context]
-        # Subject: donghua/cultivation novel male character — no specific clothing detail
-        # 3D render tags: character sheet, orthographic, no shadows — signals SD to output
-        #                 clean flat reference suitable for 3D model extraction
+        # Stage 1 — ControlNet POSE CORRECTION ONLY (very light touch)
+        # KEY RULE: SD should not redesign — only correct T-pose and symmetry.
+        # Flux image provides the design; SD just nudges with ControlNet.
+        # Denoise 0.20 = barely touches the image. Minimal prompt = minimal drift.
         "stage1_prompt": (
-            "young male cultivation novel character, donghua anime style, lean figure, "
-            "T-pose, arms horizontal, legs straight, full body, "
-            "front view, centered, white background, flat lighting, "
-            "3d character model sheet, orthographic, no shadows"
+            "same character, T-pose, arms extended horizontally, "
+            "front view, orthographic, symmetrical, clean silhouette, white background"
         ),
         "stage1_negative": (
-            "background, room, environment, shadows, perspective distortion, "
-            "bad hands, extra fingers, deformed, extra limbs, text, watermark"
+            "deformed, extra limbs, text, watermark, background, shadows, blurry, nsfw"
         ),
 
-        # Stage 2 — img2img detail pass (~50 tokens with prefix, CLIP-safe ≤68)
+        # Stage 2 — img2img detail pass
         "stage2_prompt": (
-            "best quality, masterpiece, "
+            "best quality, masterpiece, semi-realistic, 3D game character, stylized realism, "
             "young male cultivator, ash gray linen hanfu robe, crossover collar, "
             "rope belt, half-up topknot wooden hairpin, "
-            "lean wiry build, dark sharp eyes, calm determined expression, "
-            "faded sect patch chest, outer disciple beginner, "
-            "neutral xianxia fantasy, no aura, "
+            "lean build, dark sharp eyes, calm determined expression, "
+            "faded sect patch chest, outer disciple, "
             "front view, white background, clean game asset"
         ),
         "stage2_negative": (
+            "anime, cartoon, cel shading, 2D illustration, manga, flat art, "
             "background, photorealistic, blurry, extra limbs, text, watermark, deformed, "
             "ugly, nsfw, silk, brocade, embroidery, aura, glow, magic, western armor, "
             "chinese opera, heavy ornament, master robes"
@@ -118,39 +114,30 @@ CHARACTERS = {
             "Runic diamond mark between the horns. Majestic and serene, not aggressive."
         ),
 
-        # Stage 1 — STRUCTURE PASS
-        # Formula: [distilled subject] + [pose tags] + [3D render context]
-        # Subject: large powerful lion, feline body, heavy mane — enough for SD to
-        #          understand anatomy scale and proportions for ControlNet guidance
-        # Uses huchenlei/animal_openpose ControlNet (AP10K-17 quadruped keypoints)
-        # + real lion reference skeleton from prepare_controlnet_refs.py --download-ref
-        # 3D render tags: creature sheet, orthographic — clean for Trellis extraction
+        # Stage 1 — ControlNet POSE CORRECTION ONLY (Canny-only for quads)
+        # Uses Canny edges extracted from the Flux image — no OpenPose skeleton needed.
+        # Flux already has correct standing side-profile; SD just locks the silhouette.
         "stage1_prompt": (
-            "large powerful lion, heavy mane, thick muscular feline body, long tail, "
-            "neutral standing pose, strict side profile view, "
-            "all four legs straight, paws flat on ground, spine horizontal, "
-            "full body, centered, white background, flat lighting, "
-            "3d creature model sheet, orthographic, no shadows"
+            "same creature, neutral standing, side profile view, "
+            "orthographic, all four legs planted, clean silhouette, white background"
         ),
         "stage1_negative": (
-            "running, jumping, crouching, dynamic pose, "
-            "background, environment, shadows, perspective distortion, "
-            "human, rider, wings, horn, fantasy, "
-            "deformed, extra limbs, text, watermark"
+            "deformed, extra limbs, text, watermark, background, shadows, blurry, "
+            "human, bipedal, nsfw, running, jumping, sitting"
         ),
 
-        # Stage 2 — img2img detail pass (~52 tokens with prefix, CLIP-safe ≤68)
+        # Stage 2 — img2img detail pass
         "stage2_prompt": (
-            "best quality, masterpiece, "
+            "best quality, masterpiece, semi-realistic, 3D game character, stylized realism, "
             "fantastical lion beast xianxia, amber golden fur, "
             "flame-shaped rust-orange mane, bone-white spiral horn forehead, "
             "dragon scales on chest and knees, "
             "blue luminous spine markings, dragon whiskers, "
             "cloven rear hooves, tasseled tail, amber slit-pupil eyes, "
-            "incense smoke paws, runic mark, "
             "majestic serene, white background, clean game asset"
         ),
         "stage2_negative": (
+            "anime, cartoon, cel shading, 2D illustration, manga, flat art, "
             "background, photorealistic, blurry, extra limbs, text, watermark, deformed, "
             "ugly, nsfw, mundane lion, wings, human figure, regular animal"
         ),
@@ -254,40 +241,87 @@ def show_prompts():
 
 
 def create_biome(db):
-    """Insert or replace the biome document in MongoDB."""
+    """Upsert the biome document — preserves existing flux_concept fields."""
+    existing = db.biomes.find_one({"_id": BIOME_ID}) or {}
+    existing_chars = (
+        existing.get("possible_structures", {}).get("characters", {})
+    )
+
+    # Merge flux_concept data back in before replacing
+    for char_name, char_doc in BIOME_DOCUMENT["possible_structures"]["characters"].items():
+        ex = existing_chars.get(char_name, {})
+        # Preserve flux_concept block if already generated
+        if ex.get("flux_concept"):
+            char_doc["flux_concept"] = ex["flux_concept"]
+        # Preserve flux_concept S3 key in images dict
+        flux_key = ex.get("images", {}).get("flux_concept")
+        if flux_key:
+            char_doc["images"]["flux_concept"] = flux_key
+        # Preserve top-level image_url if flux was the last generated image
+        if ex.get("flux_concept", {}).get("image_url") and not ex.get("image_url"):
+            char_doc["image_url"] = ex["flux_concept"]["image_url"]
+
     db.biomes.replace_one({"_id": BIOME_ID}, BIOME_DOCUMENT, upsert=True)
-    print(f"[MongoDB] Biome '{BIOME_ID}' created/updated.")
+    print(f"[MongoDB] Biome '{BIOME_ID}' created/updated (flux_concept preserved).")
+
+
+def queue_tasks(r):
+    """Push SD1.5 tasks to Redis sd15_tasks queue.
+
+    All 4 prompt fields are passed explicitly so sd15_image_worker.py
+    uses them directly for the 2-stage pipeline without falling back to
+    the default CREATURE_PROMPTS templates.
+    """
+    for char_name, char in CHARACTERS.items():
+        payload = {
+            "task_id":          str(uuid.uuid4()),
+            "biome_id":         BIOME_ID,
+            "character_name":   char_name,
+            "character_type":   char["character_type"],
+            # ── Stage 1: ControlNet structure pass ──────────────────────────
+            "stage1_prompt":    char["stage1_prompt"],
+            "stage1_negative":  char["stage1_negative"],
+            # ── Stage 2: img2img detail pass ────────────────────────────────
+            "stage2_prompt":    char["stage2_prompt"],
+            "stage2_negative":  char["stage2_negative"],
+            "timestamp":        time.time(),
+        }
+        r.rpush("sd15_tasks", json.dumps(payload))
+        print(f"[Redis] Queued: {char_name} → sd15_tasks  (task_id={payload['task_id'][:8]}...)")
+
+    depth = r.llen("sd15_tasks")
+    print(f"[Redis] sd15_tasks depth: {depth}")
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Seed the claudetest002 biome in MongoDB."
-    )
+    parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run",           action="store_true",
-                        help="Show prompts without writing to MongoDB")
+                        help="Show everything but don't write to MongoDB or Redis")
     parser.add_argument("--show-prompts-only", action="store_true",
-                        help="Print prompts and exit")
+                        help="Print prompts and exit without touching DB or queue")
     args = parser.parse_args()
 
     show_prompts()
 
     if args.show_prompts_only:
-        print("\n[INFO] --show-prompts-only: exiting without DB writes.")
+        print("\n[INFO] --show-prompts-only: exiting without DB/queue writes.")
         return
 
     if args.dry_run:
-        print(f"\n[DRY RUN] Would create/update biome '{BIOME_ID}' in MongoDB.")
-        print("          Re-run without --dry-run to write.")
+        print("\n[DRY RUN] Would create biome + queue tasks. Pass no flags to execute.")
         return
 
+    # Connect
     client = pymongo.MongoClient(MONGO_URI)
     db     = client[MONGO_DB]
-    create_biome(db)
+    r      = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
 
-    print(f"\n✓  Biome '{BIOME_ID}' seeded in MongoDB.")
-    print(f"\n   To queue generation tasks, run:")
-    print(f"   python worker/enqueue_generation.py --biome-id {BIOME_ID} --stage1-only")
-    print(f"   python worker/enqueue_generation.py --biome-id {BIOME_ID}  # full pipeline")
+    create_biome(db)
+    queue_tasks(r)
+
+    print(f"\n✓  claudetest002 ready. Pipeline: sd15 → trellis → rig")
+    print(f"   Monitor GPU: tail -f /tmp/gpu_workers.log")
+    print(f"   Check MongoDB: db.biomes.findOne({{_id: '{BIOME_ID}'}})")
 
 
 if __name__ == "__main__":

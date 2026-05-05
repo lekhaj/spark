@@ -14,7 +14,8 @@ from app.gradio.pages.decimation_page import decimation_page_ui
 from app.gradio.pages.biome_generation_page import mount_into as mount_generator_ui
 from app.gradio.pages.orchestrator_control_page import create_orchestrator_ui
 from app.gradio.pages.biome_editor import biome_editor_ui
-from app.gradio.pages.generation_viewer_page import generation_viewer_ui
+from app.gradio.pages.pipeline_dashboard_page import pipeline_dashboard_ui
+from app.gradio.pages.generation_studio_page import generation_studio_ui
 from app.services.mongo_service import get_db, get_biome_choices_live
 
 # Load environment variables from .env file
@@ -430,15 +431,18 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
             submit_3d_btn.click(fn=submit_3d_tasks_gradio, inputs=[orchestrate_biome_dropdown], outputs=[orchestration_result])
             refresh_biomes_btn.click(fn=refresh_orchestrate_biomes, inputs=[], outputs=[orchestrate_biome_dropdown])
 
-        # Generation Viewer V2 — SD1.5 → TRELLIS.2 → ARP pipeline
-        with gr.TabItem("🎨 Generation Viewer V2"):
-            generation_viewer_ui()
-
         # Asset Decimation Tab
         with gr.TabItem("Asset Decimation"):
             decimation_page_ui()
 
+        # Pipeline Dashboard Tab
+        with gr.TabItem("Pipeline Dashboard"):
+            pipeline_dashboard_ui()
 
-            
+        # Generation Studio Tab — manual stage-by-stage generation
+        with gr.TabItem("🎨 Generation Studio"):
+            generation_studio_ui()
+
+
 # Launch the Gradio application
 demo.launch(server_name="0.0.0.0", server_port=7860)# share=True

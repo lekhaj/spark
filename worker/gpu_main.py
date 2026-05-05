@@ -91,8 +91,8 @@ def main():
     parser = argparse.ArgumentParser(description="Spark GPU Worker Manager")
     parser.add_argument(
         "--workers",
-        default="sd15,trellis,rig",
-        help="Comma-separated list of workers: sd15, trellis, rig (default: all)",
+        default="sd15,trellis,rig,manual",
+        help="Comma-separated list of workers: sd15, trellis, rig, manual (default: all)",
     )
     parser.add_argument(
         "--no-shutdown",
@@ -134,6 +134,10 @@ def main():
         from workers.rig_worker import RigWorker
         worker_map["rig"] = RigWorker
 
+    if "manual" in requested:
+        from workers.manual_gen_worker import ManualGenWorker
+        worker_map["manual"] = ManualGenWorker
+
     if not worker_map:
         logger.error(f"No valid workers in: {requested}")
         sys.exit(1)
@@ -144,6 +148,7 @@ def main():
     if "sd15"    in requested: all_queues.append("sd15_tasks")
     if "trellis" in requested: all_queues.append("model_tasks")
     if "rig"     in requested: all_queues.append("rig_model")
+    if "manual"  in requested: all_queues.append("manual_gen_tasks")
 
     shutdown = AutoShutdown(queues=all_queues)
     if not args.no_shutdown:
