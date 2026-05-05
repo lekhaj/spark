@@ -555,9 +555,12 @@ def _url_to_img(url: str, height: int = 400) -> str:
             "border:1px dashed #ccc;border-radius:8px;'>"
             "No image yet</div>"
         )
+    import time
+    sep = "&" if "?" in url else "?"
+    cache_busted_url = f"{url}{sep}t={int(time.time()*1000)}"
     return (
         f"<div style='text-align:center;'>"
-        f"<img src='{url}' style='max-height:{height}px;max-width:100%;"
+        f"<img src='{cache_busted_url}' style='max-height:{height}px;max-width:100%;"
         f"border-radius:6px;object-fit:contain;' />"
         f"</div>"
     )
