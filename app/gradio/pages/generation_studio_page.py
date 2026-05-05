@@ -372,14 +372,16 @@ def _run_normalize_cpu(session_id: str, resize_w: int, resize_h: int,
         img.save(buf, format="PNG")
         buf.seek(0)
 
-        _key    = os.getenv("AWS_ACCESS_KEY_ID") or os.getenv("AWS_ACCESS_KEY")
-        _secret = os.getenv("AWS_SECRET_ACCESS_KEY") or os.getenv("AWS_SECRET_KEY")
-        s3 = boto3.client(
-            "s3",
-            aws_access_key_id=_key,
-            aws_secret_access_key=_secret,
-            region_name=S3_REGION,
-        )
+        # Use IAM role if no explicit keys — same pattern as aws_service.py
+        _creds = {}
+        _key = os.getenv("AWS_ACCESS_KEY_ID")
+        if _key:
+            _creds = {
+                "aws_access_key_id":     _key,
+                "aws_secret_access_key": os.getenv("AWS_SECRET_ACCESS_KEY"),
+                "aws_session_token":     os.getenv("AWS_SESSION_TOKEN"),
+            }
+        s3 = boto3.client("s3", region_name=S3_REGION, **_creds)
         s3.upload_fileobj(buf, S3_BUCKET, s3_key,
                           ExtraArgs={"ContentType": "image/png"})
         image_url = f"{S3_BASE_URL}/{s3_key}"
