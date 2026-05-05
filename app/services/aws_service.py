@@ -12,6 +12,7 @@ ec2 = boto3.client(
     "ec2",
     aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
     aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+    aws_session_token=settings.AWS_SESSION_TOKEN,
     region_name=settings.AWS_REGION,
 )
 
@@ -264,10 +265,21 @@ def get_gpu_instance_status(gpu_type: str) -> dict:
     }
 
 
+def _s3_client():
+    """Return an S3 client with explicit credentials from settings (incl. session token)."""
+    return boto3.client(
+        "s3",
+        aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+        aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+        aws_session_token=settings.AWS_SESSION_TOKEN,
+        region_name=settings.AWS_REGION,
+    )
+
+
 def download_from_s3(bucket: str, key: str, download_path: str):
     """Download a file from S3."""
     import os
-    s3 = boto3.client("s3")
+    s3 = _s3_client()
     os.makedirs(os.path.dirname(download_path), exist_ok=True)
     s3.download_file(bucket, key, download_path)
     print(f"[S3] Downloaded: {bucket}/{key} → {download_path}")
@@ -275,6 +287,6 @@ def download_from_s3(bucket: str, key: str, download_path: str):
 
 def upload_to_s3(bucket: str, key: str, file_path: str):
     """Upload a file to S3."""
-    s3 = boto3.client("s3")
+    s3 = _s3_client()
     s3.upload_file(file_path, bucket, key)
     print(f"[S3] Uploaded: {file_path} → {bucket}/{key}")

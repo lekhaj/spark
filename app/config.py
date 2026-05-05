@@ -28,8 +28,9 @@ class Settings(BaseSettings):
     AWS_S3_BUCKET: str
 
     
-    AWS_ACCESS_KEY_ID: str
-    AWS_SECRET_ACCESS_KEY: str
+    AWS_ACCESS_KEY_ID: Optional[str] = None
+    AWS_SECRET_ACCESS_KEY: Optional[str] = None
+    AWS_SESSION_TOKEN: Optional[str] = None
 
     # ── EC2 Instance IDs ───────────────────────────────────────────────────
     # See app/infra.py for all infra constants — these override defaults from .env
