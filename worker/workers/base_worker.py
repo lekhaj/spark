@@ -34,8 +34,16 @@ logging.basicConfig(
 class WorkerConfig:
     REDIS_HOST     = os.getenv("REDIS_HOST",   "localhost")
     REDIS_PORT     = int(os.getenv("REDIS_PORT", 6379))
-    MONGO_URI      = os.getenv("MONGO_URI",    "mongodb://kartik:Kartikg421@localhost:27017")
-    MONGO_DB       = os.getenv("MONGO_DB",     "World_builder")
+    MONGO_URI      = (
+        os.getenv("MONGO_URI") or
+        os.getenv("MONGODB_URL") or
+        "mongodb://kartik:Kartikg421@localhost:27017/?authSource=admin"
+    )
+    MONGO_DB       = (
+        os.getenv("MONGO_DB") or
+        os.getenv("MONGODB_DB_NAME") or
+        "World_builder"
+    )
     S3_BUCKET      = os.getenv("AWS_S3_BUCKET", os.getenv("S3_BUCKET", "sparkassets-us"))
     S3_REGION      = os.getenv("AWS_REGION",   "ap-south-1")
     TASK_TTL       = int(os.getenv("TASK_TTL", 14400))   # 4 hours
