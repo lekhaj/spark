@@ -7,14 +7,24 @@ from app import infra
 # ── Spot instance import — DISABLED (re-enable after custom AMI is ready) ────
 # from app.services.spot_gpu_service import spot_gpu
 
+
+def _boto3_kwargs() -> dict:
+    """
+    Build boto3 credential kwargs from settings.
+    When AWS_ACCESS_KEY_ID is unset (EC2 with IAM role attached), returns {}
+    so boto3 uses instance metadata credentials automatically — no expiry, no tokens.
+    """
+    if settings.AWS_ACCESS_KEY_ID:
+        return {
+            "aws_access_key_id":     settings.AWS_ACCESS_KEY_ID,
+            "aws_secret_access_key": settings.AWS_SECRET_ACCESS_KEY,
+            "aws_session_token":     settings.AWS_SESSION_TOKEN,
+        }
+    return {}
+
+
 # AWS EC2 client
-ec2 = boto3.client(
-    "ec2",
-    aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-    aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-    aws_session_token=settings.AWS_SESSION_TOKEN,
-    region_name=settings.AWS_REGION,
-)
+ec2 = boto3.client("ec2", region_name=settings.AWS_REGION, **_boto3_kwargs())
 
 # ── Instance ID map (alias → EC2 instance ID) ────────────────────────────────
 # All GPU aliases map to the single active GPU instance.
@@ -266,14 +276,7 @@ def get_gpu_instance_status(gpu_type: str) -> dict:
 
 
 def _s3_client():
-    """Return an S3 client with explicit credentials from settings (incl. session token)."""
-    return boto3.client(
-        "s3",
-        aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-        aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-        aws_session_token=settings.AWS_SESSION_TOKEN,
-        region_name=settings.AWS_REGION,
-    )
+    return boto3.client("s3", region_name=settings.AWS_REGION, **_boto3_kwargs())
 
 
 def download_from_s3(bucket: str, key: str, download_path: str):
