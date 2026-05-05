@@ -22,7 +22,7 @@ from dotenv import load_dotenv
 # ── Load environment ──────────────────────────────────────────────────────────
 # Resolve .env relative to this file so the script works regardless of cwd.
 _env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
-load_dotenv(_env_path)
+load_dotenv(_env_path, override=True)  # override=True ensures stale OS env vars are replaced
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(

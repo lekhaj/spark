@@ -21,7 +21,7 @@ from PIL import Image
 from pymongo import MongoClient
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)  # override=True ensures stale OS env vars (e.g. old REDIS_PORT) are replaced
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
