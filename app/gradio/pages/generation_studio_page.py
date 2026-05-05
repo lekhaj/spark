@@ -592,15 +592,32 @@ def generation_studio_ui():
         )
 
         # ── Hidden state ──────────────────────────────────────────────────────
-        session_id_state = gr.State(None)
+        session_id_state  = gr.State(None)
+        # Per-stage session states — each stage can target any asset/version independently
+        flux_sid_state   = gr.State(None)
+        norm_sid_state   = gr.State(None)
+        sd1_sid_state    = gr.State(None)
+        sd2_sid_state    = gr.State(None)
+        mv_sid_state     = gr.State(None)
+        trel_sid_state   = gr.State(None)
+
+        # ── Helper: compact per-stage asset picker ─────────────────────────────
+        def _picker(initial):
+            with gr.Row():
+                c = gr.Dropdown(choices=initial, value=(initial[0] if initial else None),
+                                label='Character', scale=2, allow_custom_value=False)
+                v = gr.Dropdown(choices=['v1'], value='v1', label='Version', scale=1)
+                b = gr.Button('Load ↓', size='sm', scale=0)
+                i = gr.Textbox(label='Session', interactive=False, scale=3, lines=1)
+            return c, v, b, i
 
         # ══════════════════════════════════════════════════════════════════════
         #  SESSION — pick an existing asset, or create a new one.
         #  Selecting a character/version auto-loads its prompts and images.
         #  Queueing any stage auto-saves prompts (no separate save button).
         # ══════════════════════════════════════════════════════════════════════
+        _initial_chars = _list_chars()
         with gr.Accordion("Asset", open=True):
-            _initial_chars = _list_chars()
             with gr.Tabs():
                 with gr.Tab("Existing Asset"):
                     with gr.Row():
@@ -631,6 +648,9 @@ def generation_studio_ui():
         #  STAGE 0: Flux
         # ══════════════════════════════════════════════════════════════════════
         with gr.Accordion("Stage 0 — Flux Concept (Text → Image)", open=True):
+            gr.Markdown("**Asset:**")
+            flux_char, flux_ver, flux_load_btn, flux_sid_info = _picker(_initial_chars)
+            gr.Markdown("---")
             flux_prompt = gr.Textbox(
                 label="Prompt", lines=5, interactive=True,
                 placeholder="full body character, T-pose, white background...",
@@ -656,6 +676,9 @@ def generation_studio_ui():
         #  STAGE 1: Normalize
         # ══════════════════════════════════════════════════════════════════════
         with gr.Accordion("Stage 1 — Normalize (CPU, instant)", open=False):
+            gr.Markdown("**Asset:**")
+            norm_char, norm_ver, norm_load_btn, norm_sid_info = _picker(_initial_chars)
+            gr.Markdown("---")
             gr.Markdown("Runs immediately on CPU. Resizes Flux output to SD-friendly size.")
             with gr.Row():
                 norm_w      = gr.Number(label="Width",  value=512, precision=0)
@@ -673,6 +696,9 @@ def generation_studio_ui():
         #  STAGE 2: SD Stage 1 — Pose Lock
         # ══════════════════════════════════════════════════════════════════════
         with gr.Accordion("Stage 2 — SD1.5 ControlNet Pose Lock", open=False):
+            gr.Markdown("**Asset:**")
+            sd1_char, sd1_ver, sd1_load_btn, sd1_sid_info = _picker(_initial_chars)
+            gr.Markdown("---")
             gr.Markdown(
                 "**Very light touch** (denoise 0.20). "
                 "Only corrects pose. Flux provides the design."
@@ -711,6 +737,9 @@ def generation_studio_ui():
         #  STAGE 3: SD Stage 2 — Detail Pass
         # ══════════════════════════════════════════════════════════════════════
         with gr.Accordion("Stage 3 — SD1.5 Detail Pass", open=False):
+            gr.Markdown("**Asset:**")
+            sd2_char, sd2_ver, sd2_load_btn, sd2_sid_info = _picker(_initial_chars)
+            gr.Markdown("---")
             sd2_input_source = gr.Dropdown(
                 choices=["sd_stage1", "flux"], value="sd_stage1", label="Init image from",
             )
@@ -735,6 +764,9 @@ def generation_studio_ui():
         #  STAGE 4: Multi-view
         # ══════════════════════════════════════════════════════════════════════
         with gr.Accordion("Stage 4 — Multi-view Generation", open=False):
+            gr.Markdown("**Asset:**")
+            mv_char, mv_ver, mv_load_btn, mv_sid_info = _picker(_initial_chars)
+            gr.Markdown("---")
             gr.Markdown(
                 "**IMPORTANT**: Use Flux output (not SD) as init for best consistency."
             )
@@ -770,6 +802,9 @@ def generation_studio_ui():
         #  STAGE 5: TRELLIS 3D
         # ══════════════════════════════════════════════════════════════════════
         with gr.Accordion("Stage 5 — TRELLIS 3D Mesh", open=False):
+            gr.Markdown("**Asset:**")
+            trel_char, trel_ver, trel_load_btn, trel_sid_info = _picker(_initial_chars)
+            gr.Markdown("---")
             gr.Markdown("Sends front+side+back to TRELLIS worker via `model_tasks` queue.")
             with gr.Row():
                 trellis_front_src = gr.Dropdown(
@@ -856,6 +891,15 @@ def generation_studio_ui():
                 # trellis
                 state["trellis_status"],
                 state["trellis_url"],
+                # stage session_id states (all same as global)
+                sid, sid, sid, sid, sid, sid,
+                # stage char/ver cascade
+                gr.update(value=char), gr.update(choices=_list_versions(char) if char else ['v1'], value=ver),
+                gr.update(value=char), gr.update(choices=_list_versions(char) if char else ['v1'], value=ver),
+                gr.update(value=char), gr.update(choices=_list_versions(char) if char else ['v1'], value=ver),
+                gr.update(value=char), gr.update(choices=_list_versions(char) if char else ['v1'], value=ver),
+                gr.update(value=char), gr.update(choices=_list_versions(char) if char else ['v1'], value=ver),
+                gr.update(value=char), gr.update(choices=_list_versions(char) if char else ['v1'], value=ver),
             )
 
         _load_outputs = [
@@ -877,6 +921,13 @@ def generation_studio_ui():
             mv_side_status, mv_side_img, mv_back_status, mv_back_img,
             # trellis
             trellis_status, trellis_url,
+            # stage session_id states — all set to global session on cascade
+            flux_sid_state, norm_sid_state, sd1_sid_state,
+            sd2_sid_state, mv_sid_state, trel_sid_state,
+            # stage char/ver dropdowns — cascaded from global picker
+            flux_char, flux_ver, norm_char, norm_ver,
+            sd1_char, sd1_ver, sd2_char, sd2_ver,
+            mv_char, mv_ver, trel_char, trel_ver,
         ]
 
         # ── Auto-load whenever character or version dropdown changes ──────────
@@ -942,7 +993,7 @@ def generation_studio_ui():
 
         flux_queue_btn.click(
             _do_queue_flux,
-            [session_id_state, flux_prompt, flux_negative, flux_width, flux_height,
+            [flux_sid_state, flux_prompt, flux_negative, flux_width, flux_height,
              flux_steps, flux_guidance],
             [flux_status],
         )
@@ -953,7 +1004,7 @@ def generation_studio_ui():
 
         flux_refresh_btn.click(
             _do_refresh_flux,
-            [session_id_state],
+            [flux_sid_state],
             [flux_status, flux_url, flux_img],
         )
 
@@ -964,7 +1015,7 @@ def generation_studio_ui():
 
         norm_run_btn.click(
             _do_normalize,
-            [session_id_state, norm_w, norm_h, norm_source],
+            [norm_sid_state, norm_w, norm_h, norm_source],
             [norm_status, norm_img, norm_info],
         )
 
@@ -984,7 +1035,7 @@ def generation_studio_ui():
 
         sd1_queue_btn.click(
             _do_queue_sd1,
-            [session_id_state, sd1_prompt, sd1_negative, sd1_denoise, sd1_cfg, sd1_steps,
+            [sd1_sid_state, sd1_prompt, sd1_negative, sd1_denoise, sd1_cfg, sd1_steps,
              sd1_openpose_w, sd1_canny_w, sd1_category, sd1_input_source],
             [sd1_status],
         )
@@ -995,7 +1046,7 @@ def generation_studio_ui():
 
         sd1_refresh_btn.click(
             _do_refresh_sd1,
-            [session_id_state],
+            [sd1_sid_state],
             [sd1_status, sd1_url, sd1_img],
         )
 
@@ -1011,7 +1062,7 @@ def generation_studio_ui():
 
         sd2_queue_btn.click(
             _do_queue_sd2,
-            [session_id_state, sd2_prompt, sd2_negative, sd2_denoise, sd2_cfg,
+            [sd2_sid_state, sd2_prompt, sd2_negative, sd2_denoise, sd2_cfg,
              sd2_steps, sd2_input_source],
             [sd2_status],
         )
@@ -1022,7 +1073,7 @@ def generation_studio_ui():
 
         sd2_refresh_btn.click(
             _do_refresh_sd2,
-            [session_id_state],
+            [sd2_sid_state],
             [sd2_status, sd2_url, sd2_img],
         )
 
@@ -1033,7 +1084,7 @@ def generation_studio_ui():
 
         mv_side_btn.click(
             _do_queue_mv_side,
-            [session_id_state, mv_side_prompt, mv_denoise, mv_cfg, mv_input_source],
+            [mv_sid_state, mv_side_prompt, mv_denoise, mv_cfg, mv_input_source],
             [mv_side_status],
         )
 
@@ -1043,7 +1094,7 @@ def generation_studio_ui():
 
         mv_side_refresh.click(
             _do_refresh_mv_side,
-            [session_id_state],
+            [mv_sid_state],
             [mv_side_status, mv_side_img],
         )
 
@@ -1054,7 +1105,7 @@ def generation_studio_ui():
 
         mv_back_btn.click(
             _do_queue_mv_back,
-            [session_id_state, mv_back_prompt, mv_denoise, mv_cfg, mv_input_source],
+            [mv_sid_state, mv_back_prompt, mv_denoise, mv_cfg, mv_input_source],
             [mv_back_status],
         )
 
@@ -1064,7 +1115,7 @@ def generation_studio_ui():
 
         mv_back_refresh.click(
             _do_refresh_mv_back,
-            [session_id_state],
+            [mv_sid_state],
             [mv_back_status, mv_back_img],
         )
 
@@ -1075,7 +1126,7 @@ def generation_studio_ui():
 
         trellis_btn.click(
             _do_queue_trellis,
-            [session_id_state, trellis_front_src, trellis_side_src, trellis_back_src],
+            [trel_sid_state, trellis_front_src, trellis_side_src, trellis_back_src],
             [trellis_status],
         )
 
@@ -1085,7 +1136,7 @@ def generation_studio_ui():
 
         trellis_refresh.click(
             _do_refresh_trellis,
-            [session_id_state],
+            [trel_sid_state],
             [trellis_status, trellis_url],
         )
 
