@@ -47,14 +47,23 @@ def get_instance_id(instance_name: str) -> str:
     return INSTANCE_MAP.get(instance_name.lower(), instance_name)
 
 
+_iam_describe_warned = False
+
 def get_instance_state(instance_name: str) -> str:
-    """Return current EC2 state of an instance."""
+    """Return current EC2 state of an instance, or 'unknown' on any error."""
+    global _iam_describe_warned
     try:
         instance_id = get_instance_id(instance_name.lower())
         response = ec2.describe_instances(InstanceIds=[instance_id])
         return response["Reservations"][0]["Instances"][0]["State"]["Name"]
     except Exception as e:
-        print(f"[AWS ERROR] Failed to get instance state for {instance_name}: {e}")
+        err = str(e)
+        if "UnauthorizedOperation" in err or "AccessDenied" in err:
+            if not _iam_describe_warned:
+                print(f"[AWS] ec2:DescribeInstances not permitted by IAM role — instance state checks disabled. Manage GPU manually.")
+                _iam_describe_warned = True
+        else:
+            print(f"[AWS ERROR] Failed to get instance state for {instance_name}: {e}")
         return "unknown"
 
 
