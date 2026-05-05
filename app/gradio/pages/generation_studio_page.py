@@ -72,21 +72,8 @@ def _db():
 # ── GPU start (fire-and-forget, uses IAM role — no credentials in code) ───────
 
 def _ensure_gpu_running_bg():
-    """Start GPU EC2 instance if stopped. Uses instance IAM role — no hardcoded keys."""
-    def _run():
-        try:
-            import boto3
-            ec2   = boto3.client("ec2", region_name=GPU_REGION)  # IAM role from instance metadata
-            resp  = ec2.describe_instances(InstanceIds=[GPU_INSTANCE_ID])
-            state = resp["Reservations"][0]["Instances"][0]["State"]["Name"]
-            if state == "running":
-                return
-            if state in ("stopped", "stopping"):
-                ec2.start_instances(InstanceIds=[GPU_INSTANCE_ID])
-                print(f"[GPU] Starting {GPU_INSTANCE_ID}…")
-        except Exception as e:
-            print(f"[GPU] check/start skipped: {e}")
-    threading.Thread(target=_run, daemon=True).start()
+    """No-op — GPU instance management is manual. Start the GPU from AWS console before generating."""
+    pass
 
 
 # ── Redis push ────────────────────────────────────────────────────────────────
