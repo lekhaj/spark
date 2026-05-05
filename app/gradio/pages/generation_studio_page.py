@@ -36,12 +36,23 @@ from lib.manual_gen_schema import (
 )
 
 # ── Config ────────────────────────────────────────────────────────────────────
-MONGO_URI   = os.getenv("MONGO_URI",   "mongodb://kartik:Kartikg421@localhost:27017")
-MONGO_DB    = os.getenv("MONGO_DB",    "World_builder")
-REDIS_HOST  = os.getenv("REDIS_HOST",  "localhost")
-REDIS_PORT  = int(os.getenv("REDIS_PORT", 6379))
-S3_BUCKET   = os.getenv("S3_BUCKET",   "sparkassets-us")
-S3_REGION   = os.getenv("AWS_REGION",  "ap-south-1")
+# Accept both MONGO_URI / MONGODB_URL (systemd service uses the latter).
+MONGO_URI   = (os.getenv("MONGO_URI") or os.getenv("MONGODB_URL")
+               or "mongodb://kartik:Kartikg421@localhost:27017/?authSource=admin")
+MONGO_DB    = os.getenv("MONGO_DB") or os.getenv("MONGODB_DB_NAME") or "World_builder"
+
+# Redis host: prefer parsing CELERY_BROKER_URL, then env var, then localhost.
+def _resolve_redis():
+    broker = os.getenv("CELERY_BROKER_URL") or os.getenv("REDIS_BROKER_URL")
+    if broker:
+        from urllib.parse import urlparse
+        p = urlparse(broker)
+        return (p.hostname or "localhost"), (p.port or 6379)
+    return os.getenv("REDIS_HOST", "localhost"), int(os.getenv("REDIS_PORT", 6379))
+
+REDIS_HOST, REDIS_PORT = _resolve_redis()
+S3_BUCKET   = os.getenv("AWS_S3_BUCKET") or os.getenv("S3_BUCKET", "sparkassets-us")
+S3_REGION   = os.getenv("AWS_REGION", "us-east-1")
 S3_BASE_URL = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com"
 
 REDIS_QUEUE_MANUAL = "manual_gen_tasks"
@@ -120,7 +131,11 @@ def _count_sd(text: str) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _get_or_create_session(char_label: str, version: str) -> tuple:
-    """Get existing session or create new one. Returns (session_id, info_str)."""
+    """Get existing session — returns (None, msg) if no character selected.
+    Only creates a new session when explicitly requested via 'Create' / 'New Version'.
+    """
+    if not char_label:
+        return None, "No asset selected. Pick one from 'Existing Asset' or create one in 'New Asset'."
     try:
         db   = _db()
         docs = list(db[COLLECTION].find(
@@ -132,9 +147,7 @@ def _get_or_create_session(char_label: str, version: str) -> tuple:
             stages     = docs[0].get("stages", {})
             done_count = sum(1 for s in stages.values() if s.get("status") == "done")
             return session_id, f"{session_id}  [{done_count}/{len(STAGE_NAMES)} stages done]"
-        # Create fresh session
-        session_id = create_session(db, char_label, version)
-        return session_id, f"{session_id}  [new session]"
+        return None, f"No session for {char_label}/{version} — use 'Create' or '+ New Version'."
     except Exception as exc:
         return None, f"ERROR: {exc}"
 
@@ -515,6 +528,15 @@ def _list_versions(char_label: str) -> list:
         return ["v1"]
 
 
+def _list_chars() -> list:
+    """Return all distinct char_labels in the manual_gen_sessions collection."""
+    try:
+        labels = _db()[COLLECTION].distinct("char_label")
+        return sorted([l for l in labels if l]) or []
+    except Exception:
+        return []
+
+
 def _next_version(char_label: str) -> str:
     """Compute the next version string (v1 → v2 → v3 …)."""
     versions = _list_versions(char_label)
@@ -571,15 +593,36 @@ def generation_studio_ui():
         session_id_state = gr.State(None)
 
         # ══════════════════════════════════════════════════════════════════════
-        #  SESSION
+        #  SESSION — pick an existing asset, or create a new one.
+        #  Selecting a character/version auto-loads its prompts and images.
+        #  Queueing any stage auto-saves prompts (no separate save button).
         # ══════════════════════════════════════════════════════════════════════
-        with gr.Accordion("Session", open=True):
-            with gr.Row():
-                char_label   = gr.Textbox(label="Character Label", value="character_001", scale=2)
-                version_dd   = gr.Dropdown(choices=["v1"], value="v1", label="Version", scale=1)
-                new_version_btn = gr.Button("+ New Version", size="sm")
-                load_btn     = gr.Button("Load Session", size="sm", variant="secondary")
-                save_btn     = gr.Button("Save All Prompts", size="sm")
+        with gr.Accordion("Asset", open=True):
+            _initial_chars = _list_chars()
+            with gr.Tabs():
+                with gr.Tab("Existing Asset"):
+                    with gr.Row():
+                        char_label = gr.Dropdown(
+                            choices=_initial_chars,
+                            value=(_initial_chars[0] if _initial_chars else None),
+                            label="Character", allow_custom_value=False, scale=2,
+                        )
+                        version_dd = gr.Dropdown(choices=["v1"], value="v1", label="Version", scale=1)
+                        new_version_btn = gr.Button("+ New Version", size="sm")
+                        refresh_chars_btn = gr.Button("⟳", size="sm", scale=0)
+                with gr.Tab("New Asset"):
+                    with gr.Row():
+                        new_char_input = gr.Textbox(
+                            label="New Character Label",
+                            placeholder="e.g. knight_001",
+                            scale=3,
+                        )
+                        create_asset_btn = gr.Button("Create", variant="primary", scale=1)
+                    gr.Markdown(
+                        "_Creates a fresh `v1` session with empty prompts. "
+                        "Once created, switch to the **Existing Asset** tab — "
+                        "your new character will be selected automatically._"
+                    )
             session_info = gr.Textbox(label="Session", interactive=False, lines=1)
 
         # ══════════════════════════════════════════════════════════════════════
@@ -834,40 +877,60 @@ def generation_studio_ui():
             trellis_status, trellis_url,
         ]
 
-        load_btn.click(_do_load, [char_label, version_dd], _load_outputs)
+        # ── Auto-load whenever character or version dropdown changes ──────────
+        # When char_label changes: refresh versions, pick the latest, then load it.
+        def _on_char_change(char):
+            versions = _list_versions(char) if char else ["v1"]
+            latest   = versions[-1] if versions else "v1"
+            return gr.update(choices=versions, value=latest), *_do_load(char, latest)
 
-        # ── Session: New Version ──────────────────────────────────────────────
+        char_label.change(
+            _on_char_change,
+            [char_label],
+            [version_dd, *_load_outputs],
+        )
+        version_dd.change(_do_load, [char_label, version_dd], _load_outputs)
+
+        # ── + New Version: clones char, makes vN+1, loads empty stages ────────
         def _do_new_version(char):
+            if not char:
+                return gr.update(), None, "Pick a character first."
             new_ver  = _next_version(char)
-            sid      = create_session(_db(), char, new_ver)
+            create_session(_db(), char, new_ver)
             versions = _list_versions(char)
-            return gr.update(choices=versions, value=new_ver), sid, f"{sid}  [new version {new_ver}]"
+            # Reload everything for the new (empty) version
+            return gr.update(choices=versions, value=new_ver), *_do_load(char, new_ver)
 
         new_version_btn.click(
             _do_new_version,
             [char_label],
-            [version_dd, session_id_state, session_info],
+            [version_dd, *_load_outputs],
         )
 
-        # Refresh version dropdown when char_label changes
-        def _refresh_versions(char):
-            versions = _list_versions(char)
-            return gr.update(choices=versions, value=versions[-1] if versions else "v1")
+        # ── Refresh character list (after creating new asset elsewhere) ───────
+        def _refresh_chars():
+            chars = _list_chars()
+            return gr.update(choices=chars, value=(chars[0] if chars else None))
 
-        char_label.change(_refresh_versions, [char_label], [version_dd])
+        refresh_chars_btn.click(_refresh_chars, [], [char_label])
 
-        # ── Session: Save All Prompts ─────────────────────────────────────────
-        save_btn.click(
-            _save_all_prompts,
-            inputs=[
-                session_id_state,
-                flux_prompt, flux_negative, flux_width, flux_height, flux_steps, flux_guidance,
-                sd1_prompt, sd1_negative, sd1_denoise, sd1_cfg, sd1_category, sd1_steps,
-                sd1_openpose_w, sd1_canny_w,
-                sd2_prompt, sd2_negative, sd2_denoise, sd2_cfg, sd2_steps,
-                mv_side_prompt, mv_back_prompt, mv_denoise, mv_cfg,
-            ],
-            outputs=[session_info],
+        # ── Create New Asset (creates char + v1, switches dropdown to it) ─────
+        def _do_create_asset(new_char):
+            new_char = (new_char or "").strip()
+            if not new_char:
+                return gr.update(), gr.update(), "Enter a character label first."
+            create_session(_db(), new_char, "v1")
+            chars = _list_chars()
+            return (
+                gr.update(choices=chars, value=new_char),    # char_label dropdown
+                gr.update(choices=["v1"], value="v1"),        # version dropdown
+                f"Created {new_char} (v1). Switch to 'Existing Asset' tab to start.",
+            )
+
+        create_asset_btn.click(
+            _do_create_asset,
+            [new_char_input],
+            [char_label, version_dd, session_info],
         )
 
         # ── Flux: Queue + Refresh ─────────────────────────────────────────────

@@ -10,7 +10,7 @@ from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
 from hy3dgen.texgen import Hunyuan3DPaintPipeline
 
 # Redis config
-REDIS_HOST = "15.206.99.66"
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = 6380
 MODEL_QUEUE = "model_tasks"
 

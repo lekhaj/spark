@@ -7,7 +7,7 @@ import time
 from diffusers import DiffusionPipeline
 
 # ------------ Configuration ------------
-REDIS_HOST = "15.206.99.66"
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = 6380
 S3_REGION = "ap-south-1"
 BUCKET_NAME = "sparkassets"

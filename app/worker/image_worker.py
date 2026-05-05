@@ -38,7 +38,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ── Config (all overridable via .env) ────────────────────────────────────────
-REDIS_HOST       = os.getenv("REDIS_HOST", "15.206.99.66")
+REDIS_HOST       = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT       = int(os.getenv("REDIS_PORT", 6380))
 REDIS_DB         = int(os.getenv("REDIS_DB", 0))
 

@@ -26,7 +26,7 @@ load_dotenv()
 
 MONGO_URI = os.getenv("MONGODB_URL")
 MONGO_COLLECTION = os.getenv("MONGODB_DB_NAME", "biomes")
-REDIS_HOST = os.getenv("REDIS_HOST", "15.206.99.66")
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6380))
 REDIS_QUEUE_2D = "image_tasks"
 REDIS_QUEUE_3D = "model_tasks"
