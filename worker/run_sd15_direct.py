@@ -370,11 +370,18 @@ def download_s3_img(s3, key: str) -> Image.Image:
 
 
 def mongo_update(db, char_name: str, fields: dict):
-    db.biomes.update_one(
-        {"_id": BIOME_ID},
-        {"$set": {f"possible_structures.characters.{char_name}.{k}": v
-                  for k, v in fields.items()}},
-    )
+    """Update character status in MongoDB. Silently skips if MongoDB is unreachable."""
+    if db is None:
+        return  # MongoDB not connected — skip silently
+    try:
+        db.biomes.update_one(
+            {"_id": BIOME_ID},
+            {"$set": {f"possible_structures.characters.{char_name}.{k}": v
+                      for k, v in fields.items()}},
+            upsert=True,
+        )
+    except Exception as e:
+        print(f"  [MongoDB] Status update skipped (DB unreachable): {e.__class__.__name__}")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -433,7 +440,24 @@ def main():
 
     # ── Connections ───────────────────────────────────────────────────────────
     s3 = boto3.client("s3", region_name=AWS_REGION)
-    db = pymongo.MongoClient(MONGO_URI)["World_builder"]
+
+    # MongoDB is optional — used only for status tracking and Flux concept lookup.
+    # If it's unreachable the script continues and generates images via txt2img fallback.
+    print("[MongoDB] Connecting (5s timeout)...")
+    try:
+        db = pymongo.MongoClient(
+            MONGO_URI,
+            serverSelectionTimeoutMS=5_000,   # fail fast — don't block for 30s
+            connectTimeoutMS=5_000,
+            socketTimeoutMS=5_000,
+        )["World_builder"]
+        db.command("ping")  # quick test
+        print("[MongoDB] Connected ✓")
+    except Exception as e:
+        print(f"[MongoDB] WARNING: Cannot connect — {e.__class__.__name__}: {e}")
+        print("[MongoDB] Continuing WITHOUT MongoDB. Status tracking disabled.")
+        print("[MongoDB] Images will still be generated and uploaded to S3. ✓")
+        db = None
 
     # ── Load models ───────────────────────────────────────────────────────────
     print("\n[Models] Loading ControlNets (OpenPose + Canny)...")
@@ -503,9 +527,17 @@ def main():
         print("    initial concept art. If it exists, SD1.5 uses it as a base.")
 
         flux_img = None
-        biome_doc  = db.biomes.find_one({"_id": BIOME_ID})
-        char_doc   = (biome_doc or {}).get("possible_structures", {}).get("characters", {}).get(char_name, {})
-        flux_key   = (char_doc.get("flux_concept") or {}).get("image_key") or char_doc.get("images", {}).get("flux_concept")
+        if db is not None:
+            try:
+                biome_doc = db.biomes.find_one({"_id": BIOME_ID})
+                char_doc  = (biome_doc or {}).get("possible_structures", {}).get("characters", {}).get(char_name, {})
+                flux_key  = (char_doc.get("flux_concept") or {}).get("image_key") or char_doc.get("images", {}).get("flux_concept")
+            except Exception as e:
+                print(f"  [MongoDB] Flux lookup failed: {e.__class__.__name__} — using txt2img fallback.")
+                flux_key = None
+        else:
+            print("  [MongoDB] Skipped (DB offline) — using txt2img fallback.")
+            flux_key = None
 
         if flux_key:
             print(f"  ✓ Found Flux concept in S3: {flux_key}")
@@ -514,7 +546,7 @@ def main():
             print(f"  ✓ Downloaded. Size: {flux_img.size[0]}×{flux_img.size[1]} px")
         else:
             print("  ⚠ No Flux concept found.")
-            print("  → Will use txt2img fallback (generate from scratch with OpenPose).")
+            print("  → Will generate from scratch using OpenPose skeleton + text prompt.")
 
         # ── Stage 1: Pose correction ──────────────────────────────────────────
         print()
