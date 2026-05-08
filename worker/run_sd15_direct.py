@@ -73,24 +73,22 @@ CHARACTERS = {
     "elven_ranger": {
         "creature_category": "bipedal",
         "stage1_prompt": (
-            "full body human female, front-facing T-pose, realistic proportions, "
-            "detailed symmetrical face, looking at viewer, long wavy auburn hair, "
-            "simple leather tunic, utility belt, plain white background, flat lighting"
+            "wide angle, full body from head to toe, feet visible, standing, T-pose, female, "
+            "tight clothing, pants, tight braided hair, centered, plain white background"
         ),
         "stage1_negative": (
-            "anime, doll face, distorted face, lazy eye, open mouth, blurry, "
-            "messy hair, extra limbs, robotic armor, dynamic pose, cropped"
+            "cropped, out of frame, close up, half body, massive hair, flowing hair, capes, skirts, loose fabric, dynamic pose"
         ),
         "stage2_prompt": (
-            "masterpiece, high quality, 3D RPG concept art, stylized realism, female elf ranger, T-pose, front view, "
-            "beautiful symmetrical face, confident subtle smile, intense gaze, long wavy auburn hair, pointed ears, "
-            "intricate green and brown leather armor, layered belts, bracers, boots, "
-            "grounded fantasy, detailed PBR textures, cinematic studio lighting, white background"
+            "masterpiece, 3D RPG game character asset, stylized realism, female elf ranger. "
+            "wide angle, full body from head to toe, feet visible in frame, T-pose, front view. "
+            "beautiful symmetrical face, intense gaze, tight braided auburn hair, pointed ears. "
+            "form-fitting green and brown leather armor, tight pants, knee-high boots, bracers. "
+            "detailed PBR textures, soft studio lighting, plain white background"
         ),
         "stage2_negative": (
-            "anime, cartoon, sketch, distorted face, cross-eyed, open mouth, messy hair, "
-            "oversized weapons, sci-fi, robotic, magic effects, glowing, cluttered, "
-            "cropped, missing limbs, dark background, cast shadows"
+            "cropped, cut off limbs, out of frame, close up, massive hair, flowing hair, capes, skirts, loose fabric, "
+            "distorted face, cross-eyed, anime, cartoon, sketch, messy hair, oversized weapons, cluttered, dark background"
         ),
     },
 
