@@ -73,33 +73,24 @@ CHARACTERS = {
     "elven_ranger": {
         "creature_category": "bipedal",
         "stage1_prompt": (
-            "full body human female, front-facing T-pose, arms extended horizontally, "
-            "legs straight, realistic proportions, high quality, masterpiece, "
-            "detailed natural face, symmetrical features, looking straight ahead, long auburn hair, "
-            "grounded fantasy clothing, leather tunic, utility belt, "
-            "centered, plain light background"
+            "full body human female, front-facing T-pose, realistic proportions, "
+            "detailed symmetrical face, looking at viewer, long wavy auburn hair, "
+            "simple leather tunic, utility belt, plain white background, flat lighting"
         ),
         "stage1_negative": (
-            "anime, doll face, distorted face, crossed eyes, looking sideways, open mouth, "
-            "deformed face, extra limbs, blurry face, messy hair, hair floating unnaturally, "
-            "robotic armor, sci-fi suit, giant ornaments, floating objects, magic circle, "
-            "symmetrical patterns, dynamic pose, cropped body, bad anatomy"
+            "anime, doll face, distorted face, lazy eye, open mouth, blurry, "
+            "messy hair, extra limbs, robotic armor, dynamic pose, cropped"
         ),
         "stage2_prompt": (
-            "masterpiece, best quality, ultra-detailed, full body female elf ranger, front-facing T-pose, "
-            "highly detailed beautiful symmetrical face, expressive focused eyes, calm confident expression, "
-            "natural skin pores and texture, long wavy auburn hair flowing naturally, pointed ears, "
-            "intricate layered leather and fabric armor, dark green tunic, brown leather belts and pouches, "
-            "arm bracers, knee-high leather boots, grounded medieval fantasy style, "
-            "concept art, painterly RPG realism, PBR materials, octane render, soft cinematic studio lighting, plain neutral background"
+            "masterpiece, high quality, 3D RPG concept art, stylized realism, female elf ranger, T-pose, front view, "
+            "beautiful symmetrical face, confident subtle smile, intense gaze, long wavy auburn hair, pointed ears, "
+            "intricate green and brown leather armor, layered belts, bracers, boots, "
+            "grounded fantasy, detailed PBR textures, cinematic studio lighting, white background"
         ),
         "stage2_negative": (
-            "anime, chibi, cross-eyed, looking sideways, open mouth, distorted face, "
-            "asymmetrical face, ugly, extra accessories, floating hair, "
-            "hair covering face, messy unstructured hair, glossy plastic skin, "
-            "overdesigned armor, sci-fi, robotic, magical effects, halo, magic circle, "
-            "floating objects, background elements, cropped, deformed anatomy, "
-            "blurry textures, cartoon, 2D, sketch, lowres, bad hands, mutated"
+            "anime, cartoon, sketch, distorted face, cross-eyed, open mouth, messy hair, "
+            "oversized weapons, sci-fi, robotic, magic effects, glowing, cluttered, "
+            "cropped, missing limbs, dark background, cast shadows"
         ),
     },
 
