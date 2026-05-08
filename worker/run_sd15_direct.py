@@ -81,17 +81,16 @@ CHARACTERS = {
             "sitting, crouching, dynamic pose"
         ),
         "stage2_prompt": (
-            "full body female elf ranger, front-facing T-pose, realistic proportions, "
-            "athletic build, natural face, silver braided hair, pointed ears, "
-            "white and emerald leather armor, layered fabric and metal details, "
-            "grounded fantasy RPG style, restrained fantasy design, "
-            "painterly realism, soft cinematic lighting, clean silhouette, neutral background"
-        ),
+            "full body, T-pose, pure white background, flat diffuse studio lighting, no shadows, "
+            "3D game character, female elf ranger, slender build, pointed ears, "
+            "emerald green leather armor, gold trim pauldrons, dark thigh-high boots, "
+            "silver braided hair, leather bracers, quiver on back, "
+            "matte PBR textures, semi-realistic, front view, centered"),
         "stage2_negative": (
-            "anime, chibi, sci-fi, halo, floating objects, giant wings, robotic armor, "
-            "doll face, oversized eyes, distorted mouth, extra accessories, "
-            "overdesigned costume, glossy skin, cel shading, blurry textures, "
-            "deformed anatomy, cluttered silhouette"
+           "shadow, cast shadow, ambient occlusion, gradient background, background elements, "
+            "transparent, translucent, smoke, particles, glow, fog, floating objects, "
+            "cropped, partial body, cut off, anime, cartoon, 2D, flat art, sketch, "
+            "extra limbs, deformed, ugly, nsfw, modern clothes, sci-fi"
         ),
     },
 
