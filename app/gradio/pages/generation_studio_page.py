@@ -952,27 +952,34 @@ def generation_studio_ui():
         # ── Refresh character list (after creating new asset elsewhere) ───────
         def _refresh_chars():
             chars = _list_chars()
-            return gr.update(choices=chars, value=(chars[0] if chars else None))
+            upd = gr.update(choices=chars, value=(chars[0] if chars else None))
+            return upd, upd, upd, upd, upd, upd, upd
 
-        refresh_chars_btn.click(_refresh_chars, [], [char_label])
+        refresh_chars_btn.click(
+            _refresh_chars, [],
+            [char_label, flux_char, norm_char, sd1_char, sd2_char, mv_char, trel_char],
+        )
 
         # ── Create New Asset (creates char + v1, switches dropdown to it) ─────
         def _do_create_asset(new_char):
             new_char = (new_char or "").strip()
             if not new_char:
-                return gr.update(), gr.update(), "Enter a character label first."
+                return gr.update(), gr.update(), "Enter a character label first.", *([gr.update()] * 6)
             create_session(_db(), new_char, "v1")
             chars = _list_chars()
+            char_upd = gr.update(choices=chars, value=new_char)
             return (
-                gr.update(choices=chars, value=new_char),    # char_label dropdown
-                gr.update(choices=["v1"], value="v1"),        # version dropdown
+                char_upd,                                   # char_label dropdown
+                gr.update(choices=["v1"], value="v1"),      # version dropdown
                 f"Created {new_char} (v1). Switch to 'Existing Asset' tab to start.",
+                char_upd, char_upd, char_upd, char_upd, char_upd, char_upd,  # per-stage pickers
             )
 
         create_asset_btn.click(
             _do_create_asset,
             [new_char_input],
-            [char_label, version_dd, session_info],
+            [char_label, version_dd, session_info,
+             flux_char, norm_char, sd1_char, sd2_char, mv_char, trel_char],
         )
 
         # ── Flux: Queue + Refresh ─────────────────────────────────────────────
