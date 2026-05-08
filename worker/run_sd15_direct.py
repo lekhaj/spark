@@ -73,24 +73,26 @@ CHARACTERS = {
     "elven_ranger": {
         "creature_category": "bipedal",
         "stage1_prompt": (
-            "humanoid character, T-pose, arms extended horizontally, legs straight, "
-            "front view, full body, white background, flat lighting, symmetrical, centered"
+            "full body human female, front-facing T-pose, arms extended horizontally, "
+            "legs straight, realistic anatomy, natural face, grounded fantasy clothing, "
+            "fitted leather tunic, fabric sleeves, utility belt, centered, plain light background"
         ),
         "stage1_negative": (
-            "deformed, extra limbs, text, watermark, background, shadows, blurry, nsfw, "
-            "sitting, crouching, dynamic pose"
+            "anime, doll face, distorted face, broken mouth, extra limbs, deformed hands, "
+            "robotic armor, sci-fi suit, giant ornaments, floating objects, magic circle, "
+            "symmetrical patterns, blurry anatomy, dynamic pose, cropped body"
         ),
         "stage2_prompt": (
-            "full body, T-pose, pure white background, flat diffuse studio lighting, no shadows, "
-            "3D game character, female elf ranger, slender build, pointed ears, "
-            "emerald green leather armor, gold trim pauldrons, dark thigh-high boots, "
-            "silver braided hair, leather bracers, quiver on back, "
-            "matte PBR textures, semi-realistic, front view, centered"),
+            "full body female elf ranger, front-facing T-pose, realistic face, athletic build, "
+            "auburn braided hair, pointed ears, layered leather and fabric armor, "
+            "grounded medieval fantasy clothing, practical belts and pouches, "
+            "muted blue and brown colors, painterly RPG realism, believable materials, "
+            "restrained fantasy design, soft natural lighting, plain light background"
+        ),
         "stage2_negative": (
-           "shadow, cast shadow, ambient occlusion, gradient background, background elements, "
-            "transparent, translucent, smoke, particles, glow, fog, floating objects, "
-            "cropped, partial body, cut off, anime, cartoon, 2D, flat art, sketch, "
-            "extra limbs, deformed, ugly, nsfw, modern clothes, sci-fi"
+            "anime, chibi, sci-fi armor, halo, magic circle, floating ornaments, robotic design, "
+            "oversized eyes, glossy plastic skin, giant accessories, overdesigned fantasy, "
+            "symmetrical decorations, blurry textures, cluttered silhouette, cinematic fantasy overload"
         ),
     },
 
