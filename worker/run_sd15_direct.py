@@ -74,26 +74,26 @@ CHARACTERS = {
         "creature_category": "bipedal",
         "stage1_prompt": (
             "full body human female, front-facing T-pose, arms extended horizontally, "
-            "legs straight, realistic anatomy, natural face, closed mouth, "
-            "eyes looking forward, shoulder-length auburn hair, medieval fantasy clothing, "
-            "fitted tunic, leather belt, tall boots, centered, plain light background"
+            "legs straight, realistic anatomy, detailed hands, 5 fingers, "
+            "natural face, symmetrical eyes, looking forward, auburn hair, medieval fantasy clothing, "
+            "fitted tunic, leather belt, tall boots, isolated on pure white background, flat lighting"
         ),
         "stage1_negative": (
-            "anime, distorted face, crossed eyes, open mouth, asymmetrical eyes, "
-            "messy hair, floating hair, extra limbs, robotic armor, sci-fi, "
-            "magic circle, floating objects, dynamic pose, cropped body"
+            "scenery, background, room, walls, mutated hands, missing fingers, deformed face, "
+            "winking, crossed eyes, open mouth, extra limbs, robotic armor, "
+            "dynamic pose, cropped body"
         ),
         "stage2_prompt": (
-            "full body female ranger, front-facing T-pose, calm neutral expression, "
-            "symmetrical face, aligned eyes, realistic facial features, auburn wavy hair, "
+            "full body female ranger, front-facing T-pose, realistic facial features, symmetrical face, "
+            "open aligned eyes, intense stare, realistic hands, auburn wavy hair, "
             "blue and brown medieval tunic, leather corset, utility belts and pouches, "
             "dark fitted pants, knee-high leather boots, grounded fantasy RPG style, "
-            "realistic fabric and leather materials, painterly realism, soft natural lighting, plain background"
+            "isolated on pure white background, studio lighting, no shadow"
         ),
         "stage2_negative": (
-            "anime, cross-eyed, distorted mouth, asymmetrical face, messy hair, "
-            "floating hair, halo, magic circle, giant ornaments, robotic armor, "
-            "sci-fi, glossy skin, overdesigned fantasy, blurry textures, cartoon, sketch"
+            "scenery, environment, room, stone arch, shadow, mutated hands, deformed fingers, "
+            "winking, cross-eyed, asymmetrical face, distorted mouth, "
+            "messy hair, overdesigned fantasy, cartoon, sketch"
         ),
     },
 
