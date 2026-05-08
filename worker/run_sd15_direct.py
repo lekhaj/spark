@@ -70,26 +70,30 @@ CHARACTERS = {
     #  HUMANOIDS (bipedal)
     # ══════════════════════════════════════════════════════════════════════════
 
-    "elven_ranger": {
+    "human_ranger": {
         "creature_category": "bipedal",
         "stage1_prompt": (
-            "full body woman, front-facing T-pose, arms extended, legs straight, "
-            "realistic face, red hair, heavy medieval plate armor, large pauldrons, "
-            "dark green underlayer, gold trim, centered, plain background"
+            "full body human female, front-facing T-pose, arms extended horizontally, "
+            "legs straight, realistic anatomy, natural face, closed mouth, "
+            "eyes looking forward, shoulder-length auburn hair, medieval fantasy clothing, "
+            "fitted tunic, leather belt, tall boots, centered, plain light background"
         ),
         "stage1_negative": (
-            "anime, cartoon, doll, weapon, holding object, bow, dynamic pose, "
-            "cropped body, half body, asymmetrical pose, extra limbs"
+            "anime, distorted face, crossed eyes, open mouth, asymmetrical eyes, "
+            "messy hair, floating hair, extra limbs, robotic armor, sci-fi, "
+            "magic circle, floating objects, dynamic pose, cropped body"
         ),
         "stage2_prompt": (
-            "full body mature female adventurer, front-facing T-pose, realistic face, fierce expression, "
-            "red auburn hair, heavy plate armor, dark green fabric underlayer, dark grey metal breastplate, "
-            "prominent gold trim, large ornate shoulder pauldrons, thick green trousers, heavy metal knee boots, "
-            "muscular athletic build, grounded CRPG dark fantasy game art, highly detailed PBR textures, plain background"
+            "full body female ranger, front-facing T-pose, calm neutral expression, "
+            "symmetrical face, aligned eyes, realistic facial features, auburn wavy hair, "
+            "blue and brown medieval tunic, leather corset, utility belts and pouches, "
+            "dark fitted pants, knee-high leather boots, grounded fantasy RPG style, "
+            "realistic fabric and leather materials, painterly realism, soft natural lighting, plain background"
         ),
         "stage2_negative": (
-            "anime, cartoon, stylized 3d render, doll, child, oversized hair, holding weapon, bow, "
-            "cropped body, amputated, exaggerated proportions, sci-fi, modern, giant braids, background elements"
+            "anime, cross-eyed, distorted mouth, asymmetrical face, messy hair, "
+            "floating hair, halo, magic circle, giant ornaments, robotic armor, "
+            "sci-fi, glossy skin, overdesigned fantasy, blurry textures, cartoon, sketch"
         ),
     },
 
