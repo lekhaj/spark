@@ -74,26 +74,34 @@ CHARACTERS = {
         "creature_category": "bipedal",
         "stage1_prompt": (
             "full body human female, front-facing T-pose, arms extended horizontally, "
-            "legs straight, realistic proportions, natural face, closed mouth, "
-            "eyes looking forward, centered eyes, long auburn hair, grounded fantasy clothing, "
-            "leather tunic, centered, plain light background"
+            "legs straight, realistic proportions, natural face, symmetrical pose, "
+            "neutral expression, looking straight ahead, long wavy auburn hair flowing naturally, "
+            "grounded fantasy clothing, fitted leather tunic, fabric sleeves, utility belt, "
+            "centered, plain light background"
         ),
         "stage1_negative": (
-            "anime, distorted face, crossed eyes, lazy eye, open mouth, asymmetrical eyes, "
-            "blurry face, messy hair, floating hair, extra limbs, robotic armor, "
-            "magic circle, floating objects, dynamic pose, cropped body"
+            "anime, doll face, distorted face, crossed eyes, looking sideways, open mouth, "
+            "deformed face, extra limbs, blurry face, messy hair, hair floating unnaturally, "
+            "robotic armor, sci-fi suit, giant ornaments, floating objects, magic circle, "
+            "symmetrical patterns, dynamic pose, cropped body"
         ),
         "stage2_prompt": (
             "full body female elf ranger, front-facing T-pose, calm neutral expression, "
-            "closed mouth, symmetrical face, aligned eyes, realistic facial features, "
-            "long wavy auburn hair flowing naturally behind shoulders, clean hair strands, "
-            "pointed ears, layered leather armor, brown belts and boots, "
-            "grounded medieval fantasy, painterly RPG realism, soft studio lighting, plain background"
+            "eyes looking straight ahead, symmetrical face, natural eye alignment, "
+            "well-proportioned facial features, long wavy auburn hair with slight wind flow "
+            "but natural direction, hair strands well defined, healthy hair volume, "
+            "pointed ears, athletic build, layered leather and fabric armor, "
+            "fitted dark tunic dress, brown leather belts and pouches, arm bracers, "
+            "knee-high leather boots, grounded medieval fantasy style, realistic materials, "
+            "subtle fabric folds, soft studio lighting, plain neutral background"
         ),
         "stage2_negative": (
-            "anime, cross-eyed, lazy eye, distorted mouth, open mouth, asymmetrical face, "
-            "hair covering eyes, messy hair, floating hair, halo, magic circle, "
-            "giant ornaments, sci-fi armor, blurry textures, overdesigned fantasy, cartoon, sketch"
+            "anime, chibi, cross-eyed, looking sideways, open mouth, distorted face, "
+            "asymmetrical face, winking, extra accessories, floating hair, "
+            "hair covering face, messy unstructured hair, glossy plastic skin, "
+            "overdesigned armor, sci-fi, robotic, magical effects, halo, magic circle, "
+            "floating objects, background elements, cropped, deformed anatomy, "
+            "blurry textures, cartoon, 2D, sketch"
         ),
     },
 
