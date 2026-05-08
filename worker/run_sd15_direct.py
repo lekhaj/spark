@@ -34,7 +34,7 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 MONGO_URI  = os.getenv("MONGO_URI",    "mongodb://kartik:Kartikg421@18.207.13.85:27017")
 S3_BUCKET  = os.getenv("AWS_S3_BUCKET","sparkassets-us")
 AWS_REGION = os.getenv("AWS_REGION",   "us-east-1")
-BIOME_ID   = "claudetest002"
+BIOME_ID   = "bhavesh_batch_001"  # batch id for this generation run
 
 SD15_MODEL_ID          = "Lykon/DreamShaper"
 CONTROLNET_OPENPOSE_ID = "lllyasviel/control_v11p_sd15_openpose"
@@ -59,24 +59,277 @@ STAGE2_CFG      = 7.0
 STAGE2_STRENGTH = 0.35
 
 # ── Characters ────────────────────────────────────────────────────────────────
-# Minimal Stage 1 prompt — "same character, correct the pose only"
-# Detailed Stage 2 prompt — clothing, identity, material
+# Style direction: semi-realistic fantasy, rich PBR textures, stylized realism.
+# Inspired by high-quality isometric fantasy game aesthetics.
+# Stage 1 — MINIMAL: pose correction only. Stage 2 — FULL visual identity.
+#
+# 5 HUMANOIDS  +  5 QUADRUPEDS
 CHARACTERS = {
-    "cultivation_youth": {
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  HUMANOIDS (bipedal)
+    # ══════════════════════════════════════════════════════════════════════════
+
+    "elven_ranger": {
         "creature_category": "bipedal",
-        "stage1_prompt":  "same character, T-pose, arms extended horizontally, front view, orthographic, symmetrical, clean silhouette, white background",
-        "stage1_negative": "deformed, extra limbs, text, watermark, background, shadows, blurry, nsfw",
-        "stage2_prompt":  "best quality, masterpiece, semi-realistic, 3D game character, young male cultivator, ash gray linen hanfu robe, crossover collar, rope belt, half-up topknot, wooden hairpin, lean build, dark sharp eyes, calm expression, faded sect patch chest, front view, white background, clean game asset",
-        "stage2_negative": "anime, cartoon, cel shading, 2D illustration, manga, background, blurry, extra limbs, text, watermark, deformed, ugly, nsfw, silk, brocade, aura, glow",
+        "stage1_prompt": (
+            "humanoid character, T-pose, arms extended horizontally, legs straight, "
+            "front view, full body, white background, flat lighting, symmetrical, centered"
+        ),
+        "stage1_negative": (
+            "deformed, extra limbs, text, watermark, background, shadows, blurry, nsfw, "
+            "sitting, crouching, dynamic pose"
+        ),
+        "stage2_prompt": (
+            "best quality, masterpiece, semi-realistic, stylized realism, 3D game character, "
+            "female elf ranger, slender athletic build, pointed ears, emerald green leather armor, "
+            "gold trim pauldrons, brown buckled belt, thigh-high dark boots, "
+            "long silver braided hair, sharp green eyes, calm focused expression, "
+            "quiver on back, leather bracers, fantasy high quality, "
+            "front view, white background, clean game asset, PBR materials, rich colors"
+        ),
+        "stage2_negative": (
+            "anime, cartoon, cel shading, 2D illustration, manga, flat art, sketch, "
+            "background, blurry, extra limbs, text, watermark, deformed, ugly, nsfw, "
+            "modern clothes, sci-fi"
+        ),
     },
-    "suanni_lion": {
+
+    "dwarven_knight": {
+        "creature_category": "bipedal",
+        "stage1_prompt": (
+            "humanoid character, T-pose, arms extended horizontally, legs straight, "
+            "front view, full body, white background, flat lighting, symmetrical, centered"
+        ),
+        "stage1_negative": (
+            "deformed, extra limbs, text, watermark, background, shadows, blurry, nsfw, "
+            "sitting, crouching, dynamic pose"
+        ),
+        "stage2_prompt": (
+            "best quality, masterpiece, semi-realistic, stylized realism, 3D game character, "
+            "male dwarf knight, stocky muscular build, full heavy plate armor, "
+            "aged silver steel plates, ornate engraved chest piece, red fabric underlayer, "
+            "thick brown beard braided with iron rings, stern determined expression, "
+            "round shield on arm, battle-worn armor with scratches and dents, "
+            "front view, white background, clean game asset, PBR materials, rich colors"
+        ),
+        "stage2_negative": (
+            "anime, cartoon, cel shading, 2D illustration, manga, flat art, sketch, "
+            "background, blurry, extra limbs, text, watermark, deformed, ugly, nsfw, "
+            "modern clothes, sci-fi, tall, slender"
+        ),
+    },
+
+    "human_battlemage": {
+        "creature_category": "bipedal",
+        "stage1_prompt": (
+            "humanoid character, T-pose, arms extended horizontally, legs straight, "
+            "front view, full body, white background, flat lighting, symmetrical, centered"
+        ),
+        "stage1_negative": (
+            "deformed, extra limbs, text, watermark, background, shadows, blurry, nsfw, "
+            "sitting, crouching, dynamic pose"
+        ),
+        "stage2_prompt": (
+            "best quality, masterpiece, semi-realistic, stylized realism, 3D game character, "
+            "male human battlemage, athletic build, layered robes over chainmail, "
+            "deep indigo and gold robes, arcane runic symbols embroidered on fabric, "
+            "leather armored shoulders, dark short hair, amber glowing eyes, "
+            "arcane staff in hand, jeweled ring on finger, high fantasy mage, "
+            "front view, white background, clean game asset, PBR materials, rich colors"
+        ),
+        "stage2_negative": (
+            "anime, cartoon, cel shading, 2D illustration, manga, flat art, sketch, "
+            "background, blurry, extra limbs, text, watermark, deformed, ugly, nsfw, "
+            "modern clothes, sci-fi"
+        ),
+    },
+
+    "orc_berserker": {
+        "creature_category": "bipedal",
+        "stage1_prompt": (
+            "humanoid character, T-pose, arms extended horizontally, legs straight, "
+            "front view, full body, white background, flat lighting, symmetrical, centered"
+        ),
+        "stage1_negative": (
+            "deformed, extra limbs, text, watermark, background, shadows, blurry, nsfw, "
+            "sitting, crouching, dynamic pose"
+        ),
+        "stage2_prompt": (
+            "best quality, masterpiece, semi-realistic, stylized realism, 3D game character, "
+            "male orc berserker, massive muscular build, dark green skin, tribal bone armor, "
+            "iron pauldrons, fur loincloth, war paint on face and arms, "
+            "tusks, red eyes, fierce snarling expression, scars on chest, "
+            "heavy axe, spiked bracers, savage warrior, "
+            "front view, white background, clean game asset, PBR materials, rich colors"
+        ),
+        "stage2_negative": (
+            "anime, cartoon, cel shading, 2D illustration, manga, flat art, sketch, "
+            "background, blurry, extra limbs, text, watermark, deformed, ugly, nsfw, "
+            "human skin, slender build, sci-fi"
+        ),
+    },
+
+    "undead_knight": {
+        "creature_category": "bipedal",
+        "stage1_prompt": (
+            "humanoid character, T-pose, arms extended horizontally, legs straight, "
+            "front view, full body, white background, flat lighting, symmetrical, centered"
+        ),
+        "stage1_negative": (
+            "deformed, extra limbs, text, watermark, background, shadows, blurry, nsfw, "
+            "sitting, crouching, dynamic pose"
+        ),
+        "stage2_prompt": (
+            "best quality, masterpiece, semi-realistic, stylized realism, 3D game character, "
+            "undead knight, skeletal face with decayed skin, cracked dark plate armor, "
+            "rusted black iron pauldrons, tattered black cape, glowing purple eyes in skull, "
+            "exposed bone hands gripping longsword, green necrotic energy faintly glowing at joints, "
+            "dark fantasy undead warrior, eerie regal posture, "
+            "front view, white background, clean game asset, PBR materials, rich colors"
+        ),
+        "stage2_negative": (
+            "anime, cartoon, cel shading, 2D illustration, manga, flat art, sketch, "
+            "background, blurry, extra limbs, text, watermark, ugly mess, nsfw, "
+            "living human, sci-fi, modern"
+        ),
+    },
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  QUADRUPEDS (four-legged creatures)
+    # ══════════════════════════════════════════════════════════════════════════
+
+    "armored_warbear": {
         "creature_category": "quadruped",
-        "stage1_prompt":  "same creature, neutral standing, side profile view, orthographic, all four legs planted, clean silhouette, white background",
-        "stage1_negative": "deformed, extra limbs, text, watermark, background, shadows, blurry, human, bipedal, nsfw, running, jumping, sitting",
-        "stage2_prompt":  "best quality, masterpiece, semi-realistic, 3D game character, fantastical lion beast xianxia, amber golden fur, flame-shaped rust-orange mane, bone-white spiral horn forehead, dragon scales on chest and knees, blue luminous spine markings, dragon whiskers, cloven rear hooves, tasseled tail, amber slit-pupil eyes, majestic serene, white background, clean game asset",
-        "stage2_negative": "anime, cartoon, cel shading, 2D illustration, manga, background, blurry, extra limbs, text, watermark, deformed, ugly, nsfw, mundane lion, wings, human, sitting",
+        "stage1_prompt": (
+            "four-legged bear creature, neutral standing pose, side view, "
+            "all four paws flat on ground, spine horizontal, head forward, "
+            "full body, white background, flat lighting, centered"
+        ),
+        "stage1_negative": (
+            "deformed, extra limbs, text, watermark, background, shadows, blurry, "
+            "human, bipedal, nsfw, running, jumping, sitting, rearing"
+        ),
+        "stage2_prompt": (
+            "best quality, masterpiece, semi-realistic, stylized realism, 3D game creature, "
+            "massive armored war bear, dark brown fur, heavy forged iron plate armor on back and shoulders, "
+            "spiked pauldrons, gold rivets on armor plates, battle-scarred snout, "
+            "glowing amber eyes, thick muscular legs, iron paw guards, "
+            "side view, white background, clean game asset, PBR materials, rich colors"
+        ),
+        "stage2_negative": (
+            "anime, cartoon, cel shading, 2D illustration, manga, flat art, sketch, "
+            "background, blurry, extra limbs, text, watermark, deformed, ugly, nsfw, "
+            "human, wings, sitting, sci-fi"
+        ),
     },
-}
+
+    "shadow_wolf": {
+        "creature_category": "quadruped",
+        "stage1_prompt": (
+            "four-legged wolf creature, neutral standing pose, side view, "
+            "all four paws flat on ground, spine horizontal, tail extended, "
+            "full body, white background, flat lighting, centered"
+        ),
+        "stage1_negative": (
+            "deformed, extra limbs, text, watermark, background, shadows, blurry, "
+            "human, bipedal, nsfw, running, jumping, sitting"
+        ),
+        "stage2_prompt": (
+            "best quality, masterpiece, semi-realistic, stylized realism, 3D game creature, "
+            "large shadow wolf, sleek jet-black fur with subtle dark blue shimmer, "
+            "arcane silver runic markings along spine and legs, "
+            "piercing pale blue glowing eyes, long powerful legs, sleek muscular body, "
+            "slightly translucent shadow wisps at paws, sharp fangs visible, "
+            "side view, white background, clean game asset, PBR materials, rich colors"
+        ),
+        "stage2_negative": (
+            "anime, cartoon, cel shading, 2D illustration, manga, flat art, sketch, "
+            "background, blurry, extra limbs, text, watermark, deformed, ugly, nsfw, "
+            "human, wings, sitting, sci-fi"
+        ),
+    },
+
+    "stone_golem_hound": {
+        "creature_category": "quadruped",
+        "stage1_prompt": (
+            "four-legged dog-like creature, neutral standing pose, side view, "
+            "all four paws flat on ground, spine horizontal, "
+            "full body, white background, flat lighting, centered"
+        ),
+        "stage1_negative": (
+            "deformed, extra limbs, text, watermark, background, shadows, blurry, "
+            "human, bipedal, nsfw, running, jumping, sitting"
+        ),
+        "stage2_prompt": (
+            "best quality, masterpiece, semi-realistic, stylized realism, 3D game creature, "
+            "stone golem hound, large quadruped made of jagged grey granite and dark basalt, "
+            "glowing orange magma cracks along the seams, heavy blocky legs, "
+            "angular rock head with no visible eyes only orange glow slits, "
+            "moss patches on back, ancient carved runes on flanks, "
+            "side view, white background, clean game asset, PBR materials, rich colors"
+        ),
+        "stage2_negative": (
+            "anime, cartoon, cel shading, 2D illustration, manga, flat art, sketch, "
+            "background, blurry, extra limbs, text, watermark, deformed, ugly, nsfw, "
+            "human, fur, organic flesh, sci-fi"
+        ),
+    },
+
+    "swamp_basilisk": {
+        "creature_category": "quadruped",
+        "stage1_prompt": (
+            "four-legged lizard creature, neutral standing pose, side view, "
+            "all four legs on ground, spine horizontal, tail extended behind, "
+            "full body, white background, flat lighting, centered"
+        ),
+        "stage1_negative": (
+            "deformed, extra limbs, text, watermark, background, shadows, blurry, "
+            "human, bipedal, nsfw, running, jumping, sitting, wings"
+        ),
+        "stage2_prompt": (
+            "best quality, masterpiece, semi-realistic, stylized realism, 3D game creature, "
+            "swamp basilisk, large four-legged lizard, dark olive green and brown mottled scales, "
+            "spiky dorsal ridge from neck to tail, yellow slit-pupil eyes with petrifying gaze, "
+            "thick muscular tail, wide splayed clawed feet, dewlap under jaw, "
+            "subtle bioluminescent green spots along flanks, "
+            "side view, white background, clean game asset, PBR materials, rich colors"
+        ),
+        "stage2_negative": (
+            "anime, cartoon, cel shading, 2D illustration, manga, flat art, sketch, "
+            "background, blurry, extra limbs, text, watermark, deformed, ugly, nsfw, "
+            "human, bipedal, wings, fur, sci-fi"
+        ),
+    },
+
+    "skeletal_steed": {
+        "creature_category": "quadruped",
+        "stage1_prompt": (
+            "four-legged horse creature, neutral standing pose, side view, "
+            "all four hooves flat on ground, spine horizontal, head forward, "
+            "full body, white background, flat lighting, centered"
+        ),
+        "stage1_negative": (
+            "deformed, extra limbs, text, watermark, background, shadows, blurry, "
+            "human, bipedal, nsfw, running, jumping, sitting"
+        ),
+        "stage2_prompt": (
+            "best quality, masterpiece, semi-realistic, stylized realism, 3D game creature, "
+            "skeletal undead warhorse, bleached white and grey bones, "
+            "tattered black ethereal mane and tail made of dark smoke, "
+            "glowing red eyes in hollow skull sockets, iron horseshoes on hooves, "
+            "cracked ribs visible, shadowy necrotic energy wisps around legs, "
+            "ornate bone saddle on back, dark fantasy, eerie elegant, "
+            "side view, white background, clean game asset, PBR materials, rich colors"
+        ),
+        "stage2_negative": (
+            "anime, cartoon, cel shading, 2D illustration, manga, flat art, sketch, "
+            "background, blurry, extra limbs, text, watermark, deformed, ugly, nsfw, "
+            "living horse, flesh, fur, sci-fi"
+        ),
+    },
+
+}  # END CHARACTERS
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -127,14 +380,56 @@ def mongo_update(db, char_name: str, fields: dict):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(
+        description="Generate one or all characters using SD1.5 + ControlNet."
+    )
+    parser.add_argument(
+        "--char",
+        help="Name of the single character to generate (e.g. elven_ranger). "
+             "If omitted, ALL characters are generated.",
+        default=None,
+    )
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        help="List all available character names and exit.",
+    )
+    args = parser.parse_args()
+
+    # ── --list: just show available names and quit ─────────────────────────────
+    if args.list:
+        print("\nAvailable characters:")
+        for i, name in enumerate(CHARACTERS.keys(), 1):
+            cat = CHARACTERS[name]["creature_category"]
+            tag = "👤 Humanoid" if cat == "bipedal" else "🐾 Quadruped"
+            print(f"  {i:>2}. {name:<25} {tag}")
+        print()
+        return
+
+    # ── Pick which characters to run ───────────────────────────────────────────
+    if args.char:
+        if args.char not in CHARACTERS:
+            print(f"\n[ERROR] Character '{args.char}' not found.")
+            print("Run with --list to see all available characters.")
+            sys.exit(1)
+        chars_to_run = {args.char: CHARACTERS[args.char]}
+    else:
+        chars_to_run = CHARACTERS
+
     print("=" * 70)
     print(f"  SD1.5 Direct Runner — biome: {BIOME_ID}")
-    print(f"  Stage 1: denoise={STAGE1_STRENGTH}  CFG={STAGE1_CFG}  (very light touch)")
+    print(f"  Generating: {', '.join(chars_to_run.keys())}")
+    print(f"  Stage 1 settings: denoise={STAGE1_STRENGTH}  CFG={STAGE1_CFG}")
+    print(f"  Stage 2 settings: denoise={STAGE2_STRENGTH}  CFG={STAGE2_CFG}")
     print("=" * 70)
 
     if not torch.cuda.is_available():
-        print("[ERROR] No CUDA GPU."); sys.exit(1)
-    print(f"[GPU] {torch.cuda.get_device_name(0)}")
+        print("[ERROR] No CUDA GPU found. This script must run on the GPU machine.")
+        sys.exit(1)
+    gpu_name = torch.cuda.get_device_name(0)
+    vram_gb  = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+    print(f"[GPU] {gpu_name}  ({vram_gb:.1f} GB VRAM)")
 
     # ── Connections ───────────────────────────────────────────────────────────
     s3 = boto3.client("s3", region_name=AWS_REGION)
@@ -176,48 +471,85 @@ def main():
     print("[Models] All loaded — UNet shared.\n")
 
     # OpenPose T-pose skeleton reference
-    openpose_ref = (
-        Image.open(TPOSE_OPENPOSE_PATH).convert("RGB").resize((IMG_SIZE, IMG_SIZE))
-        if os.path.exists(TPOSE_OPENPOSE_PATH)
-        else Image.new("RGB", (IMG_SIZE, IMG_SIZE), 0)
-    )
+    if os.path.exists(TPOSE_OPENPOSE_PATH):
+        openpose_ref = Image.open(TPOSE_OPENPOSE_PATH).convert("RGB").resize((IMG_SIZE, IMG_SIZE))
+        print(f"[OpenPose] T-pose reference loaded: {TPOSE_OPENPOSE_PATH}")
+    else:
+        openpose_ref = Image.new("RGB", (IMG_SIZE, IMG_SIZE), 0)  # black = no skeleton
+        print(f"[OpenPose] WARNING: T-pose reference NOT found at {TPOSE_OPENPOSE_PATH}")
+        print("[OpenPose] Humanoid Stage 1 will use a blank skeleton — pose quality may be lower.")
+        print("[OpenPose] To fix: place tpose_openpose.png in /home/ec2-user/controlnet_refs/")
 
     results = {}
 
-    for char_name, char in CHARACTERS.items():
-        print(f"{'─'*60}")
-        print(f"[{char_name}]  category={char['creature_category']}")
+    for char_name, char in chars_to_run.items():
         is_quad = char["creature_category"] == "quadruped"
+        type_label = "🐾 Quadruped" if is_quad else "👤 Humanoid"
 
-        # ── Fetch Flux concept from MongoDB/S3 ───────────────────────────────
+        print()
+        print("═" * 70)
+        print(f"  CHARACTER: {char_name}   ({type_label})")
+        print("═" * 70)
+        print()
+        print("  ┌─ WHAT IS HAPPENING ──────────────────────────────────────────┐")
+        print(f"  │ We are generating a 2D character image in 2 stages.          │")
+        print(f"  │ Type: {type_label:<55}│")
+        print("  └──────────────────────────────────────────────────────────────┘")
+
+        # ── Step 1: Check if a Flux concept image exists ──────────────────────
+        print()
+        print("  [STEP 1/5] Checking MongoDB for a Flux concept image...")
+        print("  → Flux is a high-quality AI (like DALL-E 3) that creates the")
+        print("    initial concept art. If it exists, SD1.5 uses it as a base.")
+
         flux_img = None
         biome_doc  = db.biomes.find_one({"_id": BIOME_ID})
         char_doc   = (biome_doc or {}).get("possible_structures", {}).get("characters", {}).get(char_name, {})
         flux_key   = (char_doc.get("flux_concept") or {}).get("image_key") or char_doc.get("images", {}).get("flux_concept")
 
         if flux_key:
-            print(f"  [Flux] Downloading concept: {flux_key}")
+            print(f"  ✓ Found Flux concept in S3: {flux_key}")
+            print("  → Downloading it to use as the starting image...")
             flux_img = download_s3_img(s3, flux_key)
-            print(f"  [Flux] Loaded {flux_img.size}")
+            print(f"  ✓ Downloaded. Size: {flux_img.size[0]}×{flux_img.size[1]} px")
         else:
-            print(f"  [WARN] No Flux concept in MongoDB — Stage 1 will fallback to txt2img+CN")
+            print("  ⚠ No Flux concept found.")
+            print("  → Will use txt2img fallback (generate from scratch with OpenPose).")
 
-        # ── Stage 1: pose correction ──────────────────────────────────────────
+        # ── Stage 1: Pose correction ──────────────────────────────────────────
+        print()
+        print("  [STEP 2/5] STAGE 1 — Pose Correction")
+        print("  ┌──────────────────────────────────────────────────────────────┐")
+        if is_quad:
+            print("  │ QUADRUPED MODE:                                              │")
+            print("  │  • Uses CANNY ControlNet only                                │")
+            print("  │  • Canny = edge detection map (like a pencil outline)        │")
+            print("  │  • Tells AI: keep this silhouette, 4 legs on ground          │")
+            print("  │  • Denoise=0.20 → AI only changes 20% of the image           │")
+            print("  │    (very light touch, preserves Flux's design)               │")
+        else:
+            print("  │ HUMANOID (BIPEDAL) MODE:                                     │")
+            print("  │  • Uses OPENPOSE + CANNY ControlNet (dual)                   │")
+            print("  │  • OpenPose = skeleton map (shows where joints should be)    │")
+            print("  │  • Canny = edge outline from the Flux image                  │")
+            print("  │  • Together they LOCK the T-pose (arms out, legs straight)   │")
+            print("  │  • Denoise=0.20 → AI only changes 20% of the image           │")
+            print("  │    (very light touch, preserves Flux's design)               │")
+        print("  └──────────────────────────────────────────────────────────────┘")
+        print(f"  Prompt: {char['stage1_prompt'][:80]}...")
+
         s1_pos = char["stage1_prompt"]
         s1_neg = char["stage1_negative"]
-        print(f"  [Stage 1] prompt: {s1_pos}")
-        print(f"  [Stage 1] denoise={STAGE1_STRENGTH}  CFG={STAGE1_CFG}")
-
         mongo_update(db, char_name, {"status": "generating", "stage1.status": "generating"})
         t0 = time.time()
+        print()
+        print("  ⏳ Running Stage 1 AI inference... (this takes ~30-60 seconds)")
 
         if flux_img is not None:
             init_img  = flux_img.resize((IMG_SIZE, IMG_SIZE))
             canny_img = extract_canny(flux_img)
 
             if is_quad:
-                # Canny-only — Flux already captured correct standing pose
-                print(f"  [Stage 1] Quad: Canny-only  CN={STAGE1_CN_CANNY_QUAD}")
                 with torch.no_grad():
                     result = pipe_quad_i2i(
                         prompt=s1_pos, negative_prompt=s1_neg,
@@ -228,8 +560,6 @@ def main():
                         width=IMG_SIZE, height=IMG_SIZE,
                     )
             else:
-                # OpenPose + Canny dual
-                print(f"  [Stage 1] Bipedal: OpenPose={STAGE1_CN_OPENPOSE} + Canny={STAGE1_CN_CANNY}")
                 with torch.no_grad():
                     result = pipe_biped_i2i(
                         prompt=s1_pos, negative_prompt=s1_neg,
@@ -240,9 +570,6 @@ def main():
                         width=IMG_SIZE, height=IMG_SIZE,
                     )
         else:
-            # Fallback: txt2img + OpenPose only
-            print(f"  [Stage 1] Fallback txt2img + OpenPose  CN=0.85")
-            pipe_cn.controlnet = cn_openpose
             with torch.no_grad():
                 result = pipe_cn(
                     prompt=s1_pos, negative_prompt=s1_neg,
@@ -252,18 +579,39 @@ def main():
                     width=IMG_SIZE, height=IMG_SIZE,
                 )
 
+        stage1_time = time.time() - t0
         base_img = result.images[0]
         base_key = f"images/{BIOME_ID}/{char_name}_base_v2.png"
+
+        # ── Step 3: Upload Stage 1 to S3 ──────────────────────────────────────
+        print(f"  ✓ Stage 1 done in {stage1_time:.1f}s")
+        print()
+        print("  [STEP 3/5] Uploading Stage 1 image to S3 (cloud storage)...")
+        print("  → S3 is like Google Drive for the project. All images live there.")
         base_url = upload(s3, base_img, base_key)
-        print(f"  [Stage 1] {time.time()-t0:.1f}s  → {base_url}")
+        print(f"  ✓ Uploaded! Public URL:")
+        print(f"    {base_url}")
         mongo_update(db, char_name, {"stage1.status": "complete", "stage1.image_key": base_key,
                                       "stage1.image_url": base_url, "images.base": base_key})
         torch.cuda.empty_cache()
 
-        # ── Stage 2: detail pass ──────────────────────────────────────────────
+        # ── Stage 2: Detail pass ──────────────────────────────────────────────
+        print()
+        print("  [STEP 4/5] STAGE 2 — Detail Pass")
+        print("  ┌──────────────────────────────────────────────────────────────┐")
+        print("  │ • Takes the Stage 1 image as input                           │")
+        print("  │ • NO ControlNet this time — AI has full creative freedom      │")
+        print("  │ • Denoise=0.35 → changes 35% of the image                    │")
+        print("  │ • Adds: clothing details, textures, colors, materials         │")
+        print("  │ • The Stage 2 prompt has ALL the visual identity info         │")
+        print("  │ • Result: polished, detailed, game-ready character            │")
+        print("  └──────────────────────────────────────────────────────────────┘")
+        print(f"  Prompt (first 100 chars): {char['stage2_prompt'][:100]}...")
+        print()
+        print("  ⏳ Running Stage 2 AI inference... (this takes ~30-60 seconds)")
+
         s2_pos = char["stage2_prompt"]
         s2_neg = char["stage2_negative"]
-        print(f"  [Stage 2] denoise={STAGE2_STRENGTH}  CFG={STAGE2_CFG}")
         t0 = time.time()
         mongo_update(db, char_name, {"stage2.status": "generating"})
 
@@ -274,10 +622,19 @@ def main():
                 strength=STAGE2_STRENGTH, num_inference_steps=STAGE2_STEPS,
                 guidance_scale=STAGE2_CFG,
             )
+
+        stage2_time = time.time() - t0
         refined_img = result.images[0]
         refined_key = f"images/{BIOME_ID}/{char_name}_refined_v2.png"
+
+        # ── Step 5: Upload Stage 2 to S3 ──────────────────────────────────────
+        print(f"  ✓ Stage 2 done in {stage2_time:.1f}s")
+        print()
+        print("  [STEP 5/5] Uploading final image to S3...")
         refined_url = upload(s3, refined_img, refined_key)
-        print(f"  [Stage 2] {time.time()-t0:.1f}s  → {refined_url}")
+        print(f"  ✓ Uploaded! Final character URL:")
+        print(f"    {refined_url}")
+
         mongo_update(db, char_name, {
             "generation_stage": "image_complete",
             "status":           "image_complete",
@@ -291,7 +648,12 @@ def main():
         torch.cuda.empty_cache()
 
         results[char_name] = {"base": base_url, "refined": refined_url}
-        print(f"  [OK] {char_name} complete.\n")
+
+        print()
+        print(f"  ✅ {char_name} COMPLETE!")
+        print(f"     Stage 1 (pose only): {base_url}")
+        print(f"     Stage 2 (final):     {refined_url}")
+        print(f"     Total time: {stage1_time + stage2_time:.0f}s")
 
     # ── Summary ───────────────────────────────────────────────────────────────
     print("=" * 70)
