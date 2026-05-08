@@ -90,83 +90,110 @@ def stage_info(sid, stage):
 
 # ── Pipeline driver ──────────────────────────────────────────────────────────
 
+def is_done(sid, stage):
+    return stage_info(sid, stage).get("status") == "done"
+
+
 def run_pipeline(char, prompt_set, category):
-    """Walk the full Generation Studio flow for one character."""
+    """Walk the full Generation Studio flow for one character.
+    Skips any stage that's already 'done' in MongoDB (resumable)."""
     print()
     print("═" * 70)
     print(f"  CHARACTER: {char}  (category={category})")
     print("═" * 70)
 
-    # ─── Stage: Create asset (UI: New Asset → Create) ─────────────────────────
-    log("▶ Create asset (UI: New Asset → Create)")
-    create_session(_db(), char, "v1")
+    # ─── Stage: Create / find session (UI: New Asset → Create) ────────────────
+    log("▶ Find or create asset (UI: New Asset → Create)")
+    create_session(_db(), char, "v1")           # idempotent — returns existing
     sid, info = _get_or_create_session(char, "v1")
     if not sid:
-        log(f"❌ failed to create session: {info}")
+        log(f"❌ failed to find/create session: {info}")
         return False
     log(f"   session_id = {sid}", indent=2)
 
     p = PRESETS[prompt_set]
 
-    # ─── Stage 0: Flux (UI: Stage 0 → Queue Flux) ─────────────────────────────
-    log("▶ Stage 0 — Queue Flux")
-    task_id, status = _queue_flux(
-        sid, p["flux"], NEG_FLUX,
-        width=768, height=1024, steps=4, guidance=0.0,
-    )
-    log(f"   queued: {status}", indent=2)
-    s, url = wait_for(sid, "flux", timeout=300, label="Stage 0 Flux")
+    # Timeouts: first-load of Flux/SD/TRELLIS models on cold L4 takes minutes.
+    T_FLUX     = 900
+    T_SD       = 900
+    T_MV       = 900
+    T_TRELLIS  = 1500
+
+    # ─── Stage 0: Flux ────────────────────────────────────────────────────────
+    if is_done(sid, "flux"):
+        log("▶ Stage 0 — Flux already done, skipping queue")
+    else:
+        log("▶ Stage 0 — Queue Flux")
+        _, status = _queue_flux(sid, p["flux"], NEG_FLUX,
+                                width=768, height=1024, steps=4, guidance=0.0)
+        log(f"   queued: {status}", indent=2)
+    s, _ = wait_for(sid, "flux", timeout=T_FLUX, label="Stage 0 Flux")
     if s != "done":
-        log("❌ Flux failed — aborting pipeline")
+        log("❌ Flux not done — aborting pipeline")
         return False
 
-    # ─── Stage 1: Normalize (UI: Stage 1 → Run Normalize) ─────────────────────
-    log("▶ Stage 1 — Run Normalize (CPU)")
-    norm_status, norm_url, norm_info = _run_normalize_cpu(sid, 512, 512, "flux")
-    log(f"   normalize: {norm_status}  url={norm_url[:80] if norm_url else '(none)'}", indent=2)
-    log(f"   info: {norm_info[:120]}", indent=2)
-    if norm_status != "done":
-        log("❌ Normalize failed — aborting")
-        return False
+    # ─── Stage 1: Normalize ───────────────────────────────────────────────────
+    if is_done(sid, "normalize"):
+        log("▶ Stage 1 — Normalize already done, skipping")
+    else:
+        log("▶ Stage 1 — Run Normalize (CPU)")
+        n_status, n_url, n_info = _run_normalize_cpu(sid, 512, 512, "flux")
+        log(f"   normalize: {n_status}  url={n_url[:80] if n_url else '(none)'}", indent=2)
+        log(f"   info: {n_info[:120]}", indent=2)
+        if n_status != "done":
+            log("❌ Normalize failed — aborting")
+            return False
 
-    # ─── Stage 2: SD1 (UI: Stage 2 → Queue SD Stage 1) ────────────────────────
-    log(f"▶ Stage 2 — Queue SD1 (category={category})")
-    sd1_params = {
-        "denoise": 0.20, "cfg": 5.5, "steps": 20,
-        "openpose_weight": 0.85, "canny_weight": 0.55,
-        "category": category,
-    }
-    task_id, status = _queue_sd(sid, "sd_stage1", p["sd1"], NEG_SD1, sd1_params,
-                                input_source="normalize")
-    log(f"   queued: {status}", indent=2)
-    s, url = wait_for(sid, "sd_stage1", timeout=600, label="Stage 2 SD1")
+    # ─── Stage 2: SD1 ─────────────────────────────────────────────────────────
+    if is_done(sid, "sd_stage1"):
+        log("▶ Stage 2 — SD1 already done, skipping queue")
+    else:
+        log(f"▶ Stage 2 — Queue SD1 (category={category})")
+        sd1_params = {"denoise": 0.20, "cfg": 5.5, "steps": 20,
+                      "openpose_weight": 0.85, "canny_weight": 0.55,
+                      "category": category}
+        _, status = _queue_sd(sid, "sd_stage1", p["sd1"], NEG_SD1, sd1_params,
+                              input_source="normalize")
+        log(f"   queued: {status}", indent=2)
+    s, _ = wait_for(sid, "sd_stage1", timeout=T_SD, label="Stage 2 SD1")
     if s != "done":
-        log("⚠️ SD1 failed — continuing to test other stages")
+        log("⚠️ SD1 not done — continuing to test other stages")
 
-    # ─── Stage 3: SD2 (UI: Stage 3 → Queue SD Stage 2) ────────────────────────
-    log("▶ Stage 3 — Queue SD2")
-    sd2_params = {"denoise": 0.35, "cfg": 7.0, "steps": 20}
-    task_id, status = _queue_sd(sid, "sd_stage2", p["sd2"], NEG_SD2, sd2_params,
-                                input_source="sd_stage1")
-    log(f"   queued: {status}", indent=2)
-    s, url = wait_for(sid, "sd_stage2", timeout=600, label="Stage 3 SD2")
+    # ─── Stage 3: SD2 ─────────────────────────────────────────────────────────
+    if is_done(sid, "sd_stage2"):
+        log("▶ Stage 3 — SD2 already done, skipping queue")
+    else:
+        log("▶ Stage 3 — Queue SD2")
+        sd2_params = {"denoise": 0.35, "cfg": 7.0, "steps": 20}
+        _, status = _queue_sd(sid, "sd_stage2", p["sd2"], NEG_SD2, sd2_params,
+                              input_source="sd_stage1")
+        log(f"   queued: {status}", indent=2)
+    s, _ = wait_for(sid, "sd_stage2", timeout=T_SD, label="Stage 3 SD2")
     if s != "done":
-        log("⚠️ SD2 failed — continuing")
+        log("⚠️ SD2 not done — continuing")
 
     # ─── Stage 4: Multi-view side + back ──────────────────────────────────────
-    log("▶ Stage 4 — Queue Multi-view (side + back)")
-    _queue_multiview(sid, "side", p["mv_side"], "", 0.45, 7.0, "flux")
-    _queue_multiview(sid, "back", p["mv_back"], "", 0.45, 7.0, "flux")
-    s_side, _ = wait_for(sid, "multiview_side", timeout=600, label="Stage 4 side")
-    s_back, _ = wait_for(sid, "multiview_back", timeout=600, label="Stage 4 back")
+    if is_done(sid, "multiview_side") and is_done(sid, "multiview_back"):
+        log("▶ Stage 4 — Multi-view already done, skipping")
+    else:
+        log("▶ Stage 4 — Queue Multi-view (side + back)")
+        if not is_done(sid, "multiview_side"):
+            _queue_multiview(sid, "side", p["mv_side"], "", 0.45, 7.0, "flux")
+        if not is_done(sid, "multiview_back"):
+            _queue_multiview(sid, "back", p["mv_back"], "", 0.45, 7.0, "flux")
+    s_side, _ = wait_for(sid, "multiview_side", timeout=T_MV, label="Stage 4 side")
+    s_back, _ = wait_for(sid, "multiview_back", timeout=T_MV, label="Stage 4 back")
     if s_side != "done" or s_back != "done":
         log("⚠️ Multi-view incomplete — continuing")
 
     # ─── Stage 5: TRELLIS ─────────────────────────────────────────────────────
-    log("▶ Stage 5 — Queue TRELLIS")
-    task_id, status = _queue_trellis(sid, "sd_stage2", "multiview_side", "multiview_back")
-    log(f"   queued: {status}", indent=2)
-    s, url = wait_for(sid, "trellis", timeout=1200, label="Stage 5 TRELLIS")
+    if is_done(sid, "trellis"):
+        log("▶ Stage 5 — TRELLIS already done, skipping queue")
+    else:
+        log("▶ Stage 5 — Queue TRELLIS")
+        _, status = _queue_trellis(sid, "sd_stage2", "multiview_side", "multiview_back")
+        log(f"   queued: {status}", indent=2)
+    s, _ = wait_for(sid, "trellis", timeout=T_TRELLIS, label="Stage 5 TRELLIS")
 
     # ─── Final report ─────────────────────────────────────────────────────────
     print()
