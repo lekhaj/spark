@@ -55,8 +55,8 @@ STAGE1_CN_CANNY_QUAD = 0.70 # quad: Canny-only (no skeleton)
 
 # Stage 2 — detail pass
 STAGE2_STEPS    = 20
-STAGE2_CFG      = 7.0
-STAGE2_STRENGTH = 0.28  # lowered from 0.35 — preserves pose better, cleaner geometry
+STAGE2_CFG      = 6.5
+STAGE2_STRENGTH = 0.22
 
 # ── Characters ────────────────────────────────────────────────────────────────
 # Style direction: semi-realistic fantasy, rich PBR textures, stylized realism.
@@ -81,19 +81,17 @@ CHARACTERS = {
             "sitting, crouching, dynamic pose"
         ),
         "stage2_prompt": (
-            "full body T-pose, symmetrical front view, centered character, "
-            "realistic female elf ranger, athletic build, realistic face, "
-            "silver braided hair, pointed ears, white steel and muted emerald armor, "
-            "segmented armor plates, clean hard-surface shapes, clear limb separation, "
-            "readable silhouette, grounded fantasy RPG style, painterly realism, "
-            "practical medieval armor, muted colors, soft studio lighting, "
-            "neutral background, game-ready 3D character"
+            "full body female elf ranger, front-facing T-pose, realistic proportions, "
+            "athletic build, natural face, silver braided hair, pointed ears, "
+            "white and emerald leather armor, layered fabric and metal details, "
+            "grounded fantasy RPG style, restrained fantasy design, "
+            "painterly realism, soft cinematic lighting, clean silhouette, neutral background"
         ),
         "stage2_negative": (
-            "anime, chibi, doll face, oversized eyes, exaggerated fantasy, giant wings, "
-            "floating accessories, overlapping geometry, fused limbs, dynamic pose, "
-            "asymmetry, blurry textures, messy silhouette, deformed hands, extra limbs, "
-            "painterly blur, sci-fi, background scenery"
+            "anime, chibi, sci-fi, halo, floating objects, giant wings, robotic armor, "
+            "doll face, oversized eyes, distorted mouth, extra accessories, "
+            "overdesigned costume, glossy skin, cel shading, blurry textures, "
+            "deformed anatomy, cluttered silhouette"
         ),
     },
 
@@ -108,19 +106,17 @@ CHARACTERS = {
             "sitting, crouching, dynamic pose"
         ),
         "stage2_prompt": (
-            "full body T-pose, symmetrical front view, centered character, "
-            "realistic male dwarf knight, stocky muscular build, realistic face, "
-            "thick brown braided beard, aged silver plate armor, ornate engraved chest piece, "
-            "red fabric underlayer, round shield, battle-worn scratched metal, "
-            "readable silhouette, grounded fantasy RPG style, painterly realism, "
-            "practical medieval armor, muted colors, soft studio lighting, "
-            "neutral background, game-ready 3D character"
+            "best quality, masterpiece, semi-realistic, stylized realism, 3D game character, "
+            "male dwarf knight, stocky muscular build, full heavy plate armor, "
+            "aged silver steel plates, ornate engraved chest piece, red fabric underlayer, "
+            "thick brown beard braided with iron rings, stern determined expression, "
+            "round shield on arm, battle-worn armor with scratches and dents, "
+            "front view, white background, clean game asset, PBR materials, rich colors"
         ),
         "stage2_negative": (
-            "anime, chibi, doll face, oversized eyes, exaggerated fantasy, giant wings, "
-            "floating accessories, overlapping geometry, fused limbs, dynamic pose, "
-            "asymmetry, blurry textures, messy silhouette, deformed hands, extra limbs, "
-            "painterly blur, sci-fi, background scenery, tall, slender"
+            "anime, cartoon, cel shading, 2D illustration, manga, flat art, sketch, "
+            "background, blurry, extra limbs, text, watermark, deformed, ugly, nsfw, "
+            "modern clothes, sci-fi, tall, slender"
         ),
     },
 
@@ -135,19 +131,17 @@ CHARACTERS = {
             "sitting, crouching, dynamic pose"
         ),
         "stage2_prompt": (
-            "full body T-pose, symmetrical front view, centered character, "
-            "realistic male human battlemage, athletic build, realistic face, "
-            "dark short hair, amber glowing eyes, deep indigo robes over chainmail, "
-            "gold arcane rune embroidery, leather armored shoulders, arcane staff, "
-            "readable silhouette, grounded fantasy RPG style, painterly realism, "
-            "practical medieval mage attire, muted colors, soft studio lighting, "
-            "neutral background, game-ready 3D character"
+            "best quality, masterpiece, semi-realistic, stylized realism, 3D game character, "
+            "male human battlemage, athletic build, layered robes over chainmail, "
+            "deep indigo and gold robes, arcane runic symbols embroidered on fabric, "
+            "leather armored shoulders, dark short hair, amber glowing eyes, "
+            "arcane staff in hand, jeweled ring on finger, high fantasy mage, "
+            "front view, white background, clean game asset, PBR materials, rich colors"
         ),
         "stage2_negative": (
-            "anime, chibi, doll face, oversized eyes, exaggerated fantasy, giant wings, "
-            "floating accessories, overlapping geometry, fused limbs, dynamic pose, "
-            "asymmetry, blurry textures, messy silhouette, deformed hands, extra limbs, "
-            "painterly blur, sci-fi, background scenery"
+            "anime, cartoon, cel shading, 2D illustration, manga, flat art, sketch, "
+            "background, blurry, extra limbs, text, watermark, deformed, ugly, nsfw, "
+            "modern clothes, sci-fi"
         ),
     },
 
@@ -162,19 +156,17 @@ CHARACTERS = {
             "sitting, crouching, dynamic pose"
         ),
         "stage2_prompt": (
-            "full body T-pose, symmetrical front view, centered character, "
-            "realistic male orc berserker, massive muscular build, realistic face, "
-            "dark green skin, prominent tusks, tribal bone armor, iron pauldrons, "
-            "war paint on face and arms, fur loincloth, spiked bracers, "
-            "readable silhouette, grounded fantasy RPG style, painterly realism, "
-            "savage warrior aesthetic, muted colors, soft studio lighting, "
-            "neutral background, game-ready 3D character"
+            "best quality, masterpiece, semi-realistic, stylized realism, 3D game character, "
+            "male orc berserker, massive muscular build, dark green skin, tribal bone armor, "
+            "iron pauldrons, fur loincloth, war paint on face and arms, "
+            "tusks, red eyes, fierce snarling expression, scars on chest, "
+            "heavy axe, spiked bracers, savage warrior, "
+            "front view, white background, clean game asset, PBR materials, rich colors"
         ),
         "stage2_negative": (
-            "anime, chibi, doll face, oversized eyes, exaggerated fantasy, giant wings, "
-            "floating accessories, overlapping geometry, fused limbs, dynamic pose, "
-            "asymmetry, blurry textures, messy silhouette, deformed hands, extra limbs, "
-            "painterly blur, sci-fi, background scenery, human skin, slender build"
+            "anime, cartoon, cel shading, 2D illustration, manga, flat art, sketch, "
+            "background, blurry, extra limbs, text, watermark, deformed, ugly, nsfw, "
+            "human skin, slender build, sci-fi"
         ),
     },
 
@@ -189,19 +181,17 @@ CHARACTERS = {
             "sitting, crouching, dynamic pose"
         ),
         "stage2_prompt": (
-            "full body T-pose, symmetrical front view, centered character, "
-            "realistic undead knight, skeletal decayed face, glowing purple eyes, "
-            "cracked dark plate armor, rusted black iron pauldrons, tattered black cape, "
-            "exposed bone hands gripping longsword, subtle necrotic green glow at joints, "
-            "readable silhouette, grounded dark fantasy RPG style, painterly realism, "
-            "eerie regal posture, muted colors, soft studio lighting, "
-            "neutral background, game-ready 3D character"
+            "best quality, masterpiece, semi-realistic, stylized realism, 3D game character, "
+            "undead knight, skeletal face with decayed skin, cracked dark plate armor, "
+            "rusted black iron pauldrons, tattered black cape, glowing purple eyes in skull, "
+            "exposed bone hands gripping longsword, green necrotic energy faintly glowing at joints, "
+            "dark fantasy undead warrior, eerie regal posture, "
+            "front view, white background, clean game asset, PBR materials, rich colors"
         ),
         "stage2_negative": (
-            "anime, chibi, doll face, oversized eyes, exaggerated fantasy, giant wings, "
-            "floating accessories, overlapping geometry, fused limbs, dynamic pose, "
-            "asymmetry, blurry textures, messy silhouette, deformed hands, extra limbs, "
-            "painterly blur, sci-fi, background scenery, living human"
+            "anime, cartoon, cel shading, 2D illustration, manga, flat art, sketch, "
+            "background, blurry, extra limbs, text, watermark, ugly mess, nsfw, "
+            "living human, sci-fi, modern"
         ),
     },
 
