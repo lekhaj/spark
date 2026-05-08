@@ -73,24 +73,23 @@ CHARACTERS = {
     "elven_ranger": {
         "creature_category": "bipedal",
         "stage1_prompt": (
-            "full body mature woman, front-facing T-pose, arms extended, legs straight, "
-            "realistic face, loose wavy red hair, blue off-shoulder blouse, "
-            "brown leather corset, dark pants, centered, plain background"
+            "full body woman, front-facing T-pose, arms extended, legs straight, "
+            "realistic face, red hair, heavy medieval plate armor, large pauldrons, "
+            "dark green underlayer, gold trim, centered, plain background"
         ),
         "stage1_negative": (
-            "anime, cartoon, 3d render, stylized, doll face, oversized hair, giant braids, "
-            "cropped body, half body, deformed, messy, extra limbs"
+            "anime, cartoon, doll, weapon, holding object, bow, dynamic pose, "
+            "cropped body, half body, asymmetrical pose, extra limbs"
         ),
         "stage2_prompt": (
-            "full body mature female adventurer, front-facing T-pose, realistic face, confident expression, "
-            "loose wavy auburn red hair, blue off-shoulder peasant blouse with red trim, "
-            "brown leather bodice corset, dark leather trousers, utility belt, knee-high boots, "
-            "grounded dark fantasy CRPG art style, highly detailed photorealistic textures, plain background"
+            "full body mature female adventurer, front-facing T-pose, realistic face, fierce expression, "
+            "red auburn hair, heavy plate armor, dark green fabric underlayer, dark grey metal breastplate, "
+            "prominent gold trim, large ornate shoulder pauldrons, thick green trousers, heavy metal knee boots, "
+            "muscular athletic build, grounded CRPG dark fantasy game art, highly detailed PBR textures, plain background"
         ),
         "stage2_negative": (
-            "anime, cartoon, stylized 3d render, doll, child, oversized hair, giant braids, "
-            "exaggerated proportions, glossy plastic skin, modern clothes, cropped body, "
-            "half body, amputated, deformed face"
+            "anime, cartoon, stylized 3d render, doll, child, oversized hair, holding weapon, bow, "
+            "cropped body, amputated, exaggerated proportions, sci-fi, modern, giant braids, background elements"
         ),
     },
 
