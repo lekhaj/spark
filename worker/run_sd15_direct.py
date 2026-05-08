@@ -73,22 +73,24 @@ CHARACTERS = {
     "elven_ranger": {
         "creature_category": "bipedal",
         "stage1_prompt": (
-            "wide angle, full body from head to toe, feet visible, standing, T-pose, female, "
-            "tight clothing, pants, tight braided hair, centered, plain white background"
+            "full body mature woman, front-facing T-pose, arms extended, legs straight, "
+            "realistic face, loose wavy red hair, blue off-shoulder blouse, "
+            "brown leather corset, dark pants, centered, plain background"
         ),
         "stage1_negative": (
-            "cropped, out of frame, close up, half body, massive hair, flowing hair, capes, skirts, loose fabric, dynamic pose"
+            "anime, cartoon, 3d render, stylized, doll face, oversized hair, giant braids, "
+            "cropped body, half body, deformed, messy, extra limbs"
         ),
         "stage2_prompt": (
-            "masterpiece, 3D RPG game character asset, stylized realism, female elf ranger. "
-            "wide angle, full body from head to toe, feet visible in frame, T-pose, front view. "
-            "beautiful symmetrical face, intense gaze, tight braided auburn hair, pointed ears. "
-            "form-fitting green and brown leather armor, tight pants, knee-high boots, bracers. "
-            "detailed PBR textures, soft studio lighting, plain white background"
+            "full body mature female adventurer, front-facing T-pose, realistic face, confident expression, "
+            "loose wavy auburn red hair, blue off-shoulder peasant blouse with red trim, "
+            "brown leather bodice corset, dark leather trousers, utility belt, knee-high boots, "
+            "grounded dark fantasy CRPG art style, highly detailed photorealistic textures, plain background"
         ),
         "stage2_negative": (
-            "cropped, cut off limbs, out of frame, close up, massive hair, flowing hair, capes, skirts, loose fabric, "
-            "distorted face, cross-eyed, anime, cartoon, sketch, messy hair, oversized weapons, cluttered, dark background"
+            "anime, cartoon, stylized 3d render, doll, child, oversized hair, giant braids, "
+            "exaggerated proportions, glossy plastic skin, modern clothes, cropped body, "
+            "half body, amputated, deformed face"
         ),
     },
 
