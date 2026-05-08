@@ -81,17 +81,26 @@ CHARACTERS = {
             "sitting, crouching, dynamic pose"
         ),
         "stage2_prompt": (
-            "best quality, masterpiece, semi-realistic, stylized realism, 3D game character, "
-            "female elf ranger, slender athletic build, pointed ears, emerald green leather armor, "
-            "gold trim pauldrons, brown buckled belt, thigh-high dark boots, "
-            "long silver braided hair, sharp green eyes, calm focused expression, "
-            "quiver on back, leather bracers, fantasy high quality, "
-            "front view, white background, clean game asset, PBR materials, rich colors"
+            "masterpiece, high quality, semi-realistic fantasy RPG character, "
+            "full body T-pose, centered symmetrical front view, female elf ranger, "
+            "realistic facial proportions, sharp cheekbones, focused expression, "
+            "silver braided hair, pointed elf ears, athletic slender build, "
+            "practical fantasy armor, white steel and muted emerald leather armor, "
+            "layered realistic materials, engraved metal details, separated armor plates, "
+            "grounded medieval fantasy design, believable construction, realistic fabric folds, "
+            "clear limb separation, readable silhouette, controlled detail density, "
+            "painterly realistic rendering, soft cinematic studio lighting, "
+            "muted natural colors, subtle weathering, game-ready character sheet, "
+            "clean topology readability, neutral light background, highly detailed but uncluttered"
         ),
         "stage2_negative": (
-            "anime, cartoon, cel shading, 2D illustration, manga, flat art, sketch, "
-            "background, blurry, extra limbs, text, watermark, deformed, ugly, nsfw, "
-            "modern clothes, sci-fi"
+            "anime, cartoon, chibi, doll face, oversized eyes, glossy skin, "
+            "mobile game style, exaggerated fantasy, overdesigned armor, huge accessories, "
+            "giant wings, excessive cloth strips, floating parts, merged geometry, "
+            "noisy details, glowing overload, cel shading, stylized proportions, "
+            "unrealistic anatomy, deformed hands, fused limbs, dynamic pose, "
+            "asymmetry, blurry textures, painterly blur, messy silhouette, "
+            "background scenery, dramatic pose, sci-fi elements, low detail materials, plastic appearance"
         ),
     },
 
