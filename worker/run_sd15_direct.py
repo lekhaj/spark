@@ -74,25 +74,23 @@ CHARACTERS = {
         "creature_category": "bipedal",
         "stage1_prompt": (
             "full body human female, front-facing T-pose, arms extended horizontally, "
-            "legs straight, realistic anatomy, natural face, grounded fantasy clothing, "
-            "fitted leather tunic, fabric sleeves, utility belt, centered, plain light background"
+            "legs straight, realistic anatomy, natural face, eyes looking forward, "
+            "long auburn hair, grounded fantasy clothing, leather tunic, centered, plain background"
         ),
         "stage1_negative": (
-            "anime, doll face, distorted face, broken mouth, extra limbs, deformed hands, "
-            "robotic armor, sci-fi suit, giant ornaments, floating objects, magic circle, "
-            "symmetrical patterns, blurry anatomy, dynamic pose, cropped body"
+            "anime, distorted face, crossed eyes, open mouth, blurry face, messy hair, "
+            "extra limbs, robotic armor, magic circle, floating objects, dynamic pose, cropped body"
         ),
         "stage2_prompt": (
-            "full body female elf ranger, front-facing T-pose, realistic face, athletic build, "
-            "auburn braided hair, pointed ears, layered leather and fabric armor, "
-            "grounded medieval fantasy clothing, practical belts and pouches, "
-            "muted blue and brown colors, painterly RPG realism, believable materials, "
-            "restrained fantasy design, soft natural lighting, plain light background"
+            "full body female elf ranger, front-facing T-pose, calm expression, "
+            "symmetrical face, aligned eyes, realistic facial features, long wavy auburn hair, "
+            "pointed ears, layered leather armor, brown belts and boots, "
+            "grounded medieval fantasy, painterly RPG realism, soft studio lighting, plain background"
         ),
         "stage2_negative": (
-            "anime, chibi, sci-fi armor, halo, magic circle, floating ornaments, robotic design, "
-            "oversized eyes, glossy plastic skin, giant accessories, overdesigned fantasy, "
-            "symmetrical decorations, blurry textures, cluttered silhouette, cinematic fantasy overload"
+            "anime, cross-eyed, distorted face, open mouth, asymmetrical face, "
+            "floating hair, halo, magic circle, giant ornaments, sci-fi armor, "
+            "blurry textures, overdesigned fantasy, cartoon, sketch"
         ),
     },
 
