@@ -74,23 +74,26 @@ CHARACTERS = {
         "creature_category": "bipedal",
         "stage1_prompt": (
             "full body human female, front-facing T-pose, arms extended horizontally, "
-            "legs straight, realistic anatomy, natural face, eyes looking forward, "
-            "long auburn hair, grounded fantasy clothing, leather tunic, centered, plain background"
+            "legs straight, realistic proportions, natural face, closed mouth, "
+            "eyes looking forward, centered eyes, long auburn hair, grounded fantasy clothing, "
+            "leather tunic, centered, plain light background"
         ),
         "stage1_negative": (
-            "anime, distorted face, crossed eyes, open mouth, blurry face, messy hair, "
-            "extra limbs, robotic armor, magic circle, floating objects, dynamic pose, cropped body"
+            "anime, distorted face, crossed eyes, lazy eye, open mouth, asymmetrical eyes, "
+            "blurry face, messy hair, floating hair, extra limbs, robotic armor, "
+            "magic circle, floating objects, dynamic pose, cropped body"
         ),
         "stage2_prompt": (
-            "full body female elf ranger, front-facing T-pose, calm expression, "
-            "symmetrical face, aligned eyes, realistic facial features, long wavy auburn hair, "
+            "full body female elf ranger, front-facing T-pose, calm neutral expression, "
+            "closed mouth, symmetrical face, aligned eyes, realistic facial features, "
+            "long wavy auburn hair flowing naturally behind shoulders, clean hair strands, "
             "pointed ears, layered leather armor, brown belts and boots, "
             "grounded medieval fantasy, painterly RPG realism, soft studio lighting, plain background"
         ),
         "stage2_negative": (
-            "anime, cross-eyed, distorted face, open mouth, asymmetrical face, "
-            "floating hair, halo, magic circle, giant ornaments, sci-fi armor, "
-            "blurry textures, overdesigned fantasy, cartoon, sketch"
+            "anime, cross-eyed, lazy eye, distorted mouth, open mouth, asymmetrical face, "
+            "hair covering eyes, messy hair, floating hair, halo, magic circle, "
+            "giant ornaments, sci-fi armor, blurry textures, overdesigned fantasy, cartoon, sketch"
         ),
     },
 
