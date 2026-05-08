@@ -591,15 +591,14 @@ def generation_studio_ui():
         mv_sid_state     = gr.State(None)
         trel_sid_state   = gr.State(None)
 
-        # ── Helper: compact per-stage asset picker ─────────────────────────────
+        # ── Helper: compact per-stage asset picker (auto-loads on change) ──────
         def _picker(initial):
             with gr.Row():
                 c = gr.Dropdown(choices=initial, value=(initial[0] if initial else None),
                                 label='Character', scale=2, allow_custom_value=False)
                 v = gr.Dropdown(choices=['v1'], value='v1', label='Version', scale=1)
-                b = gr.Button('Load ↓', size='sm', scale=0)
-                i = gr.Textbox(label='Session', interactive=False, scale=3, lines=1)
-            return c, v, b, i
+                i = gr.Textbox(label='Session', interactive=False, scale=4, lines=1)
+            return c, v, i
 
         # ══════════════════════════════════════════════════════════════════════
         #  SESSION — pick an existing asset, or create a new one.
@@ -639,7 +638,7 @@ def generation_studio_ui():
         # ══════════════════════════════════════════════════════════════════════
         with gr.Accordion("Stage 0 — Flux Concept (Text → Image)", open=True):
             gr.Markdown("**Asset:**")
-            flux_char, flux_ver, flux_load_btn, flux_sid_info = _picker(_initial_chars)
+            flux_char, flux_ver, flux_sid_info = _picker(_initial_chars)
             gr.Markdown("---")
             flux_prompt = gr.Textbox(
                 label="Prompt", lines=5, interactive=True,
@@ -667,7 +666,7 @@ def generation_studio_ui():
         # ══════════════════════════════════════════════════════════════════════
         with gr.Accordion("Stage 1 — Normalize (CPU, instant)", open=False):
             gr.Markdown("**Asset:**")
-            norm_char, norm_ver, norm_load_btn, norm_sid_info = _picker(_initial_chars)
+            norm_char, norm_ver, norm_sid_info = _picker(_initial_chars)
             gr.Markdown("---")
             gr.Markdown("Runs immediately on CPU. Resizes Flux output to SD-friendly size.")
             with gr.Row():
@@ -687,7 +686,7 @@ def generation_studio_ui():
         # ══════════════════════════════════════════════════════════════════════
         with gr.Accordion("Stage 2 — SD1.5 ControlNet Pose Lock", open=False):
             gr.Markdown("**Asset:**")
-            sd1_char, sd1_ver, sd1_load_btn, sd1_sid_info = _picker(_initial_chars)
+            sd1_char, sd1_ver, sd1_sid_info = _picker(_initial_chars)
             gr.Markdown("---")
             gr.Markdown(
                 "**Very light touch** (denoise 0.20). "
@@ -728,7 +727,7 @@ def generation_studio_ui():
         # ══════════════════════════════════════════════════════════════════════
         with gr.Accordion("Stage 3 — SD1.5 Detail Pass", open=False):
             gr.Markdown("**Asset:**")
-            sd2_char, sd2_ver, sd2_load_btn, sd2_sid_info = _picker(_initial_chars)
+            sd2_char, sd2_ver, sd2_sid_info = _picker(_initial_chars)
             gr.Markdown("---")
             sd2_input_source = gr.Dropdown(
                 choices=["sd_stage1", "flux"], value="sd_stage1", label="Init image from",
@@ -755,7 +754,7 @@ def generation_studio_ui():
         # ══════════════════════════════════════════════════════════════════════
         with gr.Accordion("Stage 4 — Multi-view Generation", open=False):
             gr.Markdown("**Asset:**")
-            mv_char, mv_ver, mv_load_btn, mv_sid_info = _picker(_initial_chars)
+            mv_char, mv_ver, mv_sid_info = _picker(_initial_chars)
             gr.Markdown("---")
             gr.Markdown(
                 "**IMPORTANT**: Use Flux output (not SD) as init for best consistency."
@@ -793,7 +792,7 @@ def generation_studio_ui():
         # ══════════════════════════════════════════════════════════════════════
         with gr.Accordion("Stage 5 — TRELLIS 3D Mesh", open=False):
             gr.Markdown("**Asset:**")
-            trel_char, trel_ver, trel_load_btn, trel_sid_info = _picker(_initial_chars)
+            trel_char, trel_ver, trel_sid_info = _picker(_initial_chars)
             gr.Markdown("---")
             gr.Markdown("Sends front+side+back to TRELLIS worker via `model_tasks` queue.")
             with gr.Row():
@@ -1129,6 +1128,136 @@ def generation_studio_ui():
             [trel_sid_state],
             [trellis_status, trellis_url],
         )
+
+        # ══════════════════════════════════════════════════════════════════════
+        #  PER-STAGE AUTO-LOAD: each stage's char/ver picker independently loads
+        #  that stage's prompts/params/image without affecting other stages.
+        # ══════════════════════════════════════════════════════════════════════
+
+        def _stage_load(char, ver, stage_keys):
+            """Generic per-stage loader. stage_keys is the list of state-dict
+            keys (in output order) to extract from _load_session_state."""
+            sid, info = _get_or_create_session(char, ver)
+            state = _load_session_state(char, ver)
+            return [sid, info] + [state[k] for k in stage_keys]
+
+        # ── Flux per-stage ────────────────────────────────────────────────────
+        _flux_keys = ["flux_prompt", "flux_negative", "flux_width", "flux_height",
+                      "flux_steps", "flux_guidance", "flux_status", "flux_image_url"]
+        _flux_outputs = [flux_sid_state, flux_sid_info,
+                         flux_prompt, flux_negative, flux_width, flux_height,
+                         flux_steps, flux_guidance, flux_status, flux_url, flux_img]
+
+        def _load_flux(char, ver):
+            base = _stage_load(char, ver, _flux_keys)
+            base.append(_url_to_img(base[-1], 400))  # flux_img from flux_image_url
+            return tuple(base)
+
+        def _on_flux_char(char):
+            versions = _list_versions(char) if char else ["v1"]
+            latest = versions[-1] if versions else "v1"
+            return (gr.update(choices=versions, value=latest), *_load_flux(char, latest))
+
+        flux_char.change(_on_flux_char, [flux_char], [flux_ver, *_flux_outputs])
+        flux_ver.change(_load_flux, [flux_char, flux_ver], _flux_outputs)
+
+        # ── Normalize per-stage ───────────────────────────────────────────────
+        _norm_keys = ["norm_w", "norm_h", "norm_status", "norm_image_url"]
+        _norm_outputs = [norm_sid_state, norm_sid_info,
+                         norm_w, norm_h, norm_status, norm_img]
+
+        def _load_norm(char, ver):
+            base = _stage_load(char, ver, _norm_keys)
+            base[-1] = _url_to_img(base[-1], 300)  # replace url with html
+            return tuple(base)
+
+        def _on_norm_char(char):
+            versions = _list_versions(char) if char else ["v1"]
+            latest = versions[-1] if versions else "v1"
+            return (gr.update(choices=versions, value=latest), *_load_norm(char, latest))
+
+        norm_char.change(_on_norm_char, [norm_char], [norm_ver, *_norm_outputs])
+        norm_ver.change(_load_norm, [norm_char, norm_ver], _norm_outputs)
+
+        # ── SD Stage 1 per-stage ──────────────────────────────────────────────
+        _sd1_keys = ["sd1_prompt", "sd1_negative", "sd1_denoise", "sd1_cfg", "sd1_steps",
+                     "sd1_openpose_w", "sd1_canny_w", "sd1_category",
+                     "sd1_status", "sd1_image_url"]
+        _sd1_outputs = [sd1_sid_state, sd1_sid_info,
+                        sd1_prompt, sd1_negative, sd1_denoise, sd1_cfg, sd1_steps,
+                        sd1_openpose_w, sd1_canny_w, sd1_category,
+                        sd1_status, sd1_url, sd1_img]
+
+        def _load_sd1(char, ver):
+            base = _stage_load(char, ver, _sd1_keys)
+            base.append(_url_to_img(base[-1], 350))  # sd1_img
+            return tuple(base)
+
+        def _on_sd1_char(char):
+            versions = _list_versions(char) if char else ["v1"]
+            latest = versions[-1] if versions else "v1"
+            return (gr.update(choices=versions, value=latest), *_load_sd1(char, latest))
+
+        sd1_char.change(_on_sd1_char, [sd1_char], [sd1_ver, *_sd1_outputs])
+        sd1_ver.change(_load_sd1, [sd1_char, sd1_ver], _sd1_outputs)
+
+        # ── SD Stage 2 per-stage ──────────────────────────────────────────────
+        _sd2_keys = ["sd2_prompt", "sd2_negative", "sd2_denoise", "sd2_cfg", "sd2_steps",
+                     "sd2_status", "sd2_image_url"]
+        _sd2_outputs = [sd2_sid_state, sd2_sid_info,
+                        sd2_prompt, sd2_negative, sd2_denoise, sd2_cfg, sd2_steps,
+                        sd2_status, sd2_url, sd2_img]
+
+        def _load_sd2(char, ver):
+            base = _stage_load(char, ver, _sd2_keys)
+            base.append(_url_to_img(base[-1], 350))
+            return tuple(base)
+
+        def _on_sd2_char(char):
+            versions = _list_versions(char) if char else ["v1"]
+            latest = versions[-1] if versions else "v1"
+            return (gr.update(choices=versions, value=latest), *_load_sd2(char, latest))
+
+        sd2_char.change(_on_sd2_char, [sd2_char], [sd2_ver, *_sd2_outputs])
+        sd2_ver.change(_load_sd2, [sd2_char, sd2_ver], _sd2_outputs)
+
+        # ── Multi-view per-stage ──────────────────────────────────────────────
+        _mv_outputs = [mv_sid_state, mv_sid_info,
+                       mv_side_prompt, mv_back_prompt, mv_denoise, mv_cfg,
+                       mv_side_status, mv_side_img, mv_back_status, mv_back_img]
+
+        def _load_mv(char, ver):
+            sid, info = _get_or_create_session(char, ver)
+            state = _load_session_state(char, ver)
+            return (sid, info,
+                    state["mv_side_prompt"], state["mv_back_prompt"],
+                    state["mv_denoise"], state["mv_cfg"],
+                    state["mv_side_status"], _url_to_img(state["mv_side_url"], 300),
+                    state["mv_back_status"], _url_to_img(state["mv_back_url"], 300))
+
+        def _on_mv_char(char):
+            versions = _list_versions(char) if char else ["v1"]
+            latest = versions[-1] if versions else "v1"
+            return (gr.update(choices=versions, value=latest), *_load_mv(char, latest))
+
+        mv_char.change(_on_mv_char, [mv_char], [mv_ver, *_mv_outputs])
+        mv_ver.change(_load_mv, [mv_char, mv_ver], _mv_outputs)
+
+        # ── TRELLIS per-stage ─────────────────────────────────────────────────
+        _trel_outputs = [trel_sid_state, trel_sid_info, trellis_status, trellis_url]
+
+        def _load_trel(char, ver):
+            sid, info = _get_or_create_session(char, ver)
+            state = _load_session_state(char, ver)
+            return (sid, info, state["trellis_status"], state["trellis_url"])
+
+        def _on_trel_char(char):
+            versions = _list_versions(char) if char else ["v1"]
+            latest = versions[-1] if versions else "v1"
+            return (gr.update(choices=versions, value=latest), *_load_trel(char, latest))
+
+        trel_char.change(_on_trel_char, [trel_char], [trel_ver, *_trel_outputs])
+        trel_ver.change(_load_trel, [trel_char, trel_ver], _trel_outputs)
 
         # ── Auto-load session on page open ────────────────────────────────────
         tab.load(_do_load, [char_label, version_dd], _load_outputs)
