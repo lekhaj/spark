@@ -47,10 +47,12 @@ def _resolve_redis():
     if broker:
         from urllib.parse import urlparse
         p = urlparse(broker)
-        return (p.hostname or "localhost"), (p.port or 6379)
-    return os.getenv("REDIS_HOST", "localhost"), int(os.getenv("REDIS_PORT", 6379))
+        return (p.hostname or "localhost"), (p.port or 6379), (p.password or None)
+    return (os.getenv("REDIS_HOST", "localhost"),
+            int(os.getenv("REDIS_PORT", 6379)),
+            os.getenv("REDIS_PASSWORD") or None)
 
-REDIS_HOST, REDIS_PORT = _resolve_redis()
+REDIS_HOST, REDIS_PORT, REDIS_PASSWORD = _resolve_redis()
 S3_BUCKET   = os.getenv("AWS_S3_BUCKET") or os.getenv("S3_BUCKET", "sparkassets-us")
 S3_REGION   = os.getenv("AWS_REGION", "us-east-1")
 S3_BASE_URL = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com"
@@ -82,7 +84,7 @@ def _push_task(payload: dict, queue: str = REDIS_QUEUE_MANUAL,
                check_gpu: bool = True) -> str:
     """Push task to Redis. Fires GPU start check in background if check_gpu=True."""
     import redis
-    r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0, decode_responses=True)
+    r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, db=0, decode_responses=True)
     payload.setdefault("task_id", str(uuid.uuid4()))
     payload.setdefault("timestamp", time.time())
     r.rpush(queue, json.dumps(payload))
