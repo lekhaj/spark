@@ -1,6 +1,11 @@
 # Environment variables and secrets
 env/
 .env
+.env.cpu
+.env.gpu
+.env.bak.*
+.env.cpu.bak.*
+.env.gpu.bak.*
 
 !.env.example
 .aws
