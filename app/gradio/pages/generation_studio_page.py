@@ -298,14 +298,21 @@ def _save_all_prompts(
         return f"ERROR: {exc}"
 
 
-def _queue_flux(session_id, prompt, negative, width, height, steps, guidance) -> tuple:
-    """Queue Flux task. Returns (task_id_or_error, status_msg)."""
-    if not session_id:
-        return "", "No session loaded. Click 'Load Session' first."
+def _queue_flux(session_id, prompt, negative, width, height, steps, guidance,
+                char_label: str = "character", version: str = "v1") -> tuple:
+    """Queue Flux task. Returns (task_id_or_error, status_msg, session_id).
+
+    If session_id is None a new session is auto-created — no 'Load Session' step needed.
+    """
     if not prompt.strip():
-        return "", "Prompt is empty — please enter a prompt."
+        return "", "Prompt is empty — please enter a prompt.", session_id
     try:
         db = _db()
+        # Auto-create session if none loaded — stages are data-driven, not UI-gated.
+        if not session_id:
+            char_label = (char_label or "character").strip() or "character"
+            version    = (version    or "v1").strip()        or "v1"
+            session_id = create_session(db, char_label, version)
         save_stage_prompts(db, session_id, "flux", prompt, negative,
                            {"width": int(width), "height": int(height),
                             "steps": int(steps), "guidance_scale": float(guidance)})
@@ -324,9 +331,9 @@ def _queue_flux(session_id, prompt, negative, width, height, steps, guidance) ->
         }
         task_id = _push_task(payload, check_gpu=True)
         mark_queued(db, session_id, "flux", task_id)
-        return task_id, f"queued ✓  task_id={task_id[:8]}…"
+        return task_id, f"queued ✓  session={session_id[:8]}… task={task_id[:8]}…", session_id
     except Exception as exc:
-        return "", f"ERROR: {exc}"
+        return "", f"ERROR: {exc}", session_id
 
 
 def _run_normalize_cpu(session_id: str, resize_w: int, resize_h: int,
@@ -985,15 +992,17 @@ def generation_studio_ui():
         )
 
         # ── Flux: Queue + Refresh ─────────────────────────────────────────────
-        def _do_queue_flux(sid, prompt, negative, width, height, steps, guidance):
-            _, status = _queue_flux(sid, prompt, negative, width, height, steps, guidance)
-            return status
+        def _do_queue_flux(sid, prompt, negative, width, height, steps, guidance, char, ver):
+            # Returns (task_id, status, new_session_id) — session auto-created if needed.
+            _, status, new_sid = _queue_flux(sid, prompt, negative, width, height, steps,
+                                             guidance, char, ver)
+            return status, new_sid
 
         flux_queue_btn.click(
             _do_queue_flux,
             [flux_sid_state, flux_prompt, flux_negative, flux_width, flux_height,
-             flux_steps, flux_guidance],
-            [flux_status],
+             flux_steps, flux_guidance, flux_char, flux_ver],
+            [flux_status, flux_sid_state],
         )
 
         def _do_refresh_flux(sid):
