@@ -73,29 +73,29 @@ CHARACTERS = {
     "human_ranger": {
         "creature_category": "bipedal",
         "stage1_prompt": (
-            "full body human female, front-facing T-pose, arms extended horizontally, "
-            "legs straight, realistic anatomy, detailed hands, 5 fingers, "
-            "symmetrical face, calm closed mouth, looking forward, "
-            "auburn hair tied back in braid, fitted tunic, leather belt, "
-            "dark pants, tall boots, white background, flat lighting"
+            "full body human female, T-pose, arms extended horizontally, "
+            "legs straight, symmetrical face, closed mouth, five fingers, "
+            "auburn hair tied back, fitted jacket, dark long pants, "
+            "tall boots, white background, flat lighting"
         ),
         "stage1_negative": (
-            "cape, cloak, flowing cloth, floating fabric, skirt, open mouth, "
-            "deformed face, mutated hands, missing fingers, extra limbs, "
-            "loose hair, windswept hair, dynamic pose, cropped body, background"
+            "cape, cloak, flowing cloth, floating fabric, skirt, dress, "
+            "exposed legs, bare legs, open mouth, teeth, windswept hair, "
+            "loose hair, mutated hands, fused fingers, extra limbs, "
+            "dynamic pose, cropped, background"
         ),
         "stage2_prompt": (
-            "full body female ranger, front-facing T-pose, symmetrical face, "
-            "calm expression, closed mouth, aligned eyes, realistic hands, "
-            "auburn hair tied back, short braid, brown leather corset, "
-            "blue fitted tunic, dark fitted pants, utility belt with pouches, "
-            "knee-high leather boots, game character, white background, studio lighting"
+            "full body female ranger, T-pose, arms extended, symmetrical face, "
+            "closed mouth, calm eyes, five fingers, realistic hands, "
+            "auburn hair tied back braid, brown leather jacket, utility belt, "
+            "dark long pants, legs fully covered, knee-high boots, "
+            "white background, flat studio lighting"
         ),
         "stage2_negative": (
-            "cape, cloak, flowing cloth, floating fabric, skirt, loose hair, "
-            "windswept hair, open mouth, asymmetrical face, cross-eyed, "
-            "mutated hands, deformed fingers, extra limbs, background, "
-            "cartoon, sketch, shadow"
+            "cape, cloak, flowing cloth, floating fabric, tunic, skirt, dress, "
+            "exposed legs, bare legs, open mouth, teeth, windswept hair, "
+            "loose hair, mutated hands, fused fingers, extra fingers, "
+            "missing fingers, extra limbs, deformed face, background, shadow"
         ),
     },
 
