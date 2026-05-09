@@ -292,6 +292,16 @@ def _queue_flux(session_id, prompt, negative, width, height, steps, guidance,
             char_label = (char_label or "character").strip() or "character"
             version    = (version    or "v1").strip()        or "v1"
             session_id = create_session(db, char_label, version)
+        else:
+            # Guard against accidental re-queue on an existing session
+            doc = db[COLLECTION].find_one({"_id": session_id}, {"stages.flux.status": 1})
+            if doc:
+                fx_st = (doc.get("stages") or {}).get("flux", {}).get("status", "idle")
+                if fx_st not in ("idle", "error"):
+                    next_ver = _next_version(char_label) if char_label else "v2"
+                    return ("", f"⚠️ Flux already {fx_st} for this session. "
+                                f"Use '+ New Version' to start fresh with {next_ver}.",
+                            session_id)
         save_stage_prompts(db, session_id, "flux", prompt, negative,
                            {"width": int(width), "height": int(height),
                             "steps": int(steps), "guidance_scale": float(guidance)})
