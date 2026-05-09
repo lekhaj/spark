@@ -5,9 +5,14 @@
 # the spark CPU and GPU instances. Run this after any infra change to
 # ensure the SGs match the declared spec.
 #
-# IMPORTANT: This script ONLY manages spark-owned rules. The CPU instance
-# also hosts Helmio (frontend, backend, postgres on ports 80/3000/7000/8001/8081)
-# — those rules are explicitly left alone.
+# IMPORTANT: This script is the single source of truth for the CPU & GPU
+# security groups. After the May 8 2026 incident (Helmio Next.js RCE → DNS
+# amplification botnet), it now manages BOTH Spark and Helmio ports.
+#
+# Public ports (intended): 22 (SSH), 3000 (Helmio web), 7860 (Spark Gradio),
+#                          8000 (Spark FastAPI), 8001 (Helmio API).
+# Private only (CPU↔GPU SG): 6379 (Redis), 27017 (MongoDB).
+# Everything else (4000, 6380, 7000, 7500, 8081, 27018) MUST stay closed.
 #
 # Run with fresh AWS credentials:
 #   aws sso login   # or export AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
@@ -29,18 +34,34 @@ GPU_SG="sg-0a4a561065082e3c9"   # spark_gpu (i-0d6b9d6d34ccc053d)
 # Public = exposed to 0.0.0.0/0 (user/internet facing)
 # CPU↔GPU = restricted to the peer SG only (private VPC traffic)
 
-# CPU public-facing (Spark only — Helmio's 80/3000/7000/8001/8081 are NOT managed here)
+# CPU public-facing
 CPU_PUBLIC=(
     "22:SSH"
-    "7860:Gradio UI"
-    "8000:FastAPI"
+    "3000:Helmio web (Next.js)"
+    "7860:Spark Gradio UI"
+    "8000:Spark FastAPI"
+    "8001:Helmio API"
 )
 
 # CPU ports reachable only from GPU SG (worker → CPU services)
+# Redis 6379 + MongoDB 27017 are also OS-level bound to 127.0.0.1 + private
+# IP only (defense in depth). Redis has requirepass set; .env.gpu has the
+# password URL-encoded into REDIS_BROKER_URL.
 CPU_FROM_GPU=(
-    "6379:Redis (broker)"
-    "6380:Redis (alt)"
+    "6379:Redis (broker, password protected)"
     "27017:MongoDB"
+)
+
+# Ports that must NOT be public (used internally or admin-only).
+# These are NOT added to public CIDR rules. iptables on the CPU host also
+# drops external traffic to them as defense in depth.
+CPU_INTERNAL_ONLY=(
+    "4000:node serve dist (internal)"
+    "6380:Redis alt (unused)"
+    "7000:Old merged Gradio share"
+    "7500:Helmio internal API"
+    "8081:Mongo Express admin UI (do NOT expose)"
+    "27018:Helmio Mongo (Docker)"
 )
 
 # GPU public-facing
