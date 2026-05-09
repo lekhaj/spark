@@ -4,10 +4,11 @@ GPU Orchestrator — Fixed On-Demand Instance Edition
 Watches Redis queues and manages the fixed g5.2xlarge GPU instance.
 
 Flow:
-  1. Poll all GPU queues (image_tasks, model_tasks, rig_model)
+  1. Poll all GPU queues (see infra.GPU_QUEUES — sd15, image, model, rig, manual_gen)
   2. Expire stale tasks (older than TASK_TTL)
   3. If tasks pending → ensure GPU instance is running → start workers
-  4. If all queues empty + no workers active → idle timer → stop GPU instance
+  4. Idle/shutdown is owned by the GPU side (workers/auto_shutdown.py). The
+     orchestrator does NOT call stop_instance — it only handles start.
 
 NOTE: Spot-instance orchestration is implemented in spot_gpu_service.py but
       is DISABLED until a custom AMI is ready. Switch by replacing the
@@ -73,7 +74,7 @@ class GPUOrchestrator:
         """Remove tasks older than task_ttl from image/model queues."""
         now = time.time()
         expired_count = 0
-        for queue_name in ("image_tasks", "model_tasks"):
+        for queue_name in GPU_QUEUES:
             length = r.llen(queue_name)
             if length == 0:
                 continue
@@ -167,10 +168,9 @@ class GPUOrchestrator:
         gpu_state   = aws_service.get_instance_state(self._gpu_alias)
         gpu_running = gpu_state == "running"
 
+        queue_summary = " ".join(f"{q}={n}" for q, n in queues.items())
         logger.info(
-            f"[GPU] image={queues['image_tasks']} model={queues['model_tasks']} "
-            f"rig={queues['rig_model']} instance={gpu_state} "
-            f"ip={infra.GPU_PUBLIC_IP}"
+            f"[GPU] {queue_summary} instance={gpu_state} ip={infra.GPU_PUBLIC_IP}"
         )
 
         if total > 0:
@@ -193,36 +193,12 @@ class GPUOrchestrator:
             # if launched:
             #     self._ensure_workers_for_queues(queues)
 
-        elif gpu_running:
-            # Queues empty — check if workers are still processing
-            workers_busy = self._any_worker_active()
-
-            if workers_busy:
-                self.idle_since = None
-                logger.info("[GPU] Queues empty but workers still active — keeping instance alive")
-            elif self.idle_since is None:
-                self.idle_since = time.time()
-                logger.info(
-                    f"[GPU] All queues empty, no workers active — "
-                    f"stopping instance in {self.idle_shutdown // 60}min if no new tasks"
-                )
-            else:
-                idle_elapsed = time.time() - self.idle_since
-                remaining    = max(0, self.idle_shutdown - idle_elapsed)
-                if idle_elapsed >= self.idle_shutdown:
-                    logger.info("[GPU] Idle timeout reached — stopping GPU instance")
-                    aws_service.stop_instance(self._gpu_alias)
-                    self.idle_since = None
-
-                    # ── SPOT INSTANCE PATH (disabled) ──────────────────────
-                    # spot_gpu.terminate()
-                else:
-                    logger.info(
-                        f"[GPU] Idle for {idle_elapsed:.0f}s, "
-                        f"shutdown in {remaining:.0f}s"
-                    )
         else:
-            # No GPU running, no tasks — nothing to do
+            # Shutdown is the GPU's responsibility (AutoShutdown thread inside
+            # gpu_main.py). The CPU orchestrator only starts the instance when
+            # work appears; the GPU stops itself when idle. This avoids racing
+            # two stop paths and keeps shutdown working even when boto3 from
+            # the CPU is throttled. Reset idle bookkeeping for log purposes.
             self.idle_since = None
 
     # ── Status ────────────────────────────────────────────────────────────────
@@ -246,11 +222,7 @@ class GPUOrchestrator:
                 "public_ip":     infra.GPU_PUBLIC_IP,
                 "state":         gpu_state,
             },
-            "queues": {
-                "image_tasks": queues["image_tasks"],
-                "model_tasks": queues["model_tasks"],
-                "rig_model":   queues["rig_model"],
-            },
+            "queues": queues,
             "idle_seconds": idle_elapsed,
         }
 

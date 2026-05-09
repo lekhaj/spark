@@ -17,6 +17,11 @@ CPU_PUBLIC_IP = "18.207.13.85"
 GPU_PUBLIC_IP = "3.215.211.192"
 GPU_PUBLIC_DNS = "ec2-3-215-211-192.compute-1.amazonaws.com"
 
+# ── Private VPC IP (CPU side) ────────────────────────────────────────────────
+# GPU→CPU Redis/MongoDB traffic uses this. GPU's own private IP is not
+# pinned here; the GPU side resolves it via metadata at start-time.
+CPU_PRIVATE_IP = "172.31.92.14"
+
 # ── SSH Configuration ────────────────────────────────────────────────────────
 SSH_USER     = "ubuntu"       # CPU instance user
 GPU_SSH_USER = "ec2-user"     # GPU instance user (Amazon Linux 2023)
@@ -73,14 +78,24 @@ GPU_CONFIG: dict[str, dict] = {
 
 # ── Redis Queue → Worker Service mapping ──────────────────────────────────────
 QUEUE_WORKER_MAP: dict[str, str] = {
-    "sd15_tasks":  "gpu-worker",
-    "image_tasks": "gpu-worker",
-    "model_tasks": "gpu-worker",
-    "rig_model":   "gpu-worker",
+    "sd15_tasks":       "gpu-worker",
+    "image_tasks":      "gpu-worker",
+    "model_tasks":      "gpu-worker",
+    "rig_model":        "gpu-worker",
+    "manual_gen_tasks": "gpu-worker",
 }
 
 # ── All GPU Redis Queues ──────────────────────────────────────────────────────
-GPU_QUEUES = ("sd15_tasks", "image_tasks", "model_tasks", "rig_model")
+# Orchestrator polls every queue listed here when deciding whether the GPU
+# has work or is idle. Adding a queue here is required for the GPU to be
+# auto-started when work arrives and auto-stopped when idle.
+GPU_QUEUES = (
+    "sd15_tasks",
+    "image_tasks",
+    "model_tasks",
+    "rig_model",
+    "manual_gen_tasks",
+)
 
 # ── Orchestrator Tuning ───────────────────────────────────────────────────────
 TASK_TTL_SECONDS      = 14400   # 4 hours — expire stale queued tasks
