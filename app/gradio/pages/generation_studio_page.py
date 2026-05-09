@@ -1,16 +1,4 @@
-"""
-generation_studio_page.py — Generation Studio tab (port 7860)
-=============================================================
-Manual, stage-by-stage image generation for game characters.
-
-Stages:
-  0 — Flux concept (text → image, T5 encoder, no token limit)
-  1 — Normalize (CPU-side PIL resize, no GPU queue, instant)
-  2 — SD1.5 Stage 1 ControlNet pose lock (CLIP 77-token limit)
-  3 — SD1.5 Stage 2 detail pass (CLIP 77-token limit)
-  4 — Multi-view side + back (SD img2img, CLIP 77-token limit)
-  5 — TRELLIS 3D mesh (front + side + back → model_tasks queue)
-"""
+"""Generation Studio — stage-by-stage character image pipeline."""
 
 import json
 import os
@@ -107,17 +95,8 @@ def count_tokens(text: str, is_sd: bool) -> str:
     )
 
 
-def _count_flux(text: str) -> str:
-    return count_tokens(text, is_sd=False)
-
-
-def _count_sd(text: str) -> str:
-    return count_tokens(text, is_sd=True)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  Backend logic
-# ══════════════════════════════════════════════════════════════════════════════
+_count_flux = lambda text: count_tokens(text, is_sd=False)
+_count_sd   = lambda text: count_tokens(text, is_sd=True)
 
 def _get_or_create_session(char_label: str, version: str) -> tuple:
     """Get existing session — returns (None, msg) if no character selected.

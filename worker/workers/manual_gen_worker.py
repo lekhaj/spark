@@ -1,23 +1,5 @@
 #!/usr/bin/env python3
-"""
-ManualGenWorker
-===============
-GPU worker for the manual character-image generation pipeline.
-
-Handles all stages driven by the Pipeline Dashboard:
-    flux          — Flux.1-schnell text-to-image concept art
-    sd_stage1     — SD1.5 + ControlNet (openpose+canny for humanoid,
-                    canny-only for quadruped) img2img refinement
-    sd_stage2     — SD1.5 plain img2img polish pass
-    multiview_side/back — SD1.5 plain img2img for alternate views
-    trellis       — forwards task to the TRELLIS 3D worker queue
-
-Model loading is lazy (first use) to avoid spending GPU memory on a backend
-that may never be needed in a given session.
-
-Queue:  manual_gen_tasks
-Schema: lib/manual_gen_schema.py  (COLLECTION = "manual_gen_sessions")
-"""
+"""GPU worker for the manual character-image generation pipeline (manual_gen_tasks queue)."""
 
 from __future__ import annotations
 
@@ -42,61 +24,44 @@ from result_channel import (
     push_queued,
 )
 
-# ── Constants ─────────────────────────────────────────────────────────────────
-
-IMG_SIZE       = 512
-FLUX_MODEL     = os.getenv("FLUX_MODEL_ID",  "black-forest-labs/FLUX.1-schnell")
-SD_MODEL       = os.getenv("SD_MODEL_ID",    "Lykon/DreamShaper")
+IMG_SIZE            = 512
+FLUX_MODEL          = os.getenv("FLUX_MODEL_ID",     "black-forest-labs/FLUX.1-schnell")
+SD_MODEL            = os.getenv("SD_MODEL_ID",       "Lykon/DreamShaper")
 TPOSE_OPENPOSE_PATH = os.getenv("TPOSE_OPENPOSE_PATH", "")
-
-# Downstream TRELLIS worker queue name (must match trellis_worker.py)
-TRELLIS_QUEUE  = "model_tasks"
+TRELLIS_QUEUE       = "model_tasks"
 
 logger = logging.getLogger("ManualGenWorker")
 
 
-# ── Helper ─────────────────────────────────────────────────────────────────────
-
 def _extract_canny(img: Image.Image) -> Image.Image:
-    """Return a 3-channel Canny edge map (512×512) for *img*."""
+    """Return a 3-channel Canny edge map resized to IMG_SIZE."""
     img_r = img.resize((IMG_SIZE, IMG_SIZE)).convert("RGB")
-    arr   = np.array(img_r)
-    gray  = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
+    gray  = cv2.cvtColor(np.array(img_r), cv2.COLOR_RGB2GRAY)
     gray  = cv2.GaussianBlur(gray, (5, 5), 0)
     edges = cv2.Canny(gray, 80, 180)
     return Image.fromarray(np.stack([edges] * 3, axis=-1).astype(np.uint8))
 
 
 def _blank_image(w: int = IMG_SIZE, h: int = IMG_SIZE) -> Image.Image:
-    """Return a solid-black RGB image (used as fallback openpose reference)."""
     return Image.new("RGB", (w, h), color=(0, 0, 0))
 
 
-# ── Worker ────────────────────────────────────────────────────────────────────
-
 class ManualGenWorker(BaseWorker):
-    """GPU worker for the manual character generation pipeline."""
-
     worker_name = "ManualGenWorker"
     input_queue = "manual_gen_tasks"
 
     def __init__(self):
         super().__init__()
-
-        # Lazy-loaded model handles — None until first use.
-        self._flux_pipe    = None   # FluxPipeline
-
-        self._pipe_cn      = None   # StableDiffusionControlNetPipeline (base, openpose)
-        self._pipe_biped   = None   # StableDiffusionControlNetImg2ImgPipeline (openpose+canny)
-        self._pipe_quad    = None   # StableDiffusionControlNetImg2ImgPipeline (canny only)
-        self._pipe_i2i     = None   # StableDiffusionImg2ImgPipeline (no controlnet)
-        self._cn_canny     = None   # ControlNetModel (canny)
-        self._cn_openpose  = None   # ControlNetModel (openpose)
-
-    # ── BaseWorker overrides ──────────────────────────────────────────────────
+        # All models are lazy-loaded on first use
+        self._flux_pipe   = None
+        self._pipe_cn     = None
+        self._pipe_biped  = None
+        self._pipe_quad   = None
+        self._pipe_i2i    = None
+        self._cn_canny    = None
+        self._cn_openpose = None
 
     def load_models(self):
-        """No-op: all models are loaded lazily on first use."""
         self.logger.info("ManualGenWorker ready — models will load lazily on first use.")
 
     def run(self, idle_notify_callback=None):
@@ -543,12 +508,7 @@ class ManualGenWorker(BaseWorker):
     # ── Utilities ─────────────────────────────────────────────────────────────
 
     def _download_image(self, url: str) -> Image.Image:
-        """
-        Download an image from an S3 public URL (or any HTTP URL).
-
-        Returns a PIL Image in RGB mode.
-        Raises requests.HTTPError on non-2xx status.
-        """
+        """Download image from URL and return as RGB PIL Image."""
         if not url:
             raise ValueError("_download_image: url is empty")
 
@@ -560,31 +520,13 @@ class ManualGenWorker(BaseWorker):
         return img
 
     def _load_openpose_ref(self) -> Image.Image:
-        """
-        Load the T-pose openpose skeleton reference image.
-
-        Priority:
-          1. TPOSE_OPENPOSE_PATH env var — local file path to a pre-rendered
-             openpose skeleton image (512×512 RGB).
-          2. Blank black image fallback (ControlNet will receive no guidance).
-        """
+        """Load T-pose openpose reference from TPOSE_OPENPOSE_PATH, or return blank fallback."""
         if TPOSE_OPENPOSE_PATH and os.path.isfile(TPOSE_OPENPOSE_PATH):
             try:
-                img = Image.open(TPOSE_OPENPOSE_PATH).convert("RGB")
-                img = img.resize((IMG_SIZE, IMG_SIZE))
-                self.logger.debug(f"Loaded T-pose openpose ref: {TPOSE_OPENPOSE_PATH}")
-                return img
+                return Image.open(TPOSE_OPENPOSE_PATH).convert("RGB").resize((IMG_SIZE, IMG_SIZE))
             except Exception as exc:
-                self.logger.warning(
-                    f"Failed to load TPOSE_OPENPOSE_PATH={TPOSE_OPENPOSE_PATH!r}: {exc}. "
-                    "Using blank fallback."
-                )
-
-        self.logger.warning(
-            "TPOSE_OPENPOSE_PATH not set or file not found — "
-            "using blank black image as openpose reference. "
-            "Set TPOSE_OPENPOSE_PATH to a real T-pose skeleton image for better results."
-        )
+                self.logger.warning(f"Failed to load openpose ref ({TPOSE_OPENPOSE_PATH}): {exc}")
+        self.logger.warning("TPOSE_OPENPOSE_PATH not set — using blank openpose reference")
         return _blank_image(IMG_SIZE, IMG_SIZE)
 
 

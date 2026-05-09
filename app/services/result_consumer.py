@@ -1,13 +1,6 @@
 """
-result_consumer.py — CPU-side GPU result consumer
-==================================================
-Runs as an asyncio background task inside FastAPI (wired in app/main.py).
-
-Reads from `spark_results` Redis queue (populated by GPU workers via
-worker/lib/result_channel.py) and writes to MongoDB manual_gen_sessions.
-
-This is the ONLY writer to manual_gen_sessions from the result path;
-GPU workers never touch MongoDB directly for the manual-gen pipeline.
+Result consumer — reads GPU results from Redis and writes to MongoDB.
+Runs as a background task inside FastAPI (started in app/main.py lifespan).
 """
 from __future__ import annotations
 
@@ -28,15 +21,7 @@ _BLPOP_TIMEOUT = 5
 
 
 def _apply_result(db, msg: dict) -> None:
-    """Translate one result message into a MongoDB update."""
-    # Import schema helpers here (lazy) so startup doesn't fail if schema module
-    # has a transient import issue.
-    from worker.lib.manual_gen_schema import (
-        mark_done,
-        mark_error,
-        mark_queued,
-        mark_running,
-    )
+    from worker.lib.manual_gen_schema import mark_done, mark_error, mark_queued, mark_running
 
     session_id = msg.get("session_id", "")
     stage      = msg.get("stage",      "")
@@ -79,10 +64,6 @@ def _apply_result(db, msg: dict) -> None:
 
 
 async def result_consumer_main() -> None:
-    """
-    Async background loop.
-    BLPOP from spark_results → update MongoDB manual_gen_sessions.
-    """
     logger.info(f"[result_consumer] Started — watching queue: {RESULT_QUEUE}")
 
     r    = _redis.Redis.from_url(settings.CELERY_BROKER_URL, decode_responses=True)
@@ -110,7 +91,7 @@ async def result_consumer_main() -> None:
             db = get_db()
             if db is None:
                 logger.error("[result_consumer] MongoDB unavailable, re-queuing result")
-                r.rpush(RESULT_QUEUE, payload)  # Put it back
+                r.rpush(RESULT_QUEUE, payload)
                 await asyncio.sleep(5)
                 continue
 
