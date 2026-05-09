@@ -34,6 +34,8 @@ logging.basicConfig(
 class WorkerConfig:
     REDIS_HOST     = os.getenv("REDIS_HOST",   "localhost")
     REDIS_PORT     = int(os.getenv("REDIS_PORT", 6379))
+    # Redis on the CPU instance now requires auth (post May 2026 abuse incident).
+    REDIS_PASSWORD = os.getenv("REDIS_PASSWORD") or None
     MONGO_URI      = (
         os.getenv("MONGO_URI") or
         os.getenv("MONGODB_URL") or
@@ -82,6 +84,7 @@ class BaseWorker(ABC):
             self._redis = redis.Redis(
                 host=self.cfg.REDIS_HOST,
                 port=self.cfg.REDIS_PORT,
+                password=self.cfg.REDIS_PASSWORD,
                 db=0,
                 decode_responses=True,
                 socket_connect_timeout=10,
