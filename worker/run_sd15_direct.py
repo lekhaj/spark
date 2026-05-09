@@ -75,25 +75,27 @@ CHARACTERS = {
         "stage1_prompt": (
             "full body human female, front-facing T-pose, arms extended horizontally, "
             "legs straight, realistic anatomy, detailed hands, 5 fingers, "
-            "natural face, symmetrical eyes, looking forward, auburn hair, medieval fantasy clothing, "
-            "fitted tunic, leather belt, tall boots, isolated on pure white background, flat lighting"
+            "symmetrical face, calm closed mouth, looking forward, "
+            "auburn hair tied back in braid, fitted tunic, leather belt, "
+            "dark pants, tall boots, white background, flat lighting"
         ),
         "stage1_negative": (
-            "scenery, background, room, walls, mutated hands, missing fingers, deformed face, "
-            "winking, crossed eyes, open mouth, extra limbs, robotic armor, "
-            "dynamic pose, cropped body"
+            "cape, cloak, flowing cloth, floating fabric, skirt, open mouth, "
+            "deformed face, mutated hands, missing fingers, extra limbs, "
+            "loose hair, windswept hair, dynamic pose, cropped body, background"
         ),
         "stage2_prompt": (
-            "full body female ranger, front-facing T-pose, realistic facial features, symmetrical face, "
-            "open aligned eyes, intense stare, realistic hands, auburn wavy hair, "
-            "blue and brown medieval tunic, leather corset, utility belts and pouches, "
-            "dark fitted pants, knee-high leather boots, grounded fantasy RPG style, "
-            "isolated on pure white background, studio lighting, no shadow"
+            "full body female ranger, front-facing T-pose, symmetrical face, "
+            "calm expression, closed mouth, aligned eyes, realistic hands, "
+            "auburn hair tied back, short braid, brown leather corset, "
+            "blue fitted tunic, dark fitted pants, utility belt with pouches, "
+            "knee-high leather boots, game character, white background, studio lighting"
         ),
         "stage2_negative": (
-            "scenery, environment, room, stone arch, shadow, mutated hands, deformed fingers, "
-            "winking, cross-eyed, asymmetrical face, distorted mouth, "
-            "messy hair, overdesigned fantasy, cartoon, sketch"
+            "cape, cloak, flowing cloth, floating fabric, skirt, loose hair, "
+            "windswept hair, open mouth, asymmetrical face, cross-eyed, "
+            "mutated hands, deformed fingers, extra limbs, background, "
+            "cartoon, sketch, shadow"
         ),
     },
 
