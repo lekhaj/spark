@@ -48,15 +48,15 @@ IMG_SIZE = 512
 # Stage 1 — VERY LIGHT TOUCH. SD only corrects pose. Flux provides design.
 STAGE1_STEPS       = 20
 STAGE1_CFG         = 5.5
-STAGE1_STRENGTH    = 0.20   # 0.15–0.25 range
-STAGE1_CN_OPENPOSE = 0.85   # bipedal: OpenPose skeleton
-STAGE1_CN_CANNY    = 0.55   # bipedal: Canny from Flux
+STAGE1_STRENGTH    = 0.45   # was 0.35 — Flux cape still winning, push harder
+STAGE1_CN_OPENPOSE = 0.90   # was 0.85 — stronger skeleton lock
+STAGE1_CN_CANNY    = 0.15   # was 0.30 — Canny still tracing cape, nearly disable it
 STAGE1_CN_CANNY_QUAD = 0.70 # quad: Canny-only (no skeleton)
 
 # Stage 2 — detail pass
 STAGE2_STEPS    = 20
 STAGE2_CFG      = 6.5
-STAGE2_STRENGTH = 0.22
+STAGE2_STRENGTH = 0.40   # was 0.35 — more correction room
 
 # ── Characters ────────────────────────────────────────────────────────────────
 # Style direction: semi-realistic fantasy, rich PBR textures, stylized realism.
@@ -73,23 +73,23 @@ CHARACTERS = {
     "human_ranger": {
         "creature_category": "bipedal",
         "stage1_prompt": (
-            "female character, T-pose, arms out, straight legs, "
-            "fitted jacket, dark pants, boots, white background, flat lighting"
+            "female, T-pose, arms extended, zip jacket, pants, boots, "
+            "white background, flat lighting"
         ),
         "stage1_negative": (
-            "cape, cloak, robe, dress, skirt, flowing cloth, waving cloth, "
-            "floating fabric, wings, loose hair, windswept hair, "
-            "open mouth, fused fingers, extra limbs, background"
+            "cape, cloak, skirt, dress, robe, flowing cloth, waving cloth, "
+            "floating fabric, holding cloth, loose hair, open mouth, "
+            "fused fingers, extra limbs, grey background, shadow"
         ),
         "stage2_prompt": (
-            "female ranger, T-pose, arms extended, fitted brown jacket, "
-            "dark pants, leather belt, knee boots, auburn hair tied back, "
-            "calm face, closed mouth, white background, flat lighting"
+            "female ranger, T-pose, fitted zip jacket, combat pants, "
+            "leather belt, boots, auburn hair tied back, calm face, "
+            "closed mouth, white background, flat lighting"
         ),
         "stage2_negative": (
-            "cape, cloak, robe, dress, skirt, flowing cloth, waving cloth, "
-            "floating fabric, wings, loose hair, windswept hair, "
-            "open mouth, fused fingers, extra limbs, bare legs, background"
+            "cape, cloak, skirt, dress, robe, flowing cloth, waving cloth, "
+            "floating fabric, holding cloth, loose hair, windswept hair, "
+            "open mouth, fused fingers, extra limbs, bare legs, shadow"
         ),
     },
 
