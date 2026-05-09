@@ -9,7 +9,7 @@ All services (orchestrator, aws_service, workers) import from here.
 """
 
 # ── EC2 Instance IDs ─────────────────────────────────────────────────────────
-CPU_INSTANCE_ID  = "i-0663f7700a2da31c7"   # FastAPI / orchestrator / Redis / MongoDB (us-east-1)
+CPU_INSTANCE_ID  = "REPLACE_WITH_NEW_INSTANCE_ID"  # new instance (AMI launch 2026-05-09)
 GPU_INSTANCE_ID  = "i-0d6b9d6d34ccc053d"   # g6.2xlarge — L4 GPU workers (image + 3D + rig)
 
 # ── Public IPs ───────────────────────────────────────────────────────────────
@@ -20,7 +20,7 @@ GPU_PUBLIC_DNS = "ec2-3-215-211-192.compute-1.amazonaws.com"
 # ── Private VPC IP (CPU side) ────────────────────────────────────────────────
 # GPU→CPU Redis/MongoDB traffic uses this. GPU's own private IP is not
 # pinned here; the GPU side resolves it via metadata at start-time.
-CPU_PRIVATE_IP = "172.31.92.14"
+CPU_PRIVATE_IP = "172.31.26.6"
 
 # ── SSH Configuration ────────────────────────────────────────────────────────
 SSH_USER     = "ubuntu"       # CPU instance user

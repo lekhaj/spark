@@ -35,13 +35,11 @@ import torch
 from PIL import Image
 
 from workers.base_worker import BaseWorker
-from lib.manual_gen_schema import (
-    COLLECTION,
-    mark_running,
-    mark_done,
-    mark_error,
-    mark_queued,
-    get_stage_image_url,
+from result_channel import (
+    push_running,
+    push_done,
+    push_error,
+    push_queued,
 )
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -95,11 +93,64 @@ class ManualGenWorker(BaseWorker):
         self._cn_canny     = None   # ControlNetModel (canny)
         self._cn_openpose  = None   # ControlNetModel (openpose)
 
-    # ── BaseWorker abstract ───────────────────────────────────────────────────
+    # ── BaseWorker overrides ──────────────────────────────────────────────────
 
     def load_models(self):
         """No-op: all models are loaded lazily on first use."""
         self.logger.info("ManualGenWorker ready — models will load lazily on first use.")
+
+    def run(self, idle_notify_callback=None):
+        """
+        Override base run() to avoid MongoDB connection.
+        ManualGenWorker uses result_channel (Redis) for all status updates;
+        MongoDB is written only by the CPU result_consumer.
+        """
+        import json as _json
+
+        self.logger.info(f"{self.worker_name} starting — queue: {self.input_queue}")
+        self.load_models()
+
+        r          = self.get_redis()
+        idle_since = time.time()
+
+        while True:
+            try:
+                raw = r.blpop(self.input_queue, timeout=30)
+            except Exception as e:
+                self.logger.error(f"Redis error: {e}; reconnecting in 5s")
+                time.sleep(5)
+                self._redis = None
+                continue
+
+            if raw is None:
+                if idle_notify_callback:
+                    idle_notify_callback(time.time() - idle_since)
+                continue
+
+            idle_since = time.time()
+            _, payload = raw
+
+            try:
+                task = _json.loads(payload)
+            except _json.JSONDecodeError:
+                self.logger.error(f"Bad JSON in queue: {payload[:120]}")
+                continue
+
+            if self.is_expired(task):
+                continue
+
+            self.logger.info(
+                f"Task → session={task.get('session_id','?')[:8]} "
+                f"stage={task.get('stage','?')} char={task.get('char_label','?')}"
+            )
+            try:
+                self.process_task(task, r, None)  # db=None — no MongoDB on GPU
+            except Exception as exc:
+                self.logger.exception(f"Task failed: {exc}")
+                try:
+                    push_error(r, task.get("session_id", ""), task.get("stage", ""), str(exc))
+                except Exception:
+                    pass
 
     def process_task(self, task: dict, r, db) -> None:
         """Route an incoming task to the correct stage handler."""
@@ -112,23 +163,20 @@ class ManualGenWorker(BaseWorker):
             f"char={task.get('char_label', '?')}"
         )
 
-        # Mark stage as running in MongoDB
-        try:
-            mark_running(db, session_id, stage)
-        except Exception as exc:
-            self.logger.warning(f"mark_running failed: {exc}")
+        # Signal running via Redis → CPU result_consumer → MongoDB
+        push_running(r, session_id, stage)
 
         try:
             if stage == "flux":
-                self._run_flux(task, db)
+                self._run_flux(task, r)
             elif stage == "sd_stage1":
-                self._run_sd_stage1(task, db)
+                self._run_sd_stage1(task, r)
             elif stage == "sd_stage2":
-                self._run_sd_stage2(task, db)
+                self._run_sd_stage2(task, r)
             elif stage in ("multiview_side", "multiview_back"):
-                self._run_multiview(task, db)
+                self._run_multiview(task, r)
             elif stage == "trellis":
-                self._run_trellis(task, r, db)
+                self._run_trellis(task, r)
             else:
                 raise ValueError(f"Unknown stage: '{stage}'")
 
@@ -136,10 +184,7 @@ class ManualGenWorker(BaseWorker):
             self.logger.exception(
                 f"[{task_id[:8]}] stage={stage} FAILED: {exc}"
             )
-            try:
-                mark_error(db, session_id, stage, str(exc))
-            except Exception as db_exc:
-                self.logger.error(f"mark_error also failed: {db_exc}")
+            push_error(r, session_id, stage, str(exc))
 
     # ── Lazy model loaders ────────────────────────────────────────────────────
 
@@ -226,7 +271,7 @@ class ManualGenWorker(BaseWorker):
 
     # ── Stage handlers ─────────────────────────────────────────────────────────
 
-    def _run_flux(self, task: dict, db) -> None:
+    def _run_flux(self, task: dict, r) -> None:
         """
         Generate a concept image with Flux.1-schnell (text → image).
 
@@ -266,10 +311,10 @@ class ManualGenWorker(BaseWorker):
 
         torch.cuda.empty_cache()
 
-        mark_done(db, session_id, stage, url, s3_key)
+        push_done(r, session_id, stage, url, s3_key)
         self.logger.info(f"[flux] done → {url}")
 
-    def _run_sd_stage1(self, task: dict, db) -> None:
+    def _run_sd_stage1(self, task: dict, r) -> None:
         """
         SD1.5 + ControlNet img2img refinement (Stage 1).
 
@@ -342,10 +387,10 @@ class ManualGenWorker(BaseWorker):
 
         torch.cuda.empty_cache()
 
-        mark_done(db, session_id, stage, url, s3_key)
+        push_done(r, session_id, stage, url, s3_key)
         self.logger.info(f"[sd_stage1] done → {url}")
 
-    def _run_sd_stage2(self, task: dict, db) -> None:
+    def _run_sd_stage2(self, task: dict, r) -> None:
         """
         SD1.5 plain img2img polish pass (Stage 2). No ControlNet.
 
@@ -390,10 +435,10 @@ class ManualGenWorker(BaseWorker):
 
         torch.cuda.empty_cache()
 
-        mark_done(db, session_id, stage, url, s3_key)
+        push_done(r, session_id, stage, url, s3_key)
         self.logger.info(f"[sd_stage2] done → {url}")
 
-    def _run_multiview(self, task: dict, db) -> None:
+    def _run_multiview(self, task: dict, r) -> None:
         """
         Generate a multiview image (side or back) via plain SD1.5 img2img.
 
@@ -439,10 +484,10 @@ class ManualGenWorker(BaseWorker):
 
         torch.cuda.empty_cache()
 
-        mark_done(db, session_id, stage, url, s3_key)
+        push_done(r, session_id, stage, url, s3_key)
         self.logger.info(f"[{stage}] done → {url}")
 
-    def _run_trellis(self, task: dict, r, db) -> None:
+    def _run_trellis(self, task: dict, r) -> None:
         """
         Forward a TRELLIS 3D reconstruction task to the TRELLIS worker queue.
 
@@ -491,8 +536,8 @@ class ManualGenWorker(BaseWorker):
             f"front={front_url!r}"
         )
 
-        # Mark the trellis stage as queued (not done — TRELLIS worker owns done/error)
-        mark_queued(db, session_id, stage, task_id)
+        # Mark the trellis stage as queued via result_channel → CPU → MongoDB
+        push_queued(r, session_id, stage, task_id)
         self.logger.info(f"[trellis] session={session_id[:8]} stage marked queued.")
 
     # ── Utilities ─────────────────────────────────────────────────────────────
