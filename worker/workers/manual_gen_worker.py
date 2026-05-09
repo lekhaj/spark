@@ -162,7 +162,7 @@ class ManualGenWorker(BaseWorker):
         from diffusers import FluxPipeline
 
         pipe = FluxPipeline.from_pretrained(FLUX_MODEL, torch_dtype=torch.bfloat16)
-        pipe.enable_sequential_cpu_offload()
+        pipe.enable_model_cpu_offload()   # faster than sequential — loads full submodel at a time
         pipe.vae.enable_slicing()
         self._flux_pipe = pipe
         self.logger.info("Flux model loaded.")
