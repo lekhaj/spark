@@ -570,14 +570,16 @@ def generation_studio_ui():
         )
 
         # ── Hidden state ──────────────────────────────────────────────────────
-        session_id_state  = gr.State(None)
-        # Per-stage session states — each stage can target any asset/version independently
+        session_id_state = gr.State(None)
         flux_sid_state   = gr.State(None)
         norm_sid_state   = gr.State(None)
         sd1_sid_state    = gr.State(None)
         sd2_sid_state    = gr.State(None)
         mv_sid_state     = gr.State(None)
         trel_sid_state   = gr.State(None)
+
+        # Auto-refresh timer — polls all stage statuses every 4 s when a session is active.
+        stage_timer = gr.Timer(value=4, active=False)
 
         # ── Helper: compact per-stage asset picker (auto-loads on change) ──────
         def _picker(initial):
@@ -1258,5 +1260,62 @@ def generation_studio_ui():
 
         # ── Auto-load session on page open ────────────────────────────────────
         tab.load(_do_load, [char_label, version_dd], _load_outputs)
+
+        # ── Auto-refresh timer — polls all stage statuses every 4 s ──────────
+        _ACTIVE_STATUSES = {"queued", "running"}
+
+        def _tick_all(sid):
+            """Poll every stage. Returns status/url/img for each + timer active flag."""
+            def _poll(stage):
+                if not sid:
+                    return "idle", ""
+                status, url = _refresh_stage(sid, stage)
+                return status, url
+
+            fx_st, fx_url   = _poll("flux")
+            s1_st, s1_url   = _poll("sd_stage1")
+            s2_st, s2_url   = _poll("sd_stage2")
+            ms_st, ms_url   = _poll("multiview_side")
+            mb_st, mb_url   = _poll("multiview_back")
+            tr_st, tr_url   = _poll("trellis")
+
+            still_active = any(s in _ACTIVE_STATUSES for s in
+                               [fx_st, s1_st, s2_st, ms_st, mb_st, tr_st])
+
+            return (
+                fx_st, fx_url, _url_to_img(fx_url, 400),
+                s1_st, s1_url, _url_to_img(s1_url, 350),
+                s2_st, s2_url, _url_to_img(s2_url, 350),
+                ms_st, _url_to_img(ms_url, 300),
+                mb_st, _url_to_img(mb_url, 300),
+                tr_st, tr_url,
+                gr.Timer(active=still_active),
+            )
+
+        stage_timer.tick(
+            _tick_all,
+            [flux_sid_state],
+            [flux_status, flux_url, flux_img,
+             sd1_status, sd1_url, sd1_img,
+             sd2_status, sd2_url, sd2_img,
+             mv_side_status, mv_side_img,
+             mv_back_status, mv_back_img,
+             trellis_status, trellis_url,
+             stage_timer],
+        )
+
+        # ── Activate timer whenever any stage is queued ───────────────────────
+        def _activate_timer(status):
+            return gr.Timer(active=True) if status else gr.Timer(active=False)
+
+        for _btn, _status_out in [
+            (flux_queue_btn,  flux_status),
+            (sd1_queue_btn,   sd1_status),
+            (sd2_queue_btn,   sd2_status),
+            (mv_side_btn,     mv_side_status),
+            (mv_back_btn,     mv_back_status),
+            (trellis_btn,     trellis_status),
+        ]:
+            _btn.click(_activate_timer, [_status_out], [stage_timer])
 
     return tab
