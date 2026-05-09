@@ -43,14 +43,14 @@ CONTROLNET_CANNY_ID    = "lllyasviel/control_v11p_sd15_canny"
 TPOSE_OPENPOSE_PATH  = os.getenv("TPOSE_OPENPOSE_PATH",
                                   "/home/ec2-user/controlnet_refs/tpose_openpose.png")
 
-IMG_SIZE = 512
+IMG_SIZE = 768  # Increased from 512 — more pixels = better face & hand detail
 
 # Stage 1 — VERY LIGHT TOUCH. SD only corrects pose. Flux provides design.
 STAGE1_STEPS       = 20
 STAGE1_CFG         = 5.5
-STAGE1_STRENGTH    = 0.45   # was 0.35 — Flux cape still winning, push harder
-STAGE1_CN_OPENPOSE = 0.90   # was 0.85 — stronger skeleton lock
-STAGE1_CN_CANNY    = 0.15   # was 0.30 — Canny still tracing cape, nearly disable it
+STAGE1_STRENGTH    = 0.45   # push hard enough to override Flux cloth edges
+STAGE1_CN_OPENPOSE = 0.90   # strong skeleton lock for bipedal T-pose
+STAGE1_CN_CANNY    = 0.0    # DISABLED for bipedal — Canny was tracing Flux cape edges
 STAGE1_CN_CANNY_QUAD = 0.70 # quad: Canny-only (no skeleton)
 
 # Stage 2 — detail pass
@@ -486,8 +486,9 @@ def main():
     # Shared-weight pipelines — controlnet list must be set at init, not swapped after
     base_components = dict(pipe_cn.components)
 
-    # Bipedal: OpenPose + Canny dual
-    biped_components = {**base_components, "controlnet": [cn_openpose, cn_canny]}
+    # Bipedal: OpenPose ONLY — Canny removed because it was tracing Flux cape/cloth edges
+    # Using only the skeleton lock is sufficient to enforce T-pose for humanoids
+    biped_components = {**base_components, "controlnet": cn_openpose}
     pipe_biped_i2i = StableDiffusionControlNetImg2ImgPipeline(**biped_components)
     pipe_biped_i2i.scheduler = UniPCMultistepScheduler.from_config(pipe_biped_i2i.scheduler.config)
 
@@ -601,13 +602,14 @@ def main():
                         width=IMG_SIZE, height=IMG_SIZE,
                     )
             else:
+                # Bipedal: OpenPose skeleton ONLY — no Canny to avoid tracing Flux cloth
                 with torch.no_grad():
                     result = pipe_biped_i2i(
                         prompt=s1_pos, negative_prompt=s1_neg,
-                        image=init_img, control_image=[openpose_ref, canny_img],
+                        image=init_img, control_image=openpose_ref,
                         strength=STAGE1_STRENGTH, num_inference_steps=STAGE1_STEPS,
                         guidance_scale=STAGE1_CFG,
-                        controlnet_conditioning_scale=[STAGE1_CN_OPENPOSE, STAGE1_CN_CANNY],
+                        controlnet_conditioning_scale=STAGE1_CN_OPENPOSE,
                         width=IMG_SIZE, height=IMG_SIZE,
                     )
         else:
@@ -666,6 +668,35 @@ def main():
 
         stage2_time = time.time() - t0
         refined_img = result.images[0]
+
+        # ── Fix 3: Face Enhancement Pass ─────────────────────────────────────
+        # At 768px full body, the face is still only ~80px wide.
+        # We crop the face region, upscale to 512px, run img2img on it,
+        # then paste the enhanced face back onto the full body image.
+        print("  [Face] Running face enhancement pass...")
+        face_x1 = int(IMG_SIZE * 0.32)
+        face_y1 = int(IMG_SIZE * 0.02)
+        face_x2 = int(IMG_SIZE * 0.68)
+        face_y2 = int(IMG_SIZE * 0.27)
+        face_crop = refined_img.crop((face_x1, face_y1, face_x2, face_y2))
+        face_upscaled = face_crop.resize((512, 512), Image.LANCZOS)
+        with torch.no_grad():
+            face_result = pipe_i2i(
+                prompt="realistic face, symmetrical eyes, closed mouth, calm expression, detailed skin",
+                negative_prompt="deformed, anime, cartoon, blurry, cross-eyed, open mouth, distorted",
+                image=face_upscaled,
+                strength=0.30,
+                num_inference_steps=20,
+                guidance_scale=7.0,
+            )
+        face_enhanced = face_result.images[0].resize(
+            (face_x2 - face_x1, face_y2 - face_y1), Image.LANCZOS
+        )
+        refined_img = refined_img.copy()
+        refined_img.paste(face_enhanced, (face_x1, face_y1))
+        print("  ✓ Face enhancement done.")
+        torch.cuda.empty_cache()
+
         refined_key = f"images/{BIOME_ID}/{char_name}_refined_v2.png"
 
         # ── Step 5: Upload Stage 2 to S3 ──────────────────────────────────────
