@@ -477,24 +477,23 @@ def _queue_trellis(session_id, front_src, side_src, back_src) -> tuple:
 def _refresh_stage(session_id: Optional[str], stage: str) -> tuple:
     """Poll MongoDB for stage status. Returns (status_str, image_url)."""
     if not session_id:
-        return "no session", ""
+        return "idle", ""
     try:
         db  = _db()
-        doc = db[COLLECTION].find_one(
-            {"_id": session_id},
-            {f"stages.{stage}": 1},
-        )
+        doc = db[COLLECTION].find_one({"_id": session_id}, {f"stages.{stage}": 1})
         if not doc:
-            return "session not found", ""
-        sdata = (doc.get("stages") or {}).get(stage, {})
+            return "idle", ""
+        sdata  = (doc.get("stages") or {}).get(stage, {})
         status = sdata.get("status", "idle")
         url    = sdata.get("image_url") or ""
         err    = sdata.get("error")
-        if err and status == "error":
-            status = f"error: {err}"
-        return status, url or ""
+        if status == "done" and url:
+            status = f"✅ done"
+        elif status == "error":
+            status = f"❌ {err or 'unknown error'}"
+        return status, url
     except Exception as exc:
-        return f"ERROR: {exc}", ""
+        return f"❌ {exc}", ""
 
 
 def _list_versions(char_label: str) -> list:
@@ -974,17 +973,16 @@ def generation_studio_ui():
 
         # ── Flux: Queue + Refresh ─────────────────────────────────────────────
         def _do_queue_flux(sid, prompt, negative, width, height, steps, guidance, char, ver):
-            # Returns (task_id, status, new_session_id) — session auto-created if needed.
             _, status, new_sid = _queue_flux(sid, prompt, negative, width, height, steps,
                                              guidance, char, ver)
             return status, new_sid
 
-        flux_queue_btn.click(
+        (flux_queue_btn.click(
             _do_queue_flux,
             [flux_sid_state, flux_prompt, flux_negative, flux_width, flux_height,
              flux_steps, flux_guidance, flux_char, flux_ver],
             [flux_status, flux_sid_state],
-        )
+        ).then(lambda: gr.Timer(active=True), outputs=[stage_timer]))
 
         def _do_refresh_flux(sid):
             status, url = _refresh_stage(sid, "flux")
@@ -1021,12 +1019,12 @@ def generation_studio_ui():
             _, status = _queue_sd(sid, "sd_stage1", prompt, negative, params, input_src)
             return status
 
-        sd1_queue_btn.click(
+        (sd1_queue_btn.click(
             _do_queue_sd1,
             [sd1_sid_state, sd1_prompt, sd1_negative, sd1_denoise, sd1_cfg, sd1_steps,
              sd1_openpose_w, sd1_canny_w, sd1_category, sd1_input_source],
             [sd1_status],
-        )
+        ).then(lambda: gr.Timer(active=True), outputs=[stage_timer]))
 
         def _do_refresh_sd1(sid):
             status, url = _refresh_stage(sid, "sd_stage1")
@@ -1048,12 +1046,12 @@ def generation_studio_ui():
             _, status = _queue_sd(sid, "sd_stage2", prompt, negative, params, input_src)
             return status
 
-        sd2_queue_btn.click(
+        (sd2_queue_btn.click(
             _do_queue_sd2,
             [sd2_sid_state, sd2_prompt, sd2_negative, sd2_denoise, sd2_cfg,
              sd2_steps, sd2_input_source],
             [sd2_status],
-        )
+        ).then(lambda: gr.Timer(active=True), outputs=[stage_timer]))
 
         def _do_refresh_sd2(sid):
             status, url = _refresh_stage(sid, "sd_stage2")
@@ -1070,11 +1068,11 @@ def generation_studio_ui():
             _, status = _queue_multiview(sid, "side", prompt, "", denoise, cfg, input_src)
             return status
 
-        mv_side_btn.click(
+        (mv_side_btn.click(
             _do_queue_mv_side,
             [mv_sid_state, mv_side_prompt, mv_denoise, mv_cfg, mv_input_source],
             [mv_side_status],
-        )
+        ).then(lambda: gr.Timer(active=True), outputs=[stage_timer]))
 
         def _do_refresh_mv_side(sid):
             status, url = _refresh_stage(sid, "multiview_side")
@@ -1091,11 +1089,11 @@ def generation_studio_ui():
             _, status = _queue_multiview(sid, "back", prompt, "", denoise, cfg, input_src)
             return status
 
-        mv_back_btn.click(
+        (mv_back_btn.click(
             _do_queue_mv_back,
             [mv_sid_state, mv_back_prompt, mv_denoise, mv_cfg, mv_input_source],
             [mv_back_status],
-        )
+        ).then(lambda: gr.Timer(active=True), outputs=[stage_timer]))
 
         def _do_refresh_mv_back(sid):
             status, url = _refresh_stage(sid, "multiview_back")
@@ -1112,11 +1110,11 @@ def generation_studio_ui():
             _, status = _queue_trellis(sid, front_src, side_src, back_src)
             return status
 
-        trellis_btn.click(
+        (trellis_btn.click(
             _do_queue_trellis,
             [trel_sid_state, trellis_front_src, trellis_side_src, trellis_back_src],
             [trellis_status],
-        )
+        ).then(lambda: gr.Timer(active=True), outputs=[stage_timer]))
 
         def _do_refresh_trellis(sid):
             status, url = _refresh_stage(sid, "trellis")
@@ -1265,19 +1263,24 @@ def generation_studio_ui():
         _ACTIVE_STATUSES = {"queued", "running"}
 
         def _tick_all(sid):
-            """Poll every stage. Returns status/url/img for each + timer active flag."""
-            def _poll(stage):
-                if not sid:
-                    return "idle", ""
-                status, url = _refresh_stage(sid, stage)
-                return status, url
+            """Poll every stage and update status/image. Self-deactivates when idle."""
+            if not sid:
+                # No session yet — preserve whatever the UI shows, keep timer active
+                # (it will get a real sid once the queue click completes)
+                return (gr.update(), gr.update(), gr.update(),
+                        gr.update(), gr.update(), gr.update(),
+                        gr.update(), gr.update(), gr.update(),
+                        gr.update(), gr.update(),
+                        gr.update(), gr.update(),
+                        gr.update(), gr.update(),
+                        gr.Timer(active=True))
 
-            fx_st, fx_url   = _poll("flux")
-            s1_st, s1_url   = _poll("sd_stage1")
-            s2_st, s2_url   = _poll("sd_stage2")
-            ms_st, ms_url   = _poll("multiview_side")
-            mb_st, mb_url   = _poll("multiview_back")
-            tr_st, tr_url   = _poll("trellis")
+            fx_st, fx_url = _refresh_stage(sid, "flux")
+            s1_st, s1_url = _refresh_stage(sid, "sd_stage1")
+            s2_st, s2_url = _refresh_stage(sid, "sd_stage2")
+            ms_st, ms_url = _refresh_stage(sid, "multiview_side")
+            mb_st, mb_url = _refresh_stage(sid, "multiview_back")
+            tr_st, tr_url = _refresh_stage(sid, "trellis")
 
             still_active = any(s in _ACTIVE_STATUSES for s in
                                [fx_st, s1_st, s2_st, ms_st, mb_st, tr_st])
@@ -1303,19 +1306,5 @@ def generation_studio_ui():
              trellis_status, trellis_url,
              stage_timer],
         )
-
-        # ── Activate timer whenever any stage is queued ───────────────────────
-        def _activate_timer(status):
-            return gr.Timer(active=True) if status else gr.Timer(active=False)
-
-        for _btn, _status_out in [
-            (flux_queue_btn,  flux_status),
-            (sd1_queue_btn,   sd1_status),
-            (sd2_queue_btn,   sd2_status),
-            (mv_side_btn,     mv_side_status),
-            (mv_back_btn,     mv_back_status),
-            (trellis_btn,     trellis_status),
-        ]:
-            _btn.click(_activate_timer, [_status_out], [stage_timer])
 
     return tab
