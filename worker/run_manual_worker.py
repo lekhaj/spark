@@ -36,11 +36,13 @@ logging.basicConfig(
 logger = logging.getLogger("ManualGenMain")
 
 # ── Worker import ─────────────────────────────────────────────────────────────
-# Ensure the worker package is importable regardless of how this script is
-# invoked (e.g. `python run_manual_worker.py` from the worker/ directory).
+# Ensure the worker package and lib/ helpers are importable regardless of how
+# this script is invoked (e.g. `python run_manual_worker.py` from worker/).
 _worker_dir = os.path.dirname(os.path.abspath(__file__))
-if _worker_dir not in sys.path:
-    sys.path.insert(0, _worker_dir)
+_lib_dir    = os.path.join(_worker_dir, "lib")
+for _p in (_worker_dir, _lib_dir):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from workers.manual_gen_worker import ManualGenWorker  # noqa: E402
 
