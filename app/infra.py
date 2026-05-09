@@ -9,7 +9,7 @@ All services (orchestrator, aws_service, workers) import from here.
 """
 
 # ── EC2 Instance IDs ─────────────────────────────────────────────────────────
-CPU_INSTANCE_ID  = "REPLACE_WITH_NEW_INSTANCE_ID"  # new instance (AMI launch 2026-05-09)
+CPU_INSTANCE_ID  = "i-0f5a6edd3ce343281"             # new instance (AMI launch 2026-05-09)
 GPU_INSTANCE_ID  = "i-0d6b9d6d34ccc053d"   # g6.2xlarge — L4 GPU workers (image + 3D + rig)
 
 # ── Public IPs ───────────────────────────────────────────────────────────────
