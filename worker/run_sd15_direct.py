@@ -73,29 +73,23 @@ CHARACTERS = {
     "human_ranger": {
         "creature_category": "bipedal",
         "stage1_prompt": (
-            "full body human female, T-pose, arms extended horizontally, "
-            "legs straight, symmetrical face, closed mouth, five fingers, "
-            "auburn hair tied back, fitted jacket, dark long pants, "
-            "tall boots, white background, flat lighting"
+            "female character, T-pose, arms out, straight legs, "
+            "fitted jacket, dark pants, boots, white background, flat lighting"
         ),
         "stage1_negative": (
-            "cape, cloak, flowing cloth, floating fabric, skirt, dress, "
-            "exposed legs, bare legs, open mouth, teeth, windswept hair, "
-            "loose hair, mutated hands, fused fingers, extra limbs, "
-            "dynamic pose, cropped, background"
+            "cape, cloak, robe, dress, skirt, flowing cloth, waving cloth, "
+            "floating fabric, wings, loose hair, windswept hair, "
+            "open mouth, fused fingers, extra limbs, background"
         ),
         "stage2_prompt": (
-            "full body female ranger, T-pose, arms extended, symmetrical face, "
-            "closed mouth, calm eyes, five fingers, realistic hands, "
-            "auburn hair tied back braid, brown leather jacket, utility belt, "
-            "dark long pants, legs fully covered, knee-high boots, "
-            "white background, flat studio lighting"
+            "female ranger, T-pose, arms extended, fitted brown jacket, "
+            "dark pants, leather belt, knee boots, auburn hair tied back, "
+            "calm face, closed mouth, white background, flat lighting"
         ),
         "stage2_negative": (
-            "cape, cloak, flowing cloth, floating fabric, tunic, skirt, dress, "
-            "exposed legs, bare legs, open mouth, teeth, windswept hair, "
-            "loose hair, mutated hands, fused fingers, extra fingers, "
-            "missing fingers, extra limbs, deformed face, background, shadow"
+            "cape, cloak, robe, dress, skirt, flowing cloth, waving cloth, "
+            "floating fabric, wings, loose hair, windswept hair, "
+            "open mouth, fused fingers, extra limbs, bare legs, background"
         ),
     },
 
