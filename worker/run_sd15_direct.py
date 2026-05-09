@@ -461,6 +461,12 @@ def main():
         print("[MongoDB] Images will still be generated and uploaded to S3. ✓")
         db = None
 
+    # ── Clear leftover VRAM from any crashed previous session ─────────────────
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
+    print(f"[GPU] VRAM free before loading: {torch.cuda.mem_get_info()[0]/1024**3:.1f} GB")
+
     # ── Load models ───────────────────────────────────────────────────────────
     print("\n[Models] Loading ControlNets (OpenPose + Canny)...")
     cn_openpose = ControlNetModel.from_pretrained(CONTROLNET_OPENPOSE_ID, torch_dtype=torch.float16)
@@ -472,7 +478,12 @@ def main():
         torch_dtype=torch.float16, safety_checker=None,
     )
     pipe_cn.scheduler = UniPCMultistepScheduler.from_config(pipe_cn.scheduler.config)
-    pipe_cn.enable_xformers_memory_efficient_attention()
+    try:
+        pipe_cn.enable_xformers_memory_efficient_attention()
+        print("[Models] xformers memory efficient attention enabled.")
+    except Exception:
+        pipe_cn.enable_attention_slicing()
+        print("[Models] xformers unavailable, using attention slicing fallback.")
     pipe_cn.to("cuda")
     cn_canny.to("cuda")   # move to CUDA before building shared pipelines
 
