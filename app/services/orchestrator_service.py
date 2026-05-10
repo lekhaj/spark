@@ -138,7 +138,7 @@ class GPUOrchestrator:
         logger.info(f"[GPU] {' '.join(f'{q}={n}' for q,n in queues.items())} instance={gpu_state} ip={infra.GPU_PUBLIC_IP}")
 
         if total > 0:
-            self.idle_since = None
+            self.idle_since = None          # tasks arrived — reset idle clock
             if not gpu_running:
                 logger.info(f"[GPU] {total} task(s) queued — starting instance...")
                 if not aws_service.start_instance(self._gpu_alias):
@@ -146,7 +146,27 @@ class GPUOrchestrator:
                     return
             self._ensure_workers_for_queues(queues)
         else:
-            self.idle_since = None
+            # No work in any queue — track idle time and stop when threshold hit
+            if not gpu_running:
+                self.idle_since = None      # already stopped, nothing to do
+            else:
+                if self.idle_since is None:
+                    self.idle_since = time.time()
+                    logger.info("[GPU] All queues empty — idle timer started")
+                else:
+                    idle_elapsed = time.time() - self.idle_since
+                    idle_min     = idle_elapsed / 60
+                    logger.info(
+                        f"[GPU] Idle {idle_min:.1f}/{self.idle_shutdown // 60} min "
+                        f"(threshold={self.idle_shutdown // 60} min)"
+                    )
+                    if idle_elapsed >= self.idle_shutdown:
+                        logger.warning(
+                            f"[GPU] Idle threshold reached ({self.idle_shutdown // 60} min) "
+                            f"— stopping instance {infra.GPU_INSTANCE_ID}"
+                        )
+                        aws_service.stop_instance(self._gpu_alias)
+                        self.idle_since = None
 
     # ── Status ────────────────────────────────────────────────────────────────
 
