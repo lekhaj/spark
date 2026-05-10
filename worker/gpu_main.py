@@ -98,8 +98,8 @@ def main():
     parser = argparse.ArgumentParser(description="Spark GPU Worker Manager")
     parser.add_argument(
         "--workers",
-        default="sd15,trellis,rig,manual",
-        help="Comma-separated list of workers: sd15, trellis, rig, manual (default: all)",
+        default="manual",
+        help="Comma-separated list of workers: manual, sd15, trellis, rig (default: manual)",
     )
     parser.add_argument(
         "--no-shutdown",

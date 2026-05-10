@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GPU worker for the manual character-image generation pipeline (manual_gen_tasks queue)."""
+"""GPU worker — handles all manual_gen pipeline stages: Flux, SD1.5, TRELLIS, Rig."""
 
 from __future__ import annotations
 
@@ -7,6 +7,10 @@ import io
 import json
 import logging
 import os
+import shutil
+import subprocess
+import sys
+import tempfile
 import time
 from typing import Optional
 
@@ -22,13 +26,41 @@ from result_channel import (
     push_done,
     push_error,
     push_queued,
+    push_glb_done,
 )
 
+# ── Flux ──────────────────────────────────────────────────────────────────────
 IMG_SIZE            = 512
 FLUX_MODEL          = os.getenv("FLUX_MODEL_ID",     "black-forest-labs/FLUX.1-schnell")
 SD_MODEL            = os.getenv("SD_MODEL_ID",       "Lykon/DreamShaper")
 TPOSE_OPENPOSE_PATH = os.getenv("TPOSE_OPENPOSE_PATH", "")
-TRELLIS_QUEUE       = "model_tasks"
+
+# ── TRELLIS ───────────────────────────────────────────────────────────────────
+TRELLIS_REPO_PATH  = os.getenv("TRELLIS_REPO_PATH", os.path.expanduser("~/trellis"))
+TRELLIS_MODEL_ID   = os.getenv("TRELLIS_MODEL_ID",  "microsoft/TRELLIS.2-4B")
+TRELLIS_TEXTURE_SZ = int(os.getenv("TRELLIS_TEXTURE_SIZE", "1024"))
+TRELLIS_DECIMATION = int(os.getenv("TRELLIS_DECIMATION",   "1000000"))
+TRELLIS_REMESH     = os.getenv("TRELLIS_REMESH", "true").lower() == "true"
+REMOVE_BG          = os.getenv("REMOVE_BG",     "true").lower() == "true"
+
+def _ensure_trellis_in_path():
+    if TRELLIS_REPO_PATH not in sys.path:
+        sys.path.insert(0, TRELLIS_REPO_PATH)
+
+# ── Rig (Blender ARP) ─────────────────────────────────────────────────────────
+BLENDER_PATH        = os.getenv("BLENDER_PATH", os.path.expanduser("~/blender/blender"))
+_THIS_DIR           = os.path.dirname(os.path.abspath(__file__))
+ARP_SCRIPT          = os.path.join(os.path.dirname(_THIS_DIR), "blender_scripts", "auto_rig_smart.py")
+BLENDER_TIMEOUT_SEC = int(os.getenv("BLENDER_TIMEOUT_SEC", str(10 * 60)))
+
+_CHAR_TYPE_MAP = {
+    "humanoid": "humanoid", "bipedal": "humanoid", "human": "humanoid",
+    "quadruped": "quadruped", "quad": "quadruped", "animal": "quadruped",
+    "bird": "bird", "fish": "fish",
+}
+
+def _map_char_type(raw: str) -> str:
+    return _CHAR_TYPE_MAP.get((raw or "humanoid").lower(), "humanoid")
 
 logger = logging.getLogger("ManualGenWorker")
 
@@ -53,13 +85,15 @@ class ManualGenWorker(BaseWorker):
     def __init__(self):
         super().__init__()
         # All models are lazy-loaded on first use
-        self._flux_pipe   = None
-        self._pipe_cn     = None
-        self._pipe_biped  = None
-        self._pipe_quad   = None
-        self._pipe_i2i    = None
-        self._cn_canny    = None
-        self._cn_openpose = None
+        self._flux_pipe    = None
+        self._pipe_cn      = None
+        self._pipe_biped   = None
+        self._pipe_quad    = None
+        self._pipe_i2i     = None
+        self._cn_canny     = None
+        self._cn_openpose  = None
+        self._trellis_pipe = None
+        self._trellis_rembg = None
 
     def load_models(self):
         self.logger.info("ManualGenWorker ready — models will load lazily on first use.")
@@ -142,6 +176,8 @@ class ManualGenWorker(BaseWorker):
                 self._run_multiview(task, r)
             elif stage == "trellis":
                 self._run_trellis(task, r)
+            elif stage == "rig":
+                self._run_rig(task, r)
             else:
                 raise ValueError(f"Unknown stage: '{stage}'")
 
@@ -154,7 +190,7 @@ class ManualGenWorker(BaseWorker):
     # ── Lazy model loaders ────────────────────────────────────────────────────
 
     def _evict_sd(self):
-        """Move SD/ControlNet models off VRAM to free space for Flux."""
+        """Move SD/ControlNet models off VRAM."""
         if self._pipe_cn is None:
             return
         for obj in (self._pipe_cn, self._cn_openpose, self._cn_canny,
@@ -168,13 +204,22 @@ class ManualGenWorker(BaseWorker):
         self.logger.info("[evict_sd] SD models moved to CPU")
 
     def _evict_flux(self):
-        """Move Flux off VRAM to free space for SD."""
-        if self._flux_pipe is None:
-            return
-        # With sequential_cpu_offload, .to("cpu") is a no-op on the pipeline level;
-        # clear the cache directly instead.
+        """Flux uses sequential CPU offload — no VRAM state after inference. Clear cache."""
         torch.cuda.empty_cache()
-        self.logger.info("[evict_flux] VRAM cache cleared before SD load")
+
+    def _evict_trellis(self):
+        """Move TRELLIS pipeline off VRAM."""
+        if self._trellis_pipe is None:
+            return
+        try:
+            self._trellis_pipe.to("cpu")
+        except Exception:
+            try:
+                self._trellis_pipe.cpu()
+            except Exception:
+                pass
+        torch.cuda.empty_cache()
+        self.logger.info("[evict_trellis] TRELLIS pipeline moved to CPU")
 
     def _ensure_flux(self):
         """Load Flux pipeline into GPU memory if not already loaded."""
@@ -261,6 +306,37 @@ class ManualGenWorker(BaseWorker):
 
         self.logger.info("SD1.5 + ControlNet pipelines loaded.")
 
+    def _ensure_trellis(self):
+        """Load TRELLIS.2 pipeline onto CUDA if not already loaded."""
+        if self._trellis_pipe is not None:
+            # Already loaded — ensure it's on GPU
+            try:
+                self._trellis_pipe.to("cuda")
+            except Exception:
+                pass
+            return
+
+        _ensure_trellis_in_path()
+        self.logger.info(f"Loading TRELLIS.2 pipeline: {TRELLIS_MODEL_ID} ...")
+        try:
+            from trellis2.pipelines import Trellis2ImageTo3DPipeline
+        except ImportError:
+            raise ImportError(
+                "trellis2 package not found. "
+                "Run: bash worker/gpu_setup/install_trellis.sh"
+            )
+        self._trellis_pipe = Trellis2ImageTo3DPipeline.from_pretrained(TRELLIS_MODEL_ID)
+        self._trellis_pipe.cuda()
+        self.logger.info("TRELLIS.2 pipeline loaded on CUDA.")
+
+        if REMOVE_BG:
+            try:
+                import rembg
+                self._trellis_rembg = rembg.new_session("u2net")
+                self.logger.info("rembg loaded.")
+            except ImportError:
+                self.logger.warning("rembg not installed — background will not be removed.")
+
     # ── Stage handlers ─────────────────────────────────────────────────────────
 
     def _run_flux(self, task: dict, r) -> None:
@@ -281,7 +357,8 @@ class ManualGenWorker(BaseWorker):
         steps          = int(params.get("steps",          4))
         guidance_scale = float(params.get("guidance_scale", 0.0))
 
-        self._evict_sd()      # free VRAM before loading Flux transformer
+        self._evict_sd()
+        self._evict_trellis()
         self._ensure_flux()
 
         self.logger.info(
@@ -332,7 +409,8 @@ class ManualGenWorker(BaseWorker):
         canny_weight     = float(params.get("canny_weight",     0.55))
         category         = params.get("category",               "humanoid")
 
-        self._evict_flux()    # free VRAM before loading SD models
+        self._evict_flux()
+        self._evict_trellis()
         self._ensure_sd()
 
         # Download init image
@@ -403,7 +481,8 @@ class ManualGenWorker(BaseWorker):
         cfg     = float(params.get("cfg",     7.0))
         steps   = int(params.get("steps",     20))
 
-        self._evict_flux()    # free VRAM before loading SD models
+        self._evict_flux()
+        self._evict_trellis()
         self._ensure_sd()
 
         init_img = self._download_image(input_image_url)
@@ -453,7 +532,8 @@ class ManualGenWorker(BaseWorker):
         cfg     = float(params.get("cfg",     7.0))
         steps   = int(params.get("steps",     20))
 
-        self._evict_flux()    # free VRAM before loading SD models
+        self._evict_flux()
+        self._evict_trellis()
         self._ensure_sd()
 
         init_img = self._download_image(input_image_url)
@@ -486,57 +566,143 @@ class ManualGenWorker(BaseWorker):
         self.logger.info(f"[{stage}] done → {url}")
 
     def _run_trellis(self, task: dict, r) -> None:
-        """
-        Forward a TRELLIS 3D reconstruction task to the TRELLIS worker queue.
-
-        Does NOT run any GPU inference itself — just translates the manual_gen
-        task payload into the format expected by trellis_worker.py and pushes
-        it onto the model_tasks Redis queue.
-
-        Marks the trellis stage as "queued" in MongoDB (waiting for TRELLIS worker).
-
-        Task params (expected inside task["params"]):
-            front_url  — public S3 URL of front image
-            side_url   — public S3 URL of side image
-            back_url   — public S3 URL of back image
-        """
+        """Inline TRELLIS.2 3D reconstruction — no external queue forwarding."""
         session_id = task["session_id"]
-        task_id    = task["task_id"]
-        stage      = task["stage"]   # "trellis"
+        stage      = task.get("stage", "trellis")
         params     = task.get("params") or {}
 
-        # UI sends top-level input_front/input_side/input_back
-        front_url  = (task.get("input_front") or params.get("front_url",  ""))
-        side_url   = (task.get("input_side")  or params.get("side_url",   ""))
-        back_url   = (task.get("input_back")  or params.get("back_url",   ""))
-        output_key = f"manual_gen/{session_id}/trellis.glb"
-
+        front_url = task.get("input_front") or params.get("front_url", "")
         if not front_url:
             raise ValueError(
-                "trellis task missing required param: front_url. "
-                "Ensure sd_stage2 has completed and front_url is populated in params."
+                "trellis stage missing input_front URL. "
+                "Ensure sd_stage2 is done and its image URL is passed."
             )
 
-        trellis_payload = {
-            "task_id":    task_id,
-            "session_id": session_id,
-            "stage":      "trellis",
-            "front_url":  front_url,
-            "side_url":   side_url,
-            "back_url":   back_url,
-            "output_key": output_key,
-            "timestamp":  time.time(),
-        }
+        output_key = f"manual_gen/{session_id}/trellis.glb"
 
-        r.rpush(TRELLIS_QUEUE, json.dumps(trellis_payload))
+        # Evict SD before loading TRELLIS (~20-22 GB on CUDA)
+        self._evict_sd()
+        self._evict_flux()
+        self._ensure_trellis()
+
+        # Download and prep front image
+        resp = requests.get(front_url, timeout=30)
+        resp.raise_for_status()
+        image = Image.open(io.BytesIO(resp.content)).convert("RGBA")
+
+        if REMOVE_BG and self._trellis_rembg is not None:
+            import rembg
+            image = rembg.remove(image, session=self._trellis_rembg)
+
+        # Composite transparent areas to white, resize to 512×512
+        bg = Image.new("RGB", image.size, (255, 255, 255))
+        if image.mode == "RGBA":
+            bg.paste(image, mask=image.split()[3])
+        else:
+            bg.paste(image)
+        image_rgb = bg.resize((512, 512))
+
         self.logger.info(
-            f"[trellis] session={session_id[:8]} pushed to {TRELLIS_QUEUE} "
-            f"front={front_url!r}"
+            f"[trellis] session={session_id[:8]} running TRELLIS.2 "
+            f"(texture={TRELLIS_TEXTURE_SZ} decimation={TRELLIS_DECIMATION})"
         )
 
-        # Mark the trellis stage as queued via result_channel → CPU → MongoDB
-        push_queued(r, session_id, stage, task_id)
-        self.logger.info(f"[trellis] session={session_id[:8]} stage marked queued.")
+        import o_voxel
+        with torch.no_grad():
+            mesh = self._trellis_pipe.run(image_rgb)[0]
+
+        glb = o_voxel.postprocess.to_glb(
+            vertices=mesh.vertices,
+            faces=mesh.faces,
+            attr_volume=mesh.attrs,
+            coords=mesh.coords,
+            attr_layout=mesh.layout,
+            voxel_size=mesh.voxel_size,
+            aabb=[[-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]],
+            decimation_target=TRELLIS_DECIMATION,
+            texture_size=TRELLIS_TEXTURE_SZ,
+            remesh=TRELLIS_REMESH,
+        )
+
+        tmp_dir  = tempfile.mkdtemp(prefix="trellis2_")
+        glb_path = os.path.join(tmp_dir, "output.glb")
+        try:
+            glb.export(glb_path, extension_webp=True)
+            self.logger.info(f"[trellis] GLB exported ({os.path.getsize(glb_path) // 1024} KB)")
+            self.upload_file(glb_path, output_key, "model/gltf-binary")
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        glb_url = self.s3_public_url(output_key)
+        torch.cuda.empty_cache()
+
+        push_glb_done(r, session_id, stage, glb_url, output_key)
+        self.logger.info(f"[trellis] done → {glb_url}")
+
+    def _run_rig(self, task: dict, r) -> None:
+        """Blender + Auto-Rig Pro headless rigging. CPU-only — no VRAM needed."""
+        session_id    = task["session_id"]
+        stage         = task.get("stage", "rig")
+        char_type     = task.get("char_type", "humanoid")
+        input_glb_url = task.get("input_glb_url") or task.get("glb_url", "")
+
+        if not input_glb_url:
+            raise ValueError(
+                "rig stage missing input_glb_url. "
+                "Ensure trellis stage is done and its GLB URL is passed."
+            )
+
+        arp_type   = _map_char_type(char_type)
+        output_key = f"manual_gen/{session_id}/rig_{char_type}.glb"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            input_glb  = os.path.join(tmp, "input.glb")
+            output_glb = os.path.join(tmp, "output_rigged.glb")
+
+            # Download GLB (binary — cannot use PIL)
+            resp = requests.get(input_glb_url, timeout=60)
+            resp.raise_for_status()
+            with open(input_glb, "wb") as f:
+                f.write(resp.content)
+
+            self.logger.info(
+                f"[rig] session={session_id[:8]} type={arp_type} "
+                f"input={os.path.getsize(input_glb)/1e6:.2f} MB"
+            )
+
+            cmd = [
+                BLENDER_PATH, "--background",
+                "--python", ARP_SCRIPT,
+                "--",
+                "--input",          input_glb,
+                "--output",         output_glb,
+                "--character_type", arp_type,
+            ]
+
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=BLENDER_TIMEOUT_SEC,
+            )
+
+            blender_out = proc.stdout + proc.stderr
+            for line in blender_out.splitlines():
+                if any(tag in line for tag in ("[ARP]", "Error", "error", "WARNING", "RIGGING")):
+                    self.logger.info(f"  blender: {line}")
+
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    f"Blender exited {proc.returncode}.\n"
+                    "Last 20 lines:\n" + "\n".join(blender_out.splitlines()[-20:])
+                )
+
+            if not os.path.exists(output_glb):
+                raise RuntimeError(f"Blender exited OK but output not found: {output_glb}")
+
+            self.logger.info(f"[rig] rigged GLB {os.path.getsize(output_glb)/1e6:.2f} MB")
+            self.upload_file(output_glb, output_key, "model/gltf-binary")
+
+        glb_url = self.s3_public_url(output_key)
+        push_glb_done(r, session_id, stage, glb_url, output_key)
+        self.logger.info(f"[rig] done → {glb_url}")
 
     # ── Utilities ─────────────────────────────────────────────────────────────
 

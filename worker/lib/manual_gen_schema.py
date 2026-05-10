@@ -37,6 +37,7 @@ STAGE_NAMES = (
     "multiview_side",
     "multiview_back",
     "trellis",
+    "rig",
 )
 
 
@@ -87,6 +88,22 @@ def _default_normalize_doc() -> dict:
         "image_url":   None,
         "s3_key":      None,
         "error":       None,
+    }
+
+
+def _default_rig_doc() -> dict:
+    """Return a blank RigDoc (Blender ARP, CPU-only, queued via manual_gen_tasks)."""
+    return {
+        "status":       "idle",
+        "char_type":    "humanoid",
+        "input_stage":  "trellis",
+        "image_url":    None,   # stores the rigged GLB URL when done
+        "s3_key":       None,
+        "task_id":      None,
+        "queued_at":    None,
+        "started_at":   None,
+        "completed_at": None,
+        "error":        None,
     }
 
 
@@ -149,6 +166,7 @@ def _default_stages() -> dict:
                 "input_back":  "multiview_back",
             },
         ),
+        "rig": _default_rig_doc(),
     }
 
 

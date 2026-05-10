@@ -171,6 +171,10 @@ def _load_session_state(char_label: str, version: str) -> dict:
         # trellis
         "trellis_status":  "idle",
         "trellis_url":     "",
+        # rig
+        "rig_status":      "idle",
+        "rig_url":         "",
+        "rig_char_type":   "humanoid",
     }
     try:
         db   = _db()
@@ -234,6 +238,10 @@ def _load_session_state(char_label: str, version: str) -> dict:
             # trellis
             "trellis_status": _s("trellis", "status",    "idle"),
             "trellis_url":    _s("trellis", "image_url", ""),
+            # rig
+            "rig_status":     _s("rig", "status",    "idle"),
+            "rig_url":        _s("rig", "image_url", ""),
+            "rig_char_type":  _s("rig", "char_type", "humanoid") or "humanoid",
         }
     except Exception as exc:
         defaults["flux_status"] = f"ERROR loading: {exc}"
@@ -452,7 +460,7 @@ def _queue_multiview(session_id, side_or_back: str, prompt, negative,
 
 
 def _queue_trellis(session_id, front_src, side_src, back_src) -> tuple:
-    """Queue TRELLIS task to model_tasks queue. Returns (task_id, status_msg)."""
+    """Queue TRELLIS task to manual_gen_tasks — handled inline by ManualGenWorker."""
     if not session_id:
         return "", "No session loaded. Click 'Load Session' first."
     try:
@@ -461,24 +469,43 @@ def _queue_trellis(session_id, front_src, side_src, back_src) -> tuple:
         side_url  = get_stage_image_url(db, session_id, side_src)  or ""
         back_url  = get_stage_image_url(db, session_id, back_src)  or ""
 
-        if not any([front_url, side_url, back_url]):
-            return "", "No source images found. Run at least one image stage first."
+        if not front_url:
+            return "", f"No image in '{front_src}'. Run that stage first — it is the primary input."
 
         payload = {
-            "type":       "trellis",
-            "session_id": session_id,
-            "stage":      "trellis",
+            "type":        "trellis",
+            "session_id":  session_id,
+            "stage":       "trellis",
             "input_front": front_url,
             "input_side":  side_url,
             "input_back":  back_url,
-            "params": {
-                "input_front": front_src,
-                "input_side":  side_src,
-                "input_back":  back_src,
-            },
         }
-        task_id = _push_task(payload, queue=REDIS_QUEUE_MODEL, check_gpu=True)
+        task_id = _push_task(payload, queue=REDIS_QUEUE_MANUAL, check_gpu=True)
         mark_queued(db, session_id, "trellis", task_id)
+        return task_id, f"queued ✓  task_id={task_id[:8]}…"
+    except Exception as exc:
+        return "", f"ERROR: {exc}"
+
+
+def _queue_rig(session_id: str, char_type: str) -> tuple:
+    """Queue rig task to manual_gen_tasks. Reads GLB URL from trellis stage in MongoDB."""
+    if not session_id:
+        return "", "No session loaded. Click 'Load Session' first."
+    try:
+        db      = _db()
+        glb_url = get_stage_image_url(db, session_id, "trellis")
+        if not glb_url:
+            return "", "Trellis stage has no GLB yet. Run TRELLIS first."
+
+        payload = {
+            "type":          "rig",
+            "session_id":    session_id,
+            "stage":         "rig",
+            "char_type":     char_type or "humanoid",
+            "input_glb_url": glb_url,
+        }
+        task_id = _push_task(payload, queue=REDIS_QUEUE_MANUAL, check_gpu=True)
+        mark_queued(db, session_id, "rig", task_id)
         return task_id, f"queued ✓  task_id={task_id[:8]}…"
     except Exception as exc:
         return "", f"ERROR: {exc}"
@@ -586,6 +613,7 @@ def generation_studio_ui():
         sd2_sid_state    = gr.State(None)
         mv_sid_state     = gr.State(None)
         trel_sid_state   = gr.State(None)
+        rig_sid_state    = gr.State(None)
 
         # Auto-refresh timer — polls all stage statuses every 4 s when a session is active.
         stage_timer = gr.Timer(value=4, active=False)
@@ -793,7 +821,7 @@ def generation_studio_ui():
             gr.Markdown("**Asset:**")
             trel_char, trel_ver, trel_sid_info = _picker(_initial_chars)
             gr.Markdown("---")
-            gr.Markdown("Sends front+side+back to TRELLIS worker via `model_tasks` queue.")
+            gr.Markdown("Runs TRELLIS.2-4B image-to-3D inline. Front image is required; side/back are optional.")
             with gr.Row():
                 trellis_front_src = gr.Dropdown(
                     choices=["sd_stage2", "flux", "sd_stage1"], value="sd_stage2",
@@ -811,7 +839,26 @@ def generation_studio_ui():
                 trellis_btn     = gr.Button("Queue TRELLIS", variant="primary")
                 trellis_status  = gr.Textbox(label="Status", value="idle", interactive=False, scale=2)
                 trellis_refresh = gr.Button("Refresh", size="sm")
-            trellis_url = gr.Textbox(label="3D Mesh URL (when done)", interactive=False)
+            trellis_url = gr.Textbox(label="3D Mesh GLB URL (when done)", interactive=False)
+
+        with gr.Accordion("Stage 6 — Auto-Rig Pro Rigging (CPU)", open=False):
+            gr.Markdown("**Asset:**")
+            rig_char, rig_ver, rig_sid_info = _picker(_initial_chars)
+            gr.Markdown("---")
+            gr.Markdown(
+                "Runs Blender + Auto-Rig Pro headless on the TRELLIS GLB. "
+                "CPU-only — queues to `manual_gen_tasks` after TRELLIS is done."
+            )
+            rig_char_type = gr.Dropdown(
+                choices=["humanoid", "quadruped", "bird", "fish"],
+                value="humanoid",
+                label="Character type",
+            )
+            with gr.Row():
+                rig_queue_btn   = gr.Button("Queue Rig", variant="primary")
+                rig_status      = gr.Textbox(label="Status", value="idle", interactive=False, scale=2)
+                rig_refresh_btn = gr.Button("Refresh", size="sm")
+            rig_url = gr.Textbox(label="Rigged GLB URL (when done)", interactive=False)
 
         # ══════════════════════════════════════════════════════════════════════
         #  EVENT WIRING
@@ -879,9 +926,13 @@ def generation_studio_ui():
                 # trellis
                 state["trellis_status"],
                 state["trellis_url"],
+                # rig
+                state["rig_status"],
+                state["rig_url"],
                 # stage session_id states (all same as global)
-                sid, sid, sid, sid, sid, sid,
+                sid, sid, sid, sid, sid, sid, sid,
                 # stage char/ver cascade
+                gr.update(value=char), gr.update(choices=_list_versions(char) if char else ['v1'], value=ver),
                 gr.update(value=char), gr.update(choices=_list_versions(char) if char else ['v1'], value=ver),
                 gr.update(value=char), gr.update(choices=_list_versions(char) if char else ['v1'], value=ver),
                 gr.update(value=char), gr.update(choices=_list_versions(char) if char else ['v1'], value=ver),
@@ -909,13 +960,16 @@ def generation_studio_ui():
             mv_side_status, mv_side_img, mv_back_status, mv_back_img,
             # trellis
             trellis_status, trellis_url,
+            # rig
+            rig_status, rig_url,
             # stage session_id states — all set to global session on cascade
             flux_sid_state, norm_sid_state, sd1_sid_state,
-            sd2_sid_state, mv_sid_state, trel_sid_state,
+            sd2_sid_state, mv_sid_state, trel_sid_state, rig_sid_state,
             # stage char/ver dropdowns — cascaded from global picker
             flux_char, flux_ver, norm_char, norm_ver,
             sd1_char, sd1_ver, sd2_char, sd2_ver,
             mv_char, mv_ver, trel_char, trel_ver,
+            rig_char, rig_ver,
         ]
 
         # ── Auto-load whenever character or version dropdown changes ──────────
@@ -952,11 +1006,11 @@ def generation_studio_ui():
         def _refresh_chars():
             chars = _list_chars()
             upd = gr.update(choices=chars, value=(chars[0] if chars else None))
-            return upd, upd, upd, upd, upd, upd, upd
+            return upd, upd, upd, upd, upd, upd, upd, upd
 
         refresh_chars_btn.click(
             _refresh_chars, [],
-            [char_label, flux_char, norm_char, sd1_char, sd2_char, mv_char, trel_char],
+            [char_label, flux_char, norm_char, sd1_char, sd2_char, mv_char, trel_char, rig_char],
         )
 
         # ── Create New Asset (creates char + v1, switches dropdown to it) ─────
@@ -971,14 +1025,14 @@ def generation_studio_ui():
                 char_upd,                                   # char_label dropdown
                 gr.update(choices=["v1"], value="v1"),      # version dropdown
                 f"Created {new_char} (v1). Switch to 'Existing Asset' tab to start.",
-                char_upd, char_upd, char_upd, char_upd, char_upd, char_upd,  # per-stage pickers
+                char_upd, char_upd, char_upd, char_upd, char_upd, char_upd, char_upd,  # per-stage pickers
             )
 
         create_asset_btn.click(
             _do_create_asset,
             [new_char_input],
             [char_label, version_dd, session_info,
-             flux_char, norm_char, sd1_char, sd2_char, mv_char, trel_char],
+             flux_char, norm_char, sd1_char, sd2_char, mv_char, trel_char, rig_char],
         )
 
         # ── Flux: Queue + Refresh ─────────────────────────────────────────────
@@ -1136,6 +1190,27 @@ def generation_studio_ui():
             [trellis_status, trellis_url],
         )
 
+        # ── Rig: Queue + Refresh ──────────────────────────────────────────────
+        def _do_queue_rig(sid, char_type):
+            _, status = _queue_rig(sid, char_type)
+            return status
+
+        (rig_queue_btn.click(
+            _do_queue_rig,
+            [rig_sid_state, rig_char_type],
+            [rig_status],
+        ).then(lambda: gr.Timer(active=True), outputs=[stage_timer]))
+
+        def _do_refresh_rig(sid):
+            status, url = _refresh_stage(sid, "rig")
+            return status, url
+
+        rig_refresh_btn.click(
+            _do_refresh_rig,
+            [rig_sid_state],
+            [rig_status, rig_url],
+        )
+
         # ══════════════════════════════════════════════════════════════════════
         #  PER-STAGE AUTO-LOAD: each stage's char/ver picker independently loads
         #  that stage's prompts/params/image without affecting other stages.
@@ -1266,6 +1341,22 @@ def generation_studio_ui():
         trel_char.change(_on_trel_char, [trel_char], [trel_ver, *_trel_outputs])
         trel_ver.change(_load_trel, [trel_char, trel_ver], _trel_outputs)
 
+        # ── Rig per-stage ─────────────────────────────────────────────────────
+        _rig_outputs = [rig_sid_state, rig_sid_info, rig_status, rig_url]
+
+        def _load_rig(char, ver):
+            sid, info = _get_or_create_session(char, ver)
+            state = _load_session_state(char, ver)
+            return (sid, info, state["rig_status"], state["rig_url"])
+
+        def _on_rig_char(char):
+            versions = _list_versions(char) if char else ["v1"]
+            latest = versions[-1] if versions else "v1"
+            return (gr.update(choices=versions, value=latest), *_load_rig(char, latest))
+
+        rig_char.change(_on_rig_char, [rig_char], [rig_ver, *_rig_outputs])
+        rig_ver.change(_load_rig, [rig_char, rig_ver], _rig_outputs)
+
         # ── Auto-load session on page open ────────────────────────────────────
         tab.load(_do_load, [char_label, version_dd], _load_outputs)
 
@@ -1273,13 +1364,12 @@ def generation_studio_ui():
         _ACTIVE_STATUSES = {"queued", "running"}
 
         def _tick_all(sid):
-            """Poll every stage and update status/image. Self-deactivates when idle."""
+            """Poll every stage and update status/image. Self-deactivates when all idle."""
             if not sid:
-                # No session yet — preserve whatever the UI shows, keep timer active
-                # (it will get a real sid once the queue click completes)
                 return (gr.update(), gr.update(), gr.update(),
                         gr.update(), gr.update(), gr.update(),
                         gr.update(), gr.update(), gr.update(),
+                        gr.update(), gr.update(),
                         gr.update(), gr.update(),
                         gr.update(), gr.update(),
                         gr.update(), gr.update(),
@@ -1291,9 +1381,10 @@ def generation_studio_ui():
             ms_st, ms_url = _refresh_stage(sid, "multiview_side")
             mb_st, mb_url = _refresh_stage(sid, "multiview_back")
             tr_st, tr_url = _refresh_stage(sid, "trellis")
+            rg_st, rg_url = _refresh_stage(sid, "rig")
 
             still_active = any(s in _ACTIVE_STATUSES for s in
-                               [fx_st, s1_st, s2_st, ms_st, mb_st, tr_st])
+                               [fx_st, s1_st, s2_st, ms_st, mb_st, tr_st, rg_st])
 
             return (
                 fx_st, fx_url, _url_to_img(fx_url, 400),
@@ -1302,6 +1393,7 @@ def generation_studio_ui():
                 ms_st, _url_to_img(ms_url, 300),
                 mb_st, _url_to_img(mb_url, 300),
                 tr_st, tr_url,
+                rg_st, rg_url,
                 gr.Timer(active=still_active),
             )
 
@@ -1314,6 +1406,7 @@ def generation_studio_ui():
              mv_side_status, mv_side_img,
              mv_back_status, mv_back_img,
              trellis_status, trellis_url,
+             rig_status, rig_url,
              stage_timer],
         )
 
