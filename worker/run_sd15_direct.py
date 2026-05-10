@@ -697,6 +697,49 @@ def main():
         print("  ✓ Face enhancement done.")
         torch.cuda.empty_cache()
 
+        # ── Hand Enhancement Pass (Left & Right) ─────────────────────────────
+        # In a T-pose at 768px, hands are at far left/right edges, mid-body height.
+        # Same crop-upscale-enhance-paste approach as the face pass.
+        hand_prompt = "realistic human hand, five fingers, relaxed open hand, detailed knuckles, natural skin"
+        hand_neg    = "fused fingers, extra fingers, missing fingers, deformed hand, cartoon, blurry, anime"
+
+        # Left hand (image left side)
+        print("  [Hands] Running left hand enhancement pass...")
+        lh_x1 = int(IMG_SIZE * 0.00)
+        lh_y1 = int(IMG_SIZE * 0.35)
+        lh_x2 = int(IMG_SIZE * 0.20)
+        lh_y2 = int(IMG_SIZE * 0.55)
+        lh_crop = refined_img.crop((lh_x1, lh_y1, lh_x2, lh_y2))
+        lh_up   = lh_crop.resize((512, 512), Image.LANCZOS)
+        with torch.no_grad():
+            lh_result = pipe_i2i(
+                prompt=hand_prompt, negative_prompt=hand_neg,
+                image=lh_up, strength=0.35,
+                num_inference_steps=20, guidance_scale=7.0,
+            )
+        lh_enhanced = lh_result.images[0].resize((lh_x2 - lh_x1, lh_y2 - lh_y1), Image.LANCZOS)
+        refined_img.paste(lh_enhanced, (lh_x1, lh_y1))
+        torch.cuda.empty_cache()
+
+        # Right hand (image right side)
+        print("  [Hands] Running right hand enhancement pass...")
+        rh_x1 = int(IMG_SIZE * 0.80)
+        rh_y1 = int(IMG_SIZE * 0.35)
+        rh_x2 = int(IMG_SIZE * 1.00)
+        rh_y2 = int(IMG_SIZE * 0.55)
+        rh_crop = refined_img.crop((rh_x1, rh_y1, rh_x2, rh_y2))
+        rh_up   = rh_crop.resize((512, 512), Image.LANCZOS)
+        with torch.no_grad():
+            rh_result = pipe_i2i(
+                prompt=hand_prompt, negative_prompt=hand_neg,
+                image=rh_up, strength=0.35,
+                num_inference_steps=20, guidance_scale=7.0,
+            )
+        rh_enhanced = rh_result.images[0].resize((rh_x2 - rh_x1, rh_y2 - rh_y1), Image.LANCZOS)
+        refined_img.paste(rh_enhanced, (rh_x1, rh_y1))
+        print("  ✓ Hand enhancement done.")
+        torch.cuda.empty_cache()
+
         refined_key = f"images/{BIOME_ID}/{char_name}_refined_v2.png"
 
         # ── Step 5: Upload Stage 2 to S3 ──────────────────────────────────────
