@@ -45,7 +45,7 @@ for _p in (_worker_dir, _lib_dir):
         sys.path.insert(0, _p)
 
 from workers.manual_gen_worker import ManualGenWorker  # noqa: E402
-from workers.auto_shutdown     import AutoShutdown      # noqa: E402
+from workers.auto_shutdown import AutoShutdown, IDLE_THRESHOLD_MIN  # noqa: E402
 
 
 # ── GPU info helper ───────────────────────────────────────────────────────────
@@ -84,8 +84,7 @@ def main() -> None:
     logger.info(f"  Log     : /tmp/manual_gen_worker.log")
     logger.info("=" * 60)
 
-    # ── Auto-shutdown: stop this EC2 instance after IDLE_SHUTDOWN_MINUTES idle ──
-    from workers.auto_shutdown import IDLE_THRESHOLD_MIN
+    # ── Auto-shutdown: stop EC2 instance after IDLE_SHUTDOWN_MINUTES of idle ──
     shutdown = AutoShutdown(queues=["manual_gen_tasks"])
     shutdown.start()
     logger.info(f"  AutoShutdown : idle threshold = {IDLE_THRESHOLD_MIN} min")
