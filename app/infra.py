@@ -16,6 +16,7 @@ GPU_INSTANCE_ID  = "i-0d6b9d6d34ccc053d"   # g6.2xlarge — L4 GPU workers (imag
 CPU_PUBLIC_IP = "18.207.13.85"
 GPU_PUBLIC_IP = "3.215.211.192"
 GPU_PUBLIC_DNS = "ec2-3-215-211-192.compute-1.amazonaws.com"
+GPU_PRIVATE_IP = "172.31.42.124"   # updated after instance restart 2026-05-10
 
 # ── Private VPC IP (CPU side) ────────────────────────────────────────────────
 # GPU→CPU Redis/MongoDB traffic uses this. GPU's own private IP is not
