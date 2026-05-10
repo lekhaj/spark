@@ -75,8 +75,8 @@ CHARACTERS = {
         "stage1_prompt": (
             "full body female, T-pose, both arms stretched out horizontally at shoulder height, "
             "palms facing down, straight arms, legs straight, feet flat on ground, "
-            "zip jacket, pants, boots, pure white background, flat even lighting, "
-            "character sheet, front view, head to toe, full body visible"
+            "zip jacket, pants, boots, pure solid blank white background, nothing in background, "
+            "flat even lighting, character sheet, front view, head to toe, full body visible"
         ),
         "stage1_negative": (
             "arms raised, arms up, arms bent, holding object, holding bar, holding pole, "
@@ -92,8 +92,8 @@ CHARACTERS = {
             "palms facing down, straight arms not raised, legs straight, feet visible, "
             "fitted zip jacket, combat pants, leather belt, knee-high boots, "
             "auburn hair tied back in bun, calm face, closed mouth, "
-            "pure white background, flat studio lighting, "
-            "character sheet, game asset, front view, head to toe"
+            "pure solid blank white background, nothing in background, "
+            "flat studio lighting, character sheet, game asset, front view, head to toe"
         ),
         "stage2_negative": (
             "arms raised, arms up, arms bent, holding object, holding bar, holding pole, "
@@ -728,9 +728,9 @@ def main():
         # Left hand (image left side) — slightly wider crop to catch full hand
         print("  [Hands] Running left hand enhancement pass...")
         lh_x1 = int(IMG_SIZE * 0.00)
-        lh_y1 = int(IMG_SIZE * 0.33)
+        lh_y1 = int(IMG_SIZE * 0.18)  # Changed from 0.33 to grab the actual arms!
         lh_x2 = int(IMG_SIZE * 0.22)
-        lh_y2 = int(IMG_SIZE * 0.56)
+        lh_y2 = int(IMG_SIZE * 0.36)  # Changed from 0.56
         lh_crop = refined_img.crop((lh_x1, lh_y1, lh_x2, lh_y2))
         lh_up   = lh_crop.resize((512, 512), Image.LANCZOS)
         with torch.no_grad():
@@ -746,9 +746,9 @@ def main():
         # Right hand (image right side)
         print("  [Hands] Running right hand enhancement pass...")
         rh_x1 = int(IMG_SIZE * 0.78)
-        rh_y1 = int(IMG_SIZE * 0.33)
+        rh_y1 = int(IMG_SIZE * 0.18)  # Changed from 0.33 to grab the actual arms!
         rh_x2 = int(IMG_SIZE * 1.00)
-        rh_y2 = int(IMG_SIZE * 0.56)
+        rh_y2 = int(IMG_SIZE * 0.36)  # Changed from 0.56
         rh_crop = refined_img.crop((rh_x1, rh_y1, rh_x2, rh_y2))
         rh_up   = rh_crop.resize((512, 512), Image.LANCZOS)
         with torch.no_grad():
