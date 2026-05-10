@@ -40,7 +40,8 @@ import pymongo
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://kartik:Kartikg421@localhost:27017")
 MONGO_DB  = os.getenv("MONGO_DB",  "World_builder")
 
-COLLECTION = "manual_gen_stage_runs"
+COLLECTION            = "manual_gen_stage_runs"
+CHARACTERS_COLLECTION = "manual_gen_characters"   # parent asset registry
 
 # ── Valid stage names ─────────────────────────────────────────────────────────
 STAGE_NAMES = (
@@ -206,10 +207,46 @@ def auto_retry_run(
     return run_id, new_minor
 
 
+# ── Character registry (parent assets) ───────────────────────────────────────
+
+def create_character(db, label: str) -> bool:
+    """
+    Register a character label in the parent-asset registry.
+    Idempotent — safe to call multiple times for the same label.
+    Returns True on success.
+    """
+    try:
+        db[CHARACTERS_COLLECTION].update_one(
+            {"_id": label},
+            {"$setOnInsert": {"_id": label, "created_at": time.time()}},
+            upsert=True,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def list_characters(db) -> list[str]:
+    """
+    Return all character labels from the parent-asset registry,
+    merged with any char_labels that exist in stage runs (backward compat).
+    Sorted alphabetically.
+    """
+    try:
+        from_registry = {d["_id"] for d in db[CHARACTERS_COLLECTION].find({}, {"_id": 1})}
+    except Exception:
+        from_registry = set()
+    try:
+        from_runs = set(db[COLLECTION].distinct("char_label"))
+    except Exception:
+        from_runs = set()
+    merged = sorted([l for l in (from_registry | from_runs) if l])
+    return merged
+
+
 def list_chars(db) -> list[str]:
-    """Return all distinct char_labels sorted alphabetically."""
-    labels = db[COLLECTION].distinct("char_label")
-    return sorted([l for l in labels if l])
+    """Alias for list_characters — returns all known character labels."""
+    return list_characters(db)
 
 
 def list_stages_for_char(db, char_label: str) -> list[str]:

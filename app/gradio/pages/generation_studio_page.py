@@ -43,6 +43,7 @@ if _WORKER_DIR not in sys.path:
 
 from lib.manual_gen_schema import (
     get_db,
+    create_character, list_characters,
     create_run, get_run_for, ensure_run, auto_retry_run,
     list_chars, list_stage_majors, list_stage_minors,
     next_stage_major,
@@ -90,9 +91,10 @@ def _push_task(payload: dict) -> str:
     return payload["task_id"]
 
 def _list_chars() -> list[str]:
+    """Read character list from the registry + any existing stage runs."""
     try:
-        return list_chars(_db()) or []
-    except Exception:
+        return list_characters(_db()) or []
+    except Exception as e:
         return []
 
 def _list_majors(char: str, stage: str) -> list[int]:
@@ -768,11 +770,13 @@ def generation_studio_ui():
         def _do_create(label):
             label = (label or "").strip()
             if not label:
-                return [gr.update()] * 8 + ["Enter a label."]
-            create_run(_db(), label, "flux", 1, 0)
+                return [gr.update()] * 8 + ["Enter a character label first."]
+            ok    = create_character(_db(), label)
+            if not ok:
+                return [gr.update()] * 8 + [f"❌ Failed to save '{label}' — check MongoDB connection."]
             chars = _list_chars()
             upd   = gr.update(choices=chars, value=label)
-            return [upd] * 8 + [f"Created '{label}' — click ⬇ Prefill All Stages, then queue each stage."]
+            return [upd] * 8 + [f"✓ Created '{label}'. Select it in any stage below and click ⬇ Prefill All Stages."]
 
         g_create_btn.click(_do_create, [g_new_char_input],
                            [g_char, fx_char, nm_char, s1_char,
