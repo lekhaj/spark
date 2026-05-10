@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     # ── GPU SSH Configuration ──────────────────────────────────────────────
     GPU_A10_PUBLIC_IP: Optional[str] = None            # Public IP of GPU instance
     # SSH key path on the orchestrator (CPU instance) used to reach the GPU instance
-    GPU_SSH_KEY_PATH: str = "/home/ubuntu/.ssh/us_cpu_key.pem"   # us_cpu_key works for GPU too
+    GPU_SSH_KEY_PATH: str = "/home/ubuntu/.ssh/s_spu_key.pem"
 
     # ── Spot GPU Instance Config (FUTURE — disabled until custom AMI ready) ─
     # SPOT_AMI_ID: Optional[str] = None
