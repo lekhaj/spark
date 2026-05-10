@@ -58,23 +58,25 @@ IMG_SIZE = 768
 # ── Character Config ─────────────────────────────────────────────────────────
 CHARACTERS = {
     "human_ranger": {
-        # SD1.5: Keep it VERY simple. Just focus on body shape and white background.
+        # SD1.5: Fix the structure. Stop it from leaning forward, and stop shoes on hands.
         "sd_prompt": (
-            "full body female, perfect T-pose, both arms horizontal, straight legs, "
-            "simple zip jacket, tight pants, simple boots, "
-            "pure blank white background, nothing in background, flat lighting"
+            "full body female, standing perfectly upright, straight spine, orthographic front view, "
+            "looking directly at camera, perfect anatomical T-pose, both arms extended horizontally, "
+            "straight legs, bare hands, hands are bare, feet wearing simple boots, "
+            "simple zip jacket, tight pants, pure blank white background, flat lighting"
         ),
         "sd_neg": (
+            "leaning forward, bent spine, looking down, perspective, angled camera, "
+            "boots on hands, shoes on hands, extra shoes, gloves, "
             "arms raised, arms bent, holding object, cape, cloak, flowing cloth, "
             "cityscape, scenery, shadow, cropped body, cut off, missing feet"
         ),
         
-        # Flux: Keep it simple but add the premium quality keywords. 
         "flux_prompt": (
-            "high quality 3d game asset, beautiful female ranger, "
-            "T-pose, horizontal arms, tactical zip jacket, combat pants, knee-high boots, "
-            "auburn hair tied back, realistic skin, perfect hands with 5 fingers, "
-            "pure blank white background, flat studio lighting"
+            "high quality 3d game asset, beautiful female ranger, standing perfectly upright, "
+            "orthographic front view, T-pose, horizontal arms, tactical zip jacket, combat pants, "
+            "feet wearing knee-high boots, bare hands, highly detailed bare hands with 5 fingers, "
+            "auburn hair tied back, realistic skin, pure blank white background, flat studio lighting"
         ),
     }
 }
