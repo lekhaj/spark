@@ -18,6 +18,7 @@ import time
 import argparse
 
 import boto3
+import pymongo
 import torch
 from dotenv import load_dotenv
 from PIL import Image
@@ -40,6 +41,8 @@ except ImportError:
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
+MONGO_URI  = os.getenv("MONGO_URI", "mongodb://kartik:Kartikg421@18.207.13.85:27017")
+MONGO_DB   = os.getenv("MONGO_DB", "World_builder")
 S3_BUCKET  = os.getenv("AWS_S3_BUCKET", "sparkassets-us")
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 BIOME_ID   = "bhavesh_sd_flux_001"
@@ -55,26 +58,23 @@ IMG_SIZE = 768
 # ── Character Config ─────────────────────────────────────────────────────────
 CHARACTERS = {
     "human_ranger": {
-        # SD1.5 is dumb but obedient. Focus ONLY on structure.
+        # SD1.5: Keep it VERY simple. Just focus on body shape and white background.
         "sd_prompt": (
-            "full body female, perfect anatomical T-pose, both arms stretched out horizontally, "
-            "palms facing down, straight arms, legs straight, feet flat on ground, "
+            "full body female, perfect T-pose, both arms horizontal, straight legs, "
             "simple zip jacket, tight pants, simple boots, "
-            "pure solid blank white background, nothing in background, flat even lighting, "
-            "character sheet, front view, head to toe, full body visible in frame"
+            "pure blank white background, nothing in background, flat lighting"
         ),
         "sd_neg": (
             "arms raised, arms bent, holding object, cape, cloak, flowing cloth, "
-            "background, cityscape, scenery, shadow, cropped body, cut off, missing feet"
+            "cityscape, scenery, shadow, cropped body, cut off, missing feet"
         ),
         
-        # Flux is smart but disobedient. Focus ONLY on rich detail and preserving the shape.
+        # Flux: Keep it simple but add the premium quality keywords. 
         "flux_prompt": (
-            "high quality 3d game asset character sheet, beautiful female ranger, "
-            "T-pose, fitted tactical zip jacket, combat pants, leather belt, knee-high boots, "
-            "auburn hair tied back in bun, calm detailed face, realistic skin, "
-            "detailed hands, five fingers, photorealistic, 8k resolution, Unreal Engine 5 render, "
-            "pure solid blank white background, flat studio lighting"
+            "high quality 3d game asset, beautiful female ranger, "
+            "T-pose, horizontal arms, tactical zip jacket, combat pants, knee-high boots, "
+            "auburn hair tied back, realistic skin, perfect hands with 5 fingers, "
+            "pure blank white background, flat studio lighting"
         ),
     }
 }
@@ -97,6 +97,19 @@ def upload_image_to_s3(image: Image.Image, s3_key: str, s3_client) -> str:
     print(f"  [S3] Uploaded → {url}")
     return url
 
+def mongo_update(db, char_name: str, fields: dict):
+    if db is None:
+        return
+    try:
+        db.biomes.update_one(
+            {"_id": BIOME_ID},
+            {"$set": {f"possible_structures.characters.{char_name}.{k}": v for k, v in fields.items()}},
+            upsert=True,
+        )
+        print("  [MongoDB] Database updated successfully.")
+    except Exception as e:
+        print(f"  [MongoDB] Update skipped (DB unreachable): {e}")
+
 # ── Main Pipeline ────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser()
@@ -114,6 +127,15 @@ def main():
         
     cfg = CHARACTERS[char_name]
     s3_client = get_s3_client()
+    
+    # Connect to Mongo
+    try:
+        mongo_client = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=2000)
+        db = mongo_client[MONGO_DB]
+        mongo_client.admin.command('ping')
+    except Exception:
+        db = None
+        print("  [WARN] MongoDB not connected.")
 
     print("=" * 70)
     print(f"  SD First -> Flux Second Pipeline")
@@ -157,7 +179,6 @@ def main():
             width=IMG_SIZE,
         ).images[0]
 
-    # Save Stage 1 image locally
     os.makedirs("/tmp", exist_ok=True)
     sd_out_path = f"/tmp/{char_name}_stage1_sd15.png"
     sd_out.save(sd_out_path)
@@ -185,12 +206,11 @@ def main():
         flux_out = flux_pipe(
             prompt=cfg["flux_prompt"],
             image=sd_out,
-            strength=0.65, # 65% Flux, 35% SD base. Enough to fix hands, not enough to break pose.
-            num_inference_steps=8, # Schnell needs very few steps
+            strength=0.65, # 65% Flux, 35% SD base
+            num_inference_steps=4, # Schnell optimized for exactly 4 steps
             guidance_scale=0.0,    # Schnell requires 0.0
         ).images[0]
 
-    # Save Stage 2 image locally
     flux_out_path = f"/tmp/{char_name}_stage2_flux.png"
     flux_out.save(flux_out_path)
     print(f"  ✓ Flux done. Final image saved to {flux_out_path}")
@@ -201,21 +221,27 @@ def main():
     torch.cuda.empty_cache()
 
     # -------------------------------------------------------------------------
-    # STAGE 3: Upload
+    # STAGE 3: Upload & Database
     # -------------------------------------------------------------------------
-    print("\n[STEP 3] Uploading images to S3...")
+    print("\n[STEP 3] Uploading images to S3 and updating database...")
     s3_key_sd   = f"images/{BIOME_ID}/{char_name}_sd_structure.png"
     s3_key_flux = f"images/{BIOME_ID}/{char_name}_flux_final.png"
 
     url_sd   = upload_image_to_s3(sd_out, s3_key_sd, s3_client)
     url_flux = upload_image_to_s3(flux_out, s3_key_flux, s3_client)
 
+    mongo_update(db, char_name, {
+        "status": "complete",
+        "sd_structure_url": url_sd,
+        "image_url": url_flux,
+        "updated_at": time.time()
+    })
+
     print("\n" + "="*70)
     print("  SUCCESS! New Pipeline Complete.")
     print("="*70)
     print(f"  Structure (SD): {url_sd}")
     print(f"  Final (Flux)  : {url_flux}")
-    print("\nCheck the links above to compare the structural base vs the Flux upgrade!")
 
 if __name__ == "__main__":
     main()
