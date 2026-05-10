@@ -45,6 +45,7 @@ for _p in (_worker_dir, _lib_dir):
         sys.path.insert(0, _p)
 
 from workers.manual_gen_worker import ManualGenWorker  # noqa: E402
+from workers.auto_shutdown     import AutoShutdown      # noqa: E402
 
 
 # ── GPU info helper ───────────────────────────────────────────────────────────
@@ -83,10 +84,20 @@ def main() -> None:
     logger.info(f"  Log     : /tmp/manual_gen_worker.log")
     logger.info("=" * 60)
 
+    # ── Auto-shutdown: stop this EC2 instance after IDLE_SHUTDOWN_MINUTES idle ──
+    from workers.auto_shutdown import IDLE_THRESHOLD_MIN
+    shutdown = AutoShutdown(queues=["manual_gen_tasks"])
+    shutdown.start()
+    logger.info(f"  AutoShutdown : idle threshold = {IDLE_THRESHOLD_MIN} min")
+
     worker = ManualGenWorker()
 
     try:
-        worker.run()
+        worker.run(
+            idle_notify_callback=shutdown.notify_idle,
+            active_callback=shutdown.notify_active,
+            done_callback=shutdown.notify_done,
+        )
     except KeyboardInterrupt:
         logger.info("KeyboardInterrupt received — shutting down gracefully.")
         sys.exit(0)

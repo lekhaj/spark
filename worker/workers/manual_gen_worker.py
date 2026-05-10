@@ -112,7 +112,7 @@ class ManualGenWorker(BaseWorker):
 
     # ── Queue loop ────────────────────────────────────────────────────────────
 
-    def run(self, idle_notify_callback=None):
+    def run(self, idle_notify_callback=None, active_callback=None, done_callback=None):
         logger.info(f"{self.worker_name} starting — queue: {self.input_queue}")
         self.load_models()
 
@@ -145,6 +145,9 @@ class ManualGenWorker(BaseWorker):
             if self.is_expired(task):
                 continue
 
+            if active_callback:
+                active_callback()
+
             logger.info(
                 f"Task → session={task.get('session_id','?')[:8]}  "
                 f"stage={task.get('stage','?')}  char={task.get('char_label','?')}"
@@ -157,6 +160,9 @@ class ManualGenWorker(BaseWorker):
                     push_error(r, task.get("session_id", ""), task.get("stage", ""), str(exc))
                 except Exception:
                     pass
+            finally:
+                if done_callback:
+                    done_callback()
 
     # ── Router ────────────────────────────────────────────────────────────────
 
