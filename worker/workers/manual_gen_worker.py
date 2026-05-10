@@ -1,24 +1,32 @@
 #!/usr/bin/env python3
 """
-manual_gen_worker.py — Slim pipeline router
-============================================
+manual_gen_worker.py — Registry-based pipeline router
+======================================================
 
-Receives tasks from the manual_gen_tasks Redis queue and routes each stage
-to the appropriate model function.  All model loading and VRAM eviction is
-handled by ModelManager.  All inference logic lives in worker/models/.
+Receives tasks from the ``manual_gen_tasks`` Redis queue and routes each task
+to the correct handler via STAGE_REGISTRY.
 
-Stage → model family mapping
------------------------------
-    flux           → flux
-    sd_stage1      → sd
-    sd_stage2      → sd
-    multiview_side → sd
-    multiview_back → sd
-    trellis        → trellis
-    rig            → rig (CPU-only, no VRAM)
+How to add a new stage / experiment
+-------------------------------------
+1. Write ``worker/models/your_model.py`` with ``load_xxx()`` + ``run_xxx()``.
+2. If it's a new model *family* (not reusing flux/sd/trellis):
+     - Add it to ModelManager via ``mgr.register(...)`` in the
+       ``_register_custom_families()`` method below.
+3. Add a handler method ``_handle_xxx(self, task, r)`` to this class.
+4. Add one line to ``STAGE_REGISTRY``:
+     "your_stage_name": ("model_family", ManualGenWorker._handle_xxx),
 
-This file contains *no* model loading code.  To change inference behaviour,
-edit the relevant file in worker/models/.
+That's it.  The queue loop, VRAM eviction, status tracking, and error
+handling all work automatically.
+
+STAGE_REGISTRY format
+---------------------
+    { stage_name: (model_family, handler_method) }
+
+    stage_name    — matches task["stage"] from the Redis payload
+    model_family  — passed to mgr.ensure(family) before handler is called
+                    use None for CPU-only stages (no VRAM management)
+    handler_method — unbound method on ManualGenWorker
 """
 
 from __future__ import annotations
@@ -27,6 +35,7 @@ import io
 import json as _json
 import logging
 import os
+import sys
 import tempfile
 import time
 
@@ -36,11 +45,10 @@ from PIL import Image
 from workers.base_worker import BaseWorker
 from result_channel import push_running, push_done, push_error, push_glb_done
 
-# ── Model layer ───────────────────────────────────────────────────────────────
-import sys
-_WORKER_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _WORKER_DIR not in sys.path:
-    sys.path.insert(0, _WORKER_DIR)
+# ── Ensure worker root is importable ─────────────────────────────────────────
+_WORKER_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _WORKER_ROOT not in sys.path:
+    sys.path.insert(0, _WORKER_ROOT)
 
 from model_manager import ModelManager
 from models.flux_model    import run_flux
@@ -51,6 +59,32 @@ from models.rig_model     import run_rig
 logger = logging.getLogger("ManualGenWorker")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# STAGE REGISTRY
+# ─────────────────────────────────────────────────────────────────────────────
+# One entry per stage name.  Format:
+#   "stage_name": ("model_family", ManualGenWorker._handle_method)
+#
+# To add a new stage add ONE line here and ONE handler method below.
+# Nothing else in this file needs to change.
+# ─────────────────────────────────────────────────────────────────────────────
+
+STAGE_REGISTRY: dict[str, tuple[str | None, str]] = {
+    # stage name          model family   handler method name
+    "flux":               ("flux",       "_handle_flux"),
+    "sd_stage1":          ("sd",         "_handle_sd_stage1"),
+    "sd_stage2":          ("sd",         "_handle_sd_stage2"),
+    "multiview_side":     ("sd",         "_handle_multiview"),
+    "multiview_back":     ("sd",         "_handle_multiview"),
+    "trellis":            ("trellis",    "_handle_trellis"),
+    "rig":                (None,         "_handle_rig"),          # CPU-only
+    # ── Add new experiments here ────────────────────────────────────────────
+    # "controlnet_pre":  ("sd",         "_handle_controlnet_pre"),
+    # "sdxl_stage1":     ("sdxl",       "_handle_sdxl_stage1"),
+    # "animatediff":     ("animatediff","_handle_animatediff"),
+}
+
+
 class ManualGenWorker(BaseWorker):
     worker_name = "ManualGenWorker"
     input_queue = "manual_gen_tasks"
@@ -58,15 +92,27 @@ class ManualGenWorker(BaseWorker):
     def __init__(self):
         super().__init__()
         self._mgr = ModelManager()
+        self._register_custom_families()
+
+    # ── Custom family registration ────────────────────────────────────────────
+    # When you add a new model family that isn't flux/sd/trellis/rig:
+    #   self._mgr.register("sdxl", lambda: load_sdxl(...), evicts={"flux","trellis"})
+
+    def _register_custom_families(self) -> None:
+        pass  # nothing custom yet
+
+    # ── Startup ───────────────────────────────────────────────────────────────
 
     def load_models(self):
-        logger.info("ManualGenWorker ready — models load lazily on first use.")
+        logger.info(
+            f"ManualGenWorker ready — {len(STAGE_REGISTRY)} stages registered, "
+            "models load lazily on first use."
+        )
         logger.info(self._mgr.vram_summary())
 
     # ── Queue loop ────────────────────────────────────────────────────────────
 
     def run(self, idle_notify_callback=None):
-        """Poll manual_gen_tasks; route each task to process_task()."""
         logger.info(f"{self.worker_name} starting — queue: {self.input_queue}")
         self.load_models()
 
@@ -115,46 +161,71 @@ class ManualGenWorker(BaseWorker):
     # ── Router ────────────────────────────────────────────────────────────────
 
     def process_task(self, task: dict, r, db) -> None:
-        """Route task → correct model fn.  All VRAM logic is in ModelManager."""
+        """
+        Route task to the correct handler via STAGE_REGISTRY.
+
+        Steps:
+          1. Look up stage in STAGE_REGISTRY → (family, handler_name)
+          2. If family is not None → mgr.ensure(family)   [loads + evicts]
+          3. Call handler(task, r)
+          4. Handler uploads result and pushes done/error via result_channel
+        """
         session_id = task.get("session_id", "")
         stage      = task.get("stage", "")
         task_id    = task.get("task_id", "")
 
         logger.info(
-            f"[{task_id[:8]}] session={session_id[:8]}  stage={stage}  "
-            f"char={task.get('char_label','?')}"
+            f"[{task_id[:8]}] session={session_id[:8]}  "
+            f"stage={stage}  char={task.get('char_label','?')}"
         )
         push_running(r, session_id, stage)
 
+        # ── Registry lookup ───────────────────────────────────────────────────
+        entry = STAGE_REGISTRY.get(stage)
+        if entry is None:
+            err = (
+                f"Unknown stage: {stage!r}. "
+                f"Registered stages: {sorted(STAGE_REGISTRY)}"
+            )
+            logger.error(err)
+            push_error(r, session_id, stage, err)
+            return
+
+        family, handler_name = entry
+
+        # ── VRAM: load model, evict incompatible families ─────────────────────
+        if family is not None:
+            try:
+                self._mgr.ensure(family)
+                logger.info(f"  {self._mgr.vram_summary()}")
+            except Exception as exc:
+                push_error(r, session_id, stage, f"Model load failed: {exc}")
+                raise
+
+        # ── Dispatch to handler ───────────────────────────────────────────────
+        handler = getattr(self, handler_name, None)
+        if handler is None:
+            err = f"Handler {handler_name!r} not found on {self.__class__.__name__}"
+            logger.error(err)
+            push_error(r, session_id, stage, err)
+            return
+
         try:
-            if stage == "flux":
-                self._handle_flux(task, r)
-
-            elif stage == "sd_stage1":
-                self._handle_sd_stage1(task, r)
-
-            elif stage == "sd_stage2":
-                self._handle_sd_stage2(task, r)
-
-            elif stage in ("multiview_side", "multiview_back"):
-                self._handle_multiview(task, r)
-
-            elif stage == "trellis":
-                self._handle_trellis(task, r)
-
-            elif stage == "rig":
-                self._handle_rig(task, r)
-
-            else:
-                raise ValueError(f"Unknown stage: {stage!r}")
-
+            handler(task, r)
         except Exception as exc:
             logger.exception(f"[{task_id[:8]}] stage={stage} FAILED: {exc}")
             push_error(r, session_id, stage, str(exc))
 
-    # ── Stage handlers ────────────────────────────────────────────────────────
-    # Each handler: validate inputs → ensure model family → call model fn →
-    #               upload result → push done.
+    # ─────────────────────────────────────────────────────────────────────────
+    # STAGE HANDLERS
+    # Each handler:
+    #   1. Reads what it needs from task (prompt, params, input URLs, …)
+    #   2. Calls the model function (already loaded by process_task)
+    #   3. Uploads result → push_done / push_glb_done
+    #
+    # Handlers do NOT call mgr.ensure() — process_task handles that.
+    # To add a handler: add a method here + one line in STAGE_REGISTRY above.
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _handle_flux(self, task: dict, r) -> None:
         session_id = task["session_id"]
@@ -162,15 +233,11 @@ class ManualGenWorker(BaseWorker):
         prompt     = task.get("prompt", "")
         params     = task.get("params") or {}
 
-        self._mgr.ensure("flux")
-        logger.info(f"[flux] {self._mgr.vram_summary()}")
-
-        img = run_flux(self._mgr.flux_pipe, prompt, params)
-
+        img    = run_flux(self._mgr.get("flux"), prompt, params)
         s3_key = f"manual_gen/{session_id}/{stage}.png"
         url    = self._upload_image(img, s3_key)
         push_done(r, session_id, stage, url, s3_key)
-        logger.info(f"[flux] done → {url}")
+        logger.info(f"[flux] → {url}")
 
     def _handle_sd_stage1(self, task: dict, r) -> None:
         session_id      = task["session_id"]
@@ -181,16 +248,11 @@ class ManualGenWorker(BaseWorker):
         input_image_url = task.get("input_url") or task.get("input_image_url", "")
 
         init_img = self._download_image(input_image_url)
-
-        self._mgr.ensure("sd")
-        logger.info(f"[sd_stage1] {self._mgr.vram_summary()}")
-
-        img = run_stage1(self._mgr.sd_pipes, init_img, prompt, negative, params)
-
-        s3_key = f"manual_gen/{session_id}/{stage}.png"
-        url    = self._upload_image(img, s3_key)
+        img      = run_stage1(self._mgr.get("sd"), init_img, prompt, negative, params)
+        s3_key   = f"manual_gen/{session_id}/{stage}.png"
+        url      = self._upload_image(img, s3_key)
         push_done(r, session_id, stage, url, s3_key)
-        logger.info(f"[sd_stage1] done → {url}")
+        logger.info(f"[sd_stage1] → {url}")
 
     def _handle_sd_stage2(self, task: dict, r) -> None:
         session_id      = task["session_id"]
@@ -201,16 +263,11 @@ class ManualGenWorker(BaseWorker):
         input_image_url = task.get("input_url") or task.get("input_image_url", "")
 
         init_img = self._download_image(input_image_url)
-
-        self._mgr.ensure("sd")
-        logger.info(f"[sd_stage2] {self._mgr.vram_summary()}")
-
-        img = run_stage2(self._mgr.sd_pipes, init_img, prompt, negative, params)
-
-        s3_key = f"manual_gen/{session_id}/{stage}.png"
-        url    = self._upload_image(img, s3_key)
+        img      = run_stage2(self._mgr.get("sd"), init_img, prompt, negative, params)
+        s3_key   = f"manual_gen/{session_id}/{stage}.png"
+        url      = self._upload_image(img, s3_key)
         push_done(r, session_id, stage, url, s3_key)
-        logger.info(f"[sd_stage2] done → {url}")
+        logger.info(f"[sd_stage2] → {url}")
 
     def _handle_multiview(self, task: dict, r) -> None:
         session_id      = task["session_id"]
@@ -221,16 +278,11 @@ class ManualGenWorker(BaseWorker):
         input_image_url = task.get("input_url") or task.get("input_image_url", "")
 
         init_img = self._download_image(input_image_url)
-
-        self._mgr.ensure("sd")
-        logger.info(f"[{stage}] {self._mgr.vram_summary()}")
-
-        img = run_multiview(self._mgr.sd_pipes, init_img, prompt, negative, params)
-
-        s3_key = f"manual_gen/{session_id}/{stage}.png"
-        url    = self._upload_image(img, s3_key)
+        img      = run_multiview(self._mgr.get("sd"), init_img, prompt, negative, params)
+        s3_key   = f"manual_gen/{session_id}/{stage}.png"
+        url      = self._upload_image(img, s3_key)
         push_done(r, session_id, stage, url, s3_key)
-        logger.info(f"[{stage}] done → {url}")
+        logger.info(f"[{stage}] → {url}")
 
     def _handle_trellis(self, task: dict, r) -> None:
         session_id = task["session_id"]
@@ -240,21 +292,16 @@ class ManualGenWorker(BaseWorker):
         front_url = task.get("input_front") or params.get("front_url", "")
         if not front_url:
             raise ValueError(
-                "trellis stage missing input_front URL. "
-                "Ensure sd_stage2 is done and its image URL is passed."
+                "trellis task missing input_front URL — "
+                "ensure sd_stage2 is done and its URL is passed."
             )
 
         front_img = self._download_image(front_url)
-
-        self._mgr.ensure("trellis")
-        logger.info(f"[trellis] {self._mgr.vram_summary()}")
-
-        glb_bytes = run_trellis(self._mgr.trellis_pipes, front_img, params)
-
-        s3_key = f"manual_gen/{session_id}/trellis.glb"
-        url    = self._upload_bytes(glb_bytes, s3_key, content_type="model/gltf-binary")
+        glb_bytes = run_trellis(self._mgr.get("trellis"), front_img, params)
+        s3_key    = f"manual_gen/{session_id}/trellis.glb"
+        url       = self._upload_bytes(glb_bytes, s3_key, "model/gltf-binary")
         push_glb_done(r, session_id, stage, url, s3_key)
-        logger.info(f"[trellis] done → {url}")
+        logger.info(f"[trellis] → {url}")
 
     def _handle_rig(self, task: dict, r) -> None:
         session_id    = task["session_id"]
@@ -264,8 +311,8 @@ class ManualGenWorker(BaseWorker):
 
         if not input_glb_url:
             raise ValueError(
-                "rig stage missing input_glb_url. "
-                "Ensure trellis stage is done and its GLB URL is passed."
+                "rig task missing input_glb_url — "
+                "ensure trellis stage is done and its GLB URL is passed."
             )
 
         char_type = task.get("char_type") or params.get("char_type", "humanoid")
@@ -275,46 +322,43 @@ class ManualGenWorker(BaseWorker):
             input_glb  = os.path.join(tmp, "input.glb")
             output_glb = os.path.join(tmp, "output_rigged.glb")
 
-            # Download GLB binary
             resp = requests.get(input_glb_url, timeout=60)
             resp.raise_for_status()
             with open(input_glb, "wb") as f:
                 f.write(resp.content)
 
             logger.info(
-                f"[rig] session={session_id[:8]}  char_type={char_type}  "
+                f"[rig] session={task['session_id'][:8]}  char_type={char_type}  "
                 f"input={os.path.getsize(input_glb)/1e6:.2f} MB"
             )
-
-            # CPU-only — no ensure() needed
             run_rig(input_glb, output_glb, params)
 
             with open(output_glb, "rb") as f:
                 glb_bytes = f.read()
 
         s3_key = f"manual_gen/{session_id}/rig_{char_type}.glb"
-        url    = self._upload_bytes(glb_bytes, s3_key, content_type="model/gltf-binary")
+        url    = self._upload_bytes(glb_bytes, s3_key, "model/gltf-binary")
         push_glb_done(r, session_id, stage, url, s3_key)
-        logger.info(f"[rig] done → {url}")
+        logger.info(f"[rig] → {url}")
 
-    # ── Upload helpers ────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
+    # Upload helpers
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _download_image(self, url: str) -> Image.Image:
         if not url:
             raise ValueError("_download_image: url is empty")
-        logger.debug(f"Downloading image: {url}")
         resp = requests.get(url, timeout=30)
         resp.raise_for_status()
         return Image.open(io.BytesIO(resp.content)).convert("RGB")
 
     def _upload_image(self, img: Image.Image, s3_key: str) -> str:
-        """Save PIL Image as PNG, upload to S3, return public URL."""
         self.upload_image(img, s3_key)
         return self.s3_public_url(s3_key)
 
     def _upload_bytes(self, data: bytes, s3_key: str, content_type: str) -> str:
-        """Upload raw bytes to S3, return public URL."""
-        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(s3_key)[1]) as f:
+        suffix = os.path.splitext(s3_key)[1] or ".bin"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f:
             f.write(data)
             tmp_path = f.name
         try:
