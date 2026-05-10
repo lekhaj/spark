@@ -84,7 +84,8 @@ CHARACTERS = {
             "loose hair, open mouth, fused fingers, extra limbs, "
             "cropped body, cut off, missing feet, missing legs, "
             "background, cityscape, city, buildings, urban, construction, "
-            "machinery, pipes, scenery, environment, sky, shadow, grey background"
+            "machinery, pipes, scenery, environment, sky, shadow, grey background, "
+            "spiral, swirl, pattern, watermark, logo, symbol, gradient, text, design"
         ),
         "stage2_prompt": (
             "full body female ranger, T-pose, both arms stretched horizontally at shoulder height, "
@@ -100,7 +101,8 @@ CHARACTERS = {
             "open mouth, fused fingers, extra limbs, bare legs, "
             "cropped body, cut off, missing feet, missing legs, "
             "background, cityscape, city, buildings, urban, construction, "
-            "machinery, pipes, scenery, environment, sky, shadow"
+            "machinery, pipes, scenery, environment, sky, shadow, "
+            "spiral, swirl, pattern, watermark, logo, symbol, gradient, text, design"
         ),
     },
 
@@ -710,24 +712,32 @@ def main():
         torch.cuda.empty_cache()
 
         # ── Hand Enhancement Pass (Left & Right) ─────────────────────────────
-        # In a T-pose at 768px, hands are at far left/right edges, mid-body height.
-        # Same crop-upscale-enhance-paste approach as the face pass.
-        hand_prompt = "realistic human hand, five fingers, relaxed open hand, detailed knuckles, natural skin"
-        hand_neg    = "fused fingers, extra fingers, missing fingers, deformed hand, cartoon, blurry, anime"
+        # Key insight: hands are at extreme edges of T-pose image.
+        # We use a very specific prompt about palm direction and finger separation.
+        hand_prompt = (
+            "open human hand, palm facing camera, five separate individual fingers, "
+            "fingers slightly spread, relaxed hand, detailed finger joints, "
+            "natural skin texture, realistic anatomy, clear fingernails"
+        )
+        hand_neg = (
+            "fused fingers, merged fingers, melted fingers, blob hand, mitten, "
+            "extra fingers, missing fingers, six fingers, four fingers, "
+            "deformed hand, cartoon hand, anime hand, blurry, distorted"
+        )
 
-        # Left hand (image left side)
+        # Left hand (image left side) — slightly wider crop to catch full hand
         print("  [Hands] Running left hand enhancement pass...")
         lh_x1 = int(IMG_SIZE * 0.00)
-        lh_y1 = int(IMG_SIZE * 0.35)
-        lh_x2 = int(IMG_SIZE * 0.20)
-        lh_y2 = int(IMG_SIZE * 0.55)
+        lh_y1 = int(IMG_SIZE * 0.33)
+        lh_x2 = int(IMG_SIZE * 0.22)
+        lh_y2 = int(IMG_SIZE * 0.56)
         lh_crop = refined_img.crop((lh_x1, lh_y1, lh_x2, lh_y2))
         lh_up   = lh_crop.resize((512, 512), Image.LANCZOS)
         with torch.no_grad():
             lh_result = pipe_i2i(
                 prompt=hand_prompt, negative_prompt=hand_neg,
-                image=lh_up, strength=0.35,
-                num_inference_steps=20, guidance_scale=7.0,
+                image=lh_up, strength=0.45,
+                num_inference_steps=25, guidance_scale=8.0,
             )
         lh_enhanced = lh_result.images[0].resize((lh_x2 - lh_x1, lh_y2 - lh_y1), Image.LANCZOS)
         refined_img.paste(lh_enhanced, (lh_x1, lh_y1))
@@ -735,17 +745,17 @@ def main():
 
         # Right hand (image right side)
         print("  [Hands] Running right hand enhancement pass...")
-        rh_x1 = int(IMG_SIZE * 0.80)
-        rh_y1 = int(IMG_SIZE * 0.35)
+        rh_x1 = int(IMG_SIZE * 0.78)
+        rh_y1 = int(IMG_SIZE * 0.33)
         rh_x2 = int(IMG_SIZE * 1.00)
-        rh_y2 = int(IMG_SIZE * 0.55)
+        rh_y2 = int(IMG_SIZE * 0.56)
         rh_crop = refined_img.crop((rh_x1, rh_y1, rh_x2, rh_y2))
         rh_up   = rh_crop.resize((512, 512), Image.LANCZOS)
         with torch.no_grad():
             rh_result = pipe_i2i(
                 prompt=hand_prompt, negative_prompt=hand_neg,
-                image=rh_up, strength=0.35,
-                num_inference_steps=20, guidance_scale=7.0,
+                image=rh_up, strength=0.45,
+                num_inference_steps=25, guidance_scale=8.0,
             )
         rh_enhanced = rh_result.images[0].resize((rh_x2 - rh_x1, rh_y2 - rh_y1), Image.LANCZOS)
         refined_img.paste(rh_enhanced, (rh_x1, rh_y1))
