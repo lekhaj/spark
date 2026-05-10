@@ -630,7 +630,7 @@ def generation_studio_ui():
         # ══════════════════════════════════════════════════════════════════════
         #  STAGE 2: SD STAGE 1 — POSE LOCK
         # ══════════════════════════════════════════════════════════════════════
-        with gr.Accordion("Stage 2 — SD1.5 ControlNet Pose Lock", open=False):
+        with gr.Accordion("Stage 2 — SD1.5 T-Pose Lock (IP-Adapter)", open=False):
             s1_char, s1_major, s1_minor, s1_new_maj, s1_sid, s1_info = _make_picker(_chars)
             gr.Markdown("---")
             s1_src_stage, s1_src_ver, s1_src_url_st, s1_src_info = _make_src_picker(
@@ -642,12 +642,13 @@ def generation_studio_ui():
             s1_neg    = gr.Textbox(label="Negative", lines=2,
                                    value="deformed, extra limbs, text, watermark, background, shadows, blurry, nsfw")
             with gr.Row():
-                s1_denoise = gr.Slider(0.05, 0.50, value=0.20, step=0.01, label="Denoise")
-                s1_cfg     = gr.Slider(1.0, 15.0,  value=5.5,  step=0.5,  label="CFG")
-                s1_steps   = gr.Number(label="Steps", value=20, precision=0)
+                s1_denoise = gr.Slider(0.05, 0.95, value=0.65, step=0.01, label="Denoise")
+                s1_cfg     = gr.Slider(1.0, 15.0,  value=7.0,  step=0.5,  label="CFG")
+                s1_steps   = gr.Number(label="Steps", value=25, precision=0)
             with gr.Row():
-                s1_op_w = gr.Slider(0.0, 1.5, value=0.85, step=0.05, label="OpenPose weight")
-                s1_cn_w = gr.Slider(0.0, 1.5, value=0.55, step=0.05, label="Canny weight")
+                s1_op_w    = gr.Slider(0.0, 1.5, value=1.00, step=0.05, label="OpenPose weight")
+                s1_cn_w    = gr.Slider(0.0, 1.5, value=0.25, step=0.05, label="Canny weight")
+                s1_ip_w    = gr.Slider(0.0, 1.0, value=0.65, step=0.05, label="IP-Adapter weight")
             with gr.Row():
                 s1_q_btn = gr.Button("Queue SD Stage 1", variant="primary")
                 s1_status= gr.Textbox(label="Status", value="idle", interactive=False, scale=2)
@@ -839,7 +840,7 @@ def generation_studio_ui():
                 # normalize (8) + source picker (3)
                 *_load("normalize",   _ex_normalize),
                 *nm_src,
-                # sd_stage1 (15) + source picker (3)
+                # sd_stage1 (16) + source picker (3)
                 *_load("sd_stage1",   _ex_sd1),
                 *s1_src,
                 # sd_stage2 (12) + source picker (3)
@@ -867,9 +868,9 @@ def generation_studio_ui():
             nm_major, nm_minor, nm_sid, nm_info,
             nm_w, nm_h, nm_status, nm_img,
             nm_src_ver, nm_src_url_st, nm_src_info,
-            # sd_stage1 (15) + source picker (3)
+            # sd_stage1 (16) + source picker (3)
             s1_major, s1_minor, s1_sid, s1_info,
-            s1_prompt, s1_neg, s1_denoise, s1_cfg, s1_steps, s1_op_w, s1_cn_w, s1_cat, s1_status, s1_url, s1_img,
+            s1_prompt, s1_neg, s1_denoise, s1_cfg, s1_steps, s1_op_w, s1_cn_w, s1_ip_w, s1_cat, s1_status, s1_url, s1_img,
             s1_src_ver, s1_src_url_st, s1_src_info,
             # sd_stage2 (12) + source picker (3)
             s2_major, s2_minor, s2_sid, s2_info,
@@ -912,8 +913,9 @@ def generation_studio_ui():
             p = run.get("params") or {}
             return [run.get("prompt", ""),
                     run.get("negative", "deformed, extra limbs, text, watermark, background, shadows, blurry, nsfw"),
-                    p.get("denoise", 0.20), p.get("cfg", 5.5), p.get("steps", 20),
-                    p.get("openpose_weight", 0.85), p.get("canny_weight", 0.55),
+                    p.get("denoise", 0.65), p.get("cfg", 7.0), p.get("steps", 25),
+                    p.get("openpose_weight", 1.00), p.get("canny_weight", 0.25),
+                    p.get("ip_adapter_weight", 0.65),
                     p.get("category", "humanoid"),
                     run.get("status", "idle"),
                     run.get("image_url", "") or "",
@@ -950,7 +952,7 @@ def generation_studio_ui():
 
         _wire_picker("sd_stage1", s1_char, s1_major, s1_minor, s1_new_maj, s1_sid, s1_info,
                      [s1_prompt, s1_neg, s1_denoise, s1_cfg, s1_steps,
-                      s1_op_w, s1_cn_w, s1_cat, s1_status, s1_url, s1_img],
+                      s1_op_w, s1_cn_w, s1_ip_w, s1_cat, s1_status, s1_url, s1_img],
                      _ex_sd1)
 
         _wire_picker("sd_stage2", s2_char, s2_major, s2_minor, s2_new_maj, s2_sid, s2_info,
@@ -1104,17 +1106,17 @@ def generation_studio_ui():
         )
 
         # SD Stage 1
-        def _do_q_s1(char, major, minor, p, n, dn, cfg, st, opw, cnw, cat, src_stage, src_url):
+        def _do_q_s1(char, major, minor, p, n, dn, cfg, st, opw, cnw, ipw, cat, src_stage, src_url):
             params = {"denoise": float(dn), "cfg": float(cfg), "steps": int(st),
                       "openpose_weight": float(opw), "canny_weight": float(cnw),
-                      "category": cat}
+                      "ip_adapter_weight": float(ipw), "category": cat}
             return _q_sd(char, major, minor, "sd_stage1", p, n, params, src_stage, src_url)
 
         (s1_q_btn.click(
             _do_q_s1,
             [s1_char, s1_major, s1_minor,
              s1_prompt, s1_neg, s1_denoise, s1_cfg, s1_steps,
-             s1_op_w, s1_cn_w, s1_cat, s1_src_stage, s1_src_url_st],
+             s1_op_w, s1_cn_w, s1_ip_w, s1_cat, s1_src_stage, s1_src_url_st],
             [s1_sid, s1_minor, s1_info, s1_status],
         ).then(lambda: gr.Timer(active=True), outputs=[stage_timer]))
 

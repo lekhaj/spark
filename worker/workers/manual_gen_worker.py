@@ -254,9 +254,13 @@ class ManualGenWorker(BaseWorker):
         input_image_url = task.get("input_url") or task.get("input_image_url", "")
 
         init_img = self._download_image(input_image_url)
-        img      = run_stage1(self._mgr.get("sd"), init_img, prompt, negative, params)
-        s3_key   = f"manual_gen/{session_id}/{stage}.png"
-        url      = self._upload_image(img, s3_key)
+        # Pass init_img as ip_adapter_image — Flux image is the identity reference
+        img = run_stage1(
+            self._mgr.get("sd"), init_img, prompt, negative, params,
+            ip_adapter_image=init_img,
+        )
+        s3_key = f"manual_gen/{session_id}/{stage}.png"
+        url    = self._upload_image(img, s3_key)
         push_done(r, session_id, stage, url, s3_key)
         logger.info(f"[sd_stage1] → {url}")
 
