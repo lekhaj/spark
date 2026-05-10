@@ -73,27 +73,37 @@ CHARACTERS = {
     "human_ranger": {
         "creature_category": "bipedal",
         "stage1_prompt": (
-            "full body female, T-pose, arms extended, legs straight, feet on ground, "
-            "zip jacket, pants, boots, head to toe, white background, flat lighting"
+            "full body female, T-pose, both arms stretched out horizontally at shoulder height, "
+            "palms facing down, straight arms, legs straight, feet flat on ground, "
+            "zip jacket, pants, boots, pure white background, flat even lighting, "
+            "character sheet, front view, head to toe, full body visible"
         ),
         "stage1_negative": (
-            "cape, cloak, skirt, dress, robe, flowing cloth, waving cloth, "
-            "floating fabric, loose hair, open mouth, fused fingers, extra limbs, "
-            "cropped body, cut off, missing feet, missing legs, grey background, shadow"
+            "arms raised, arms up, arms bent, holding object, holding bar, holding pole, "
+            "cape, cloak, skirt, dress, robe, flowing cloth, "
+            "loose hair, open mouth, fused fingers, extra limbs, "
+            "cropped body, cut off, missing feet, missing legs, "
+            "background, cityscape, city, buildings, urban, construction, "
+            "machinery, pipes, scenery, environment, sky, shadow, grey background"
         ),
         "stage2_prompt": (
-            "full body female ranger, T-pose, arms extended, legs straight, feet visible, "
+            "full body female ranger, T-pose, both arms stretched horizontally at shoulder height, "
+            "palms facing down, straight arms not raised, legs straight, feet visible, "
             "fitted zip jacket, combat pants, leather belt, knee-high boots, "
-            "auburn hair tied back, calm face, closed mouth, "
-            "white background, flat lighting, head to toe"
+            "auburn hair tied back in bun, calm face, closed mouth, "
+            "pure white background, flat studio lighting, "
+            "character sheet, game asset, front view, head to toe"
         ),
         "stage2_negative": (
-            "cape, cloak, skirt, dress, robe, flowing cloth, waving cloth, "
-            "floating fabric, loose hair, windswept hair, open mouth, "
-            "fused fingers, extra limbs, bare legs, cropped body, cut off, "
-            "missing feet, missing legs, shadow"
+            "arms raised, arms up, arms bent, holding object, holding bar, holding pole, "
+            "cape, cloak, skirt, dress, robe, flowing cloth, windswept hair, loose hair, "
+            "open mouth, fused fingers, extra limbs, bare legs, "
+            "cropped body, cut off, missing feet, missing legs, "
+            "background, cityscape, city, buildings, urban, construction, "
+            "machinery, pipes, scenery, environment, sky, shadow"
         ),
     },
+
 
     "dwarven_knight": {
         "creature_category": "bipedal",
