@@ -815,23 +815,38 @@ def generation_studio_ui():
                 mv_st = (None, None, "", "", 0.45, 7.0,
                          "idle", _url_to_img("", 300), "", "idle", _url_to_img("", 300))
 
+            # Source pickers — refresh for the default source stage of each downstream stage
+            # _refresh_src_picker returns (ver_upd, src_url, info_str)
+            nm_src  = _refresh_src_picker(char, "flux")       if char else (gr.update(), "", "")
+            s1_src  = _refresh_src_picker(char, "flux")       if char else (gr.update(), "", "")
+            s2_src  = _refresh_src_picker(char, "sd_stage1")  if char else (gr.update(), "", "")
+            mv_src  = _refresh_src_picker(char, "flux")       if char else (gr.update(), "", "")
+            tr_f    = _refresh_src_picker(char, "sd_stage2")  if char else (gr.update(), "", "")
+            tr_s    = _refresh_src_picker(char, "multiview_side") if char else (gr.update(), "", "")
+            tr_b    = _refresh_src_picker(char, "multiview_back") if char else (gr.update(), "", "")
+
             return [
                 # 7 char dropdowns
                 char_upd, char_upd, char_upd, char_upd, char_upd, char_upd, char_upd,
                 # flux  (major, minor, sid, info + 9 data fields = 13)
                 *_load("flux",        _ex_flux),
-                # normalize (8)
+                # normalize (8) + source picker (3)
                 *_load("normalize",   _ex_normalize),
-                # sd_stage1 (15)
+                *nm_src,
+                # sd_stage1 (15) + source picker (3)
                 *_load("sd_stage1",   _ex_sd1),
-                # sd_stage2 (12)
+                *s1_src,
+                # sd_stage2 (12) + source picker (3)
                 *_load("sd_stage2",   _ex_sd2),
-                # multiview (major, minor + 11 mv_state fields = 13)
+                *s2_src,
+                # multiview (major, minor + 11 mv_state fields = 13) + source picker (3)
                 gr.update(choices=mv_majors, value=mv_m),
                 gr.update(choices=mv_minors, value=mv_n),
                 *mv_st,
-                # trellis (6)
+                *mv_src,
+                # trellis (6) + 3 source pickers (9)
                 *_load("trellis",     _ex_trellis),
+                *tr_f, *tr_s, *tr_b,
                 # rig (7)
                 *_load("rig",         _ex_rig),
             ]
@@ -842,22 +857,29 @@ def generation_studio_ui():
             # flux (13)
             fx_major, fx_minor, fx_sid, fx_info,
             fx_prompt, fx_negative, fx_w, fx_h, fx_steps, fx_guid, fx_status, fx_url, fx_img,
-            # normalize (8)
+            # normalize (8) + source picker (3)
             nm_major, nm_minor, nm_sid, nm_info,
             nm_w, nm_h, nm_status, nm_img,
-            # sd_stage1 (15)
+            nm_src_ver, nm_src_url_st, nm_src_info,
+            # sd_stage1 (15) + source picker (3)
             s1_major, s1_minor, s1_sid, s1_info,
             s1_prompt, s1_neg, s1_denoise, s1_cfg, s1_steps, s1_op_w, s1_cn_w, s1_cat, s1_status, s1_url, s1_img,
-            # sd_stage2 (12)
+            s1_src_ver, s1_src_url_st, s1_src_info,
+            # sd_stage2 (12) + source picker (3)
             s2_major, s2_minor, s2_sid, s2_info,
             s2_prompt, s2_neg, s2_denoise, s2_cfg, s2_steps, s2_status, s2_url, s2_img,
-            # multiview (13)
+            s2_src_ver, s2_src_url_st, s2_src_info,
+            # multiview (13) + source picker (3)
             mv_major, mv_minor,
             mv_side_sid, mv_back_sid, mv_info,
             mv_side_prompt, mv_denoise, mv_cfg, mv_side_status, mv_side_img,
             mv_back_prompt, mv_back_status, mv_back_img,
-            # trellis (6)
+            mv_src_ver, mv_src_url_st, mv_src_info,
+            # trellis (6) + 3 source pickers (9)
             tr_major, tr_minor, tr_sid, tr_info, tr_status, tr_url,
+            tr_front_ver, tr_front_url_st, tr_front_info,
+            tr_side_ver,  tr_side_url_st,  tr_side_info,
+            tr_back_ver,  tr_back_url_st,  tr_back_info,
             # rig (7)
             rg_major, rg_minor, rg_sid, rg_info, rg_type, rg_status, rg_url,
         ])
