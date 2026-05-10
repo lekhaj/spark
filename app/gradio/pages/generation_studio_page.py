@@ -768,19 +768,23 @@ def generation_studio_ui():
         def _do_create(label):
             label = (label or "").strip()
             if not label:
-                return gr.update(), "Enter a label."
+                return [gr.update()] * 8 + ["Enter a label."]
             create_run(_db(), label, "flux", 1, 0)
             chars = _list_chars()
-            return gr.update(choices=chars, value=label), \
-                f"Created '{label}' — now set prompts and queue each stage."
+            upd   = gr.update(choices=chars, value=label)
+            return [upd] * 8 + [f"Created '{label}' — click ⬇ Prefill All Stages, then queue each stage."]
 
-        g_create_btn.click(_do_create, [g_new_char_input], [g_char, g_create_info])
+        g_create_btn.click(_do_create, [g_new_char_input],
+                           [g_char, fx_char, nm_char, s1_char,
+                            s2_char, mv_char, tr_char, rg_char, g_create_info])
 
         # ── Global: Prefill All Stages (char only) ────────────────────────────
         def _do_prefill(char):
             if not char:
                 return [gr.update()] * 7
-            return [gr.update(value=char)] * 7
+            chars = _list_chars()
+            upd   = gr.update(choices=chars, value=char)
+            return [upd] * 7
 
         g_prefill_btn.click(_do_prefill, [g_char],
                             [fx_char, nm_char, s1_char, s2_char, mv_char, tr_char, rg_char])
