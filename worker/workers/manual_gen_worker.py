@@ -171,12 +171,10 @@ class ManualGenWorker(BaseWorker):
         """Move Flux off VRAM to free space for SD."""
         if self._flux_pipe is None:
             return
-        try:
-            self._flux_pipe.to("cpu")
-        except Exception:
-            pass
+        # With sequential_cpu_offload, .to("cpu") is a no-op on the pipeline level;
+        # clear the cache directly instead.
         torch.cuda.empty_cache()
-        self.logger.info("[evict_flux] Flux moved to CPU")
+        self.logger.info("[evict_flux] VRAM cache cleared before SD load")
 
     def _ensure_flux(self):
         """Load Flux pipeline into GPU memory if not already loaded."""
@@ -187,10 +185,14 @@ class ManualGenWorker(BaseWorker):
         from diffusers import FluxPipeline
 
         pipe = FluxPipeline.from_pretrained(FLUX_MODEL, torch_dtype=torch.bfloat16)
-        pipe.enable_model_cpu_offload()   # offloads one submodel at a time — fits in 24 GB
+        # L4 has 22 GB usable VRAM; Flux transformer is ~24 GB in bfloat16 —
+        # enable_model_cpu_offload loads the full transformer at once and OOMs.
+        # sequential_cpu_offload loads one layer at a time (~few hundred MB peak)
+        # which always fits. Slower but the only option without quantization.
+        pipe.enable_sequential_cpu_offload()
         pipe.vae.enable_slicing()
         self._flux_pipe = pipe
-        self.logger.info("Flux model loaded.")
+        self.logger.info("Flux model loaded (sequential CPU offload).")
 
     def _ensure_sd(self):
         """Load SD1.5 + ControlNet pipelines into GPU memory if not already loaded."""
