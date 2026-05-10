@@ -129,8 +129,8 @@ def _load_session_state(char_label: str, version: str) -> dict:
         # flux
         "flux_prompt":     "",
         "flux_negative":   "deformed, extra limbs, text, watermark, blurry, nsfw",
-        "flux_width":      768,
-        "flux_height":     1024,
+        "flux_width":      512,
+        "flux_height":     512,
         "flux_steps":      4,
         "flux_guidance":   0.0,
         "flux_status":     "idle",
@@ -649,8 +649,8 @@ def generation_studio_ui():
                 value="deformed, extra limbs, text, watermark, blurry, nsfw",
             )
             with gr.Row():
-                flux_width    = gr.Number(label="Width",    value=768,  precision=0)
-                flux_height   = gr.Number(label="Height",   value=1024, precision=0)
+                flux_width    = gr.Number(label="Width",    value=512,  precision=0)
+                flux_height   = gr.Number(label="Height",   value=512,  precision=0)
                 flux_steps    = gr.Number(label="Steps",    value=4,    precision=0)
                 flux_guidance = gr.Number(label="Guidance", value=0.0)
             with gr.Row():

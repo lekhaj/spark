@@ -153,6 +153,31 @@ class ManualGenWorker(BaseWorker):
 
     # ── Lazy model loaders ────────────────────────────────────────────────────
 
+    def _evict_sd(self):
+        """Move SD/ControlNet models off VRAM to free space for Flux."""
+        if self._pipe_cn is None:
+            return
+        for obj in (self._pipe_cn, self._cn_openpose, self._cn_canny,
+                    self._pipe_biped, self._pipe_quad, self._pipe_i2i):
+            if obj is not None:
+                try:
+                    obj.to("cpu")
+                except Exception:
+                    pass
+        torch.cuda.empty_cache()
+        self.logger.info("[evict_sd] SD models moved to CPU")
+
+    def _evict_flux(self):
+        """Move Flux off VRAM to free space for SD."""
+        if self._flux_pipe is None:
+            return
+        try:
+            self._flux_pipe.to("cpu")
+        except Exception:
+            pass
+        torch.cuda.empty_cache()
+        self.logger.info("[evict_flux] Flux moved to CPU")
+
     def _ensure_flux(self):
         """Load Flux pipeline into GPU memory if not already loaded."""
         if self._flux_pipe is not None:
@@ -162,7 +187,7 @@ class ManualGenWorker(BaseWorker):
         from diffusers import FluxPipeline
 
         pipe = FluxPipeline.from_pretrained(FLUX_MODEL, torch_dtype=torch.bfloat16)
-        pipe.enable_model_cpu_offload()   # faster than sequential — loads full submodel at a time
+        pipe.enable_model_cpu_offload()   # offloads one submodel at a time — fits in 24 GB
         pipe.vae.enable_slicing()
         self._flux_pipe = pipe
         self.logger.info("Flux model loaded.")
@@ -247,11 +272,14 @@ class ManualGenWorker(BaseWorker):
         prompt     = task.get("prompt", "")
         params     = task.get("params") or {}
 
-        width          = int(params.get("width",          768))
-        height         = int(params.get("height",         1024))
+        # Clamp to 512×512 max — downstream stages resize to 512 anyway,
+        # and 768×1024 activations OOM on L4 24 GB with the Flux transformer.
+        width          = min(int(params.get("width",          512)), 512)
+        height         = min(int(params.get("height",         512)), 512)
         steps          = int(params.get("steps",          4))
         guidance_scale = float(params.get("guidance_scale", 0.0))
 
+        self._evict_sd()      # free VRAM before loading Flux transformer
         self._ensure_flux()
 
         self.logger.info(
@@ -302,6 +330,7 @@ class ManualGenWorker(BaseWorker):
         canny_weight     = float(params.get("canny_weight",     0.55))
         category         = params.get("category",               "humanoid")
 
+        self._evict_flux()    # free VRAM before loading SD models
         self._ensure_sd()
 
         # Download init image
@@ -372,6 +401,7 @@ class ManualGenWorker(BaseWorker):
         cfg     = float(params.get("cfg",     7.0))
         steps   = int(params.get("steps",     20))
 
+        self._evict_flux()    # free VRAM before loading SD models
         self._ensure_sd()
 
         init_img = self._download_image(input_image_url)
@@ -421,6 +451,7 @@ class ManualGenWorker(BaseWorker):
         cfg     = float(params.get("cfg",     7.0))
         steps   = int(params.get("steps",     20))
 
+        self._evict_flux()    # free VRAM before loading SD models
         self._ensure_sd()
 
         init_img = self._download_image(input_image_url)
