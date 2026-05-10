@@ -73,23 +73,25 @@ CHARACTERS = {
     "human_ranger": {
         "creature_category": "bipedal",
         "stage1_prompt": (
-            "female, T-pose, arms extended, zip jacket, pants, boots, "
-            "white background, flat lighting"
+            "full body female, T-pose, arms extended, legs straight, feet on ground, "
+            "zip jacket, pants, boots, head to toe, white background, flat lighting"
         ),
         "stage1_negative": (
             "cape, cloak, skirt, dress, robe, flowing cloth, waving cloth, "
-            "floating fabric, holding cloth, loose hair, open mouth, "
-            "fused fingers, extra limbs, grey background, shadow"
+            "floating fabric, loose hair, open mouth, fused fingers, extra limbs, "
+            "cropped body, cut off, missing feet, missing legs, grey background, shadow"
         ),
         "stage2_prompt": (
-            "female ranger, T-pose, fitted zip jacket, combat pants, "
-            "leather belt, boots, auburn hair tied back, calm face, "
-            "closed mouth, white background, flat lighting"
+            "full body female ranger, T-pose, arms extended, legs straight, feet visible, "
+            "fitted zip jacket, combat pants, leather belt, knee-high boots, "
+            "auburn hair tied back, calm face, closed mouth, "
+            "white background, flat lighting, head to toe"
         ),
         "stage2_negative": (
             "cape, cloak, skirt, dress, robe, flowing cloth, waving cloth, "
-            "floating fabric, holding cloth, loose hair, windswept hair, "
-            "open mouth, fused fingers, extra limbs, bare legs, shadow"
+            "floating fabric, loose hair, windswept hair, open mouth, "
+            "fused fingers, extra limbs, bare legs, cropped body, cut off, "
+            "missing feet, missing legs, shadow"
         ),
     },
 
