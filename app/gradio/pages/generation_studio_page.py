@@ -506,11 +506,10 @@ def generation_studio_ui():
             with gr.Row():
                 new_major_btn = gr.Button("＋ New Major Version", variant="primary", scale=1)
                 new_minor_btn = gr.Button("＋ New Minor Version", scale=1)
-                gr.Markdown(
-                    "_**Major** = new design/prompt direction.  "
-                    "**Minor** = retry / small tweak on same design._",
-                    scale=3,
-                )
+            gr.Markdown(
+                "_**Major** = new design/prompt direction · "
+                "**Minor** = retry / small tweak on same design_"
+            )
 
             with gr.Tab("New Character"):
                 with gr.Row():
