@@ -317,19 +317,25 @@ def _q_normalize(char, major, minor, w, h, src_stage, src_ver):
 
         with urllib.request.urlopen(src_url) as r:
             img = PILImage.open(BytesIO(r.read())).convert("RGB")
-        img    = img.resize((int(w), int(h)), PILImage.LANCZOS)
-        s3_key = f"manual_gen/{sid}/normalize_{int(w)}x{int(h)}.png"
-        buf    = BytesIO()
-        img.save(buf, "PNG")
-        buf.seek(0)
-        _creds = {}
-        if os.getenv("AWS_ACCESS_KEY_ID"):
-            _creds = {"aws_access_key_id":     os.getenv("AWS_ACCESS_KEY_ID"),
-                      "aws_secret_access_key": os.getenv("AWS_SECRET_ACCESS_KEY"),
-                      "aws_session_token":     os.getenv("AWS_SESSION_TOKEN")}
-        boto3.client("s3", region_name=S3_REGION, **_creds).upload_fileobj(
-            buf, S3_BUCKET, s3_key, ExtraArgs={"ContentType": "image/png"})
-        url = f"{S3_BASE_URL}/{s3_key}"
+
+        tw, th = int(w), int(h)
+        if img.size == (tw, th):
+            # Already correct size — skip resize and re-upload, reuse source URL
+            url = src_url
+        else:
+            img    = img.resize((tw, th), PILImage.LANCZOS)
+            s3_key = f"manual_gen/{sid}/normalize_{tw}x{th}.png"
+            buf    = BytesIO()
+            img.save(buf, "PNG")
+            buf.seek(0)
+            _creds = {}
+            if os.getenv("AWS_ACCESS_KEY_ID"):
+                _creds = {"aws_access_key_id":     os.getenv("AWS_ACCESS_KEY_ID"),
+                          "aws_secret_access_key": os.getenv("AWS_SECRET_ACCESS_KEY"),
+                          "aws_session_token":     os.getenv("AWS_SESSION_TOKEN")}
+            boto3.client("s3", region_name=S3_REGION, **_creds).upload_fileobj(
+                buf, S3_BUCKET, s3_key, ExtraArgs={"ContentType": "image/png"})
+            url = f"{S3_BASE_URL}/{s3_key}"
 
         from lib.manual_gen_schema import update_run
         db = _db()
