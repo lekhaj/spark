@@ -77,6 +77,9 @@ from PIL import Image
 
 logger = logging.getLogger("models.sd")
 
+# Public alias — preferred name for the T-pose stage
+# run_tpose is defined at the bottom of this file as: run_tpose = run_stage1
+
 IMG_SIZE = 512
 
 # IP-Adapter model (SD1.5 Plus — better identity fidelity than base)
@@ -460,3 +463,12 @@ def run_multiview(
     img = result.images[0]
     logger.info(f"[sd] multiview done  size={img.size}")
     return img
+
+
+# ── Public alias ──────────────────────────────────────────────────────────────
+# run_tpose is the canonical name for the active T-pose generation stage.
+# run_stage1 is kept for backward compatibility.
+run_tpose = run_stage1
+
+# run_stage2 and run_multiview are kept as legacy functions but no longer
+# registered in STAGE_REGISTRY. They remain importable for experiments.

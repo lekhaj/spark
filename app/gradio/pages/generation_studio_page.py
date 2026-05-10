@@ -14,15 +14,25 @@ Architecture
             new attempt).
 
   DOWNSTREAM SOURCE PICKERS
-    SD1, SD2, Multiview, TRELLIS, Rig each have:
+    SD T-Pose, TRELLIS, Rig each have:
       Source stage  — which upstream stage to read image from
       Source version — specific done version to use (dropdown, default=latest)
     The URL is resolved at queue time from the selected version.
 
 Schema
 ------
-  Collection: manual_gen_stage_runs
+  Collections:
+    manual_gen_stage_runs   — all stages except sd_tpose
+    manual_gen_tpose_runs   — sd_tpose stage only (data isolation)
   Each document = one stage × one major.minor version run.
+
+Pipeline
+--------
+  Stage 0: Flux      — text → character concept image
+  Stage 1: Normalize — CPU resize to 512×512 (skipped if already correct size)
+  Stage 2: SD T-Pose — SD1.5 + IP-Adapter (Flux identity) + OpenPose/Canny ControlNet
+  Stage 3: TRELLIS   — 2D image → 3D mesh (GLB)
+  Stage 4: Auto-Rig  — Skeleton rigging (CPU)
 """
 
 import json
@@ -48,8 +58,8 @@ from lib.manual_gen_schema import (
     list_chars, list_stage_majors, list_stage_minors,
     next_stage_major,
     version_str, save_run_params, mark_queued,
-    get_latest_done_image_url,
-    STAGE_NAMES, COLLECTION,
+    get_latest_done_image_url, get_run_any,
+    STAGE_NAMES, COLLECTION, TPOSE_COLLECTION,
 )
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -94,7 +104,7 @@ def _list_chars() -> list[str]:
     """Read character list from the registry + any existing stage runs."""
     try:
         return list_characters(_db()) or []
-    except Exception as e:
+    except Exception:
         return []
 
 def _list_majors(char: str, stage: str) -> list[int]:
@@ -138,11 +148,11 @@ def _get_run_doc(char: str, stage: str, major, minor) -> dict:
         return {}
 
 def _refresh_run(run_id: Optional[str]) -> tuple[str, str]:
-    """Returns (status_text, image_url)."""
+    """Returns (status_text, image_url). Searches both collections."""
     if not run_id:
         return "idle", ""
     try:
-        doc = _db()[COLLECTION].find_one({"_id": run_id})
+        doc = get_run_any(_db(), run_id)
         if not doc:
             return "idle", ""
         st  = doc.get("status", "idle")
@@ -172,17 +182,26 @@ def _tok(text: str, is_sd: bool) -> str:
     return f"~{c}/77 CLIP tokens  {'⚠️ TRIM' if c > 77 else '✓'}"
 
 
+# ── Collection routing (mirrors manual_gen_schema._coll_for_stage) ────────────
+
+def _coll_for_stage(stage: str) -> str:
+    """Return the correct MongoDB collection name for a stage."""
+    return TPOSE_COLLECTION if stage == "sd_tpose" else COLLECTION
+
+
 # ── Source version helpers ─────────────────────────────────────────────────────
 
 def _list_done_versions(char: str, stage: str) -> list[str]:
     """
     Return distinct done version strings for (char, stage), most recent first.
     e.g. ["2.1", "2.0", "1.0"]
+    Automatically routes to the correct collection based on stage.
     """
     if not char or not stage:
         return []
     try:
-        docs = list(_db()[COLLECTION].find(
+        coll = _coll_for_stage(stage)
+        docs = list(_db()[coll].find(
             {"char_label": char, "stage": stage, "status": "done"},
             {"major": 1, "minor": 1},
         ).sort("created_at", -1))
@@ -285,11 +304,11 @@ def _q_flux(char, major, minor, prompt, neg, w, h, steps, guidance):
         return sid, minor_upd, gr.update(), err
 
     db = _db()
-    save_run_params(db, sid, prompt, neg, params)
+    save_run_params(db, sid, prompt, neg, params, stage=stage)
     tid = _push_task({"type": "flux", "session_id": sid, "stage": stage,
                       "char_label": char, "prompt": prompt, "negative": neg,
                       "params": params})
-    mark_queued(db, sid, task_id=tid)
+    mark_queued(db, sid, stage=stage, task_id=tid)
     ver  = f"{major}.{new_n}" if new_n is not None else f"{major}.{minor}"
     info = f"{sid[:8]}…  v{ver}  [queued]"
     return sid, minor_upd, info, f"queued ✓  v{ver}  task={tid[:8]}…"
@@ -319,6 +338,7 @@ def _q_normalize(char, major, minor, w, h, src_stage, src_ver):
             img = PILImage.open(BytesIO(r.read())).convert("RGB")
 
         tw, th = int(w), int(h)
+        s3_key = None
         if img.size == (tw, th):
             # Already correct size — skip resize and re-upload, reuse source URL
             url = src_url
@@ -339,7 +359,8 @@ def _q_normalize(char, major, minor, w, h, src_stage, src_ver):
 
         from lib.manual_gen_schema import update_run
         db = _db()
-        update_run(db, sid, {"status": "done", "image_url": url, "s3_key": s3_key,
+        update_run(db, sid, {"status": "done", "image_url": url,
+                              "s3_key": s3_key or "",
                               "params": params, "completed_at": time.time(), "error": None})
         ver  = f"{major}.{new_n}" if new_n is not None else f"{major}.{minor}"
         info = f"{sid[:8]}…  v{ver}  [done]"
@@ -352,6 +373,7 @@ def _q_sd(char, major, minor, stage, prompt, neg, params, src_stage, src_url):
     """
     src_url: already-resolved image URL from the source version picker.
     Falls back to latest done for src_stage if empty.
+    Collection routing is automatic — stage is passed to mark_queued/save_run_params.
     """
     if not prompt.strip():
         return None, gr.update(), gr.update(), "⚠️ Prompt is empty."
@@ -368,40 +390,11 @@ def _q_sd(char, major, minor, stage, prompt, neg, params, src_stage, src_url):
         return sid, minor_upd, gr.update(), err
 
     db = _db()
-    save_run_params(db, sid, prompt, neg, params)
+    save_run_params(db, sid, prompt, neg, params, stage=stage)
     tid = _push_task({"type": "sd_stage", "session_id": sid, "stage": stage,
                       "char_label": char, "prompt": prompt, "negative": neg,
                       "params": params, "input_stage": src_stage, "input_url": src_url})
-    mark_queued(db, sid, task_id=tid)
-    ver  = f"{major}.{new_n}" if new_n is not None else f"{major}.{minor}"
-    info = f"{sid[:8]}…  v{ver}  [queued]"
-    return sid, minor_upd, info, f"queued ✓  v{ver}  task={tid[:8]}…"
-
-
-def _q_multiview(char, major, minor, view, prompt, neg, denoise, cfg, src_stage, src_url):
-    stage  = f"multiview_{view}"
-    params = {"denoise": float(denoise), "cfg": float(cfg), "steps": 20}
-    if not prompt.strip():
-        return None, gr.update(), gr.update(), "⚠️ Prompt is empty."
-
-    if not src_url:
-        src_url = get_latest_done_image_url(_db(), char, src_stage) or ""
-    if not src_url:
-        return None, gr.update(), gr.update(), \
-            f"No done image in '{src_stage}'. Run that stage first."
-
-    sid, new_n, minor_upd, info_upd, err = _prepare_run(
-        char, stage, major, minor, prompt, neg, params)
-    if err:
-        return sid, minor_upd, gr.update(), err
-
-    db = _db()
-    save_run_params(db, sid, prompt, neg, params)
-    tid = _push_task({"type": "multiview", "session_id": sid, "stage": stage,
-                      "char_label": char, "view": view, "prompt": prompt,
-                      "negative": neg, "params": params,
-                      "input_stage": src_stage, "input_url": src_url})
-    mark_queued(db, sid, task_id=tid)
+    mark_queued(db, sid, stage=stage, task_id=tid)
     ver  = f"{major}.{new_n}" if new_n is not None else f"{major}.{minor}"
     info = f"{sid[:8]}…  v{ver}  [queued]"
     return sid, minor_upd, info, f"queued ✓  v{ver}  task={tid[:8]}…"
@@ -430,7 +423,7 @@ def _q_trellis(char, major, minor, front_stage, front_url, side_stage, side_url,
     tid = _push_task({"type": "trellis", "session_id": sid, "stage": stage,
                       "char_label": char, "input_front": front_url,
                       "input_side": side_url, "input_back": back_url})
-    mark_queued(db, sid, task_id=tid)
+    mark_queued(db, sid, stage=stage, task_id=tid)
     ver  = f"{major}.{new_n}" if new_n is not None else f"{major}.{minor}"
     info = f"{sid[:8]}…  v{ver}  [queued]"
     return sid, minor_upd, info, f"queued ✓  v{ver}  task={tid[:8]}…"
@@ -449,11 +442,11 @@ def _q_rig(char, major, minor, char_type, trellis_src_ver):
     if err:
         return sid, minor_upd, gr.update(), err
 
-    save_run_params(db, sid, "", "", {"char_type": char_type or "humanoid"})
+    save_run_params(db, sid, "", "", {"char_type": char_type or "humanoid"}, stage=stage)
     tid = _push_task({"type": "rig", "session_id": sid, "stage": stage,
                       "char_label": char, "char_type": char_type or "humanoid",
                       "input_glb_url": glb_url})
-    mark_queued(db, sid, task_id=tid)
+    mark_queued(db, sid, stage=stage, task_id=tid)
     ver  = f"{major}.{new_n}" if new_n is not None else f"{major}.{minor}"
     info = f"{sid[:8]}…  v{ver}  [queued]"
     return sid, minor_upd, info, f"queued ✓  v{ver}  task={tid[:8]}…"
@@ -617,7 +610,7 @@ def generation_studio_ui():
             nm_char, nm_major, nm_minor, nm_new_maj, nm_sid, nm_info = _make_picker(_chars)
             gr.Markdown("---")
             nm_src_stage, nm_src_ver, nm_src_url_st, nm_src_info = _make_src_picker(
-                ["flux", "sd_stage1", "sd_stage2"], "flux")
+                ["flux", "sd_tpose"], "flux")
             with gr.Row():
                 nm_w   = gr.Number(label="Width",  value=512, precision=0)
                 nm_h   = gr.Number(label="Height", value=512, precision=0)
@@ -628,16 +621,21 @@ def generation_studio_ui():
             nm_info2 = gr.Textbox(label="Info", interactive=False)
 
         # ══════════════════════════════════════════════════════════════════════
-        #  STAGE 2: SD STAGE 1 — POSE LOCK
+        #  STAGE 2: SD T-POSE LOCK (IP-Adapter + OpenPose/Canny ControlNet)
         # ══════════════════════════════════════════════════════════════════════
         with gr.Accordion("Stage 2 — SD1.5 T-Pose Lock (IP-Adapter)", open=False):
             s1_char, s1_major, s1_minor, s1_new_maj, s1_sid, s1_info = _make_picker(_chars)
             gr.Markdown("---")
+            gr.Markdown(
+                "**IP-Adapter** encodes the Flux image to preserve character identity.  \n"
+                "**OpenPose ControlNet** locks the output to a pre-baked T-pose skeleton.  \n"
+                "**Canny ControlNet** adds edge structure from the T-pose template (not Flux)."
+            )
             s1_src_stage, s1_src_ver, s1_src_url_st, s1_src_info = _make_src_picker(
                 ["flux", "normalize"], "flux")
             s1_cat    = gr.Radio(choices=["humanoid", "quadruped"],
                                  value="humanoid", label="Character type")
-            s1_prompt = gr.Textbox(label="Prompt (keep minimal)", lines=3)
+            s1_prompt = gr.Textbox(label="Prompt (keep minimal — identity comes from IP-Adapter)", lines=3)
             s1_tok    = gr.Textbox(label="", lines=1, interactive=False)
             s1_neg    = gr.Textbox(label="Negative", lines=2,
                                    value="deformed, extra limbs, text, watermark, background, shadows, blurry, nsfw")
@@ -650,81 +648,28 @@ def generation_studio_ui():
                 s1_cn_w    = gr.Slider(0.0, 1.5, value=0.25, step=0.05, label="Canny weight")
                 s1_ip_w    = gr.Slider(0.0, 1.0, value=0.65, step=0.05, label="IP-Adapter weight")
             with gr.Row():
-                s1_q_btn = gr.Button("Queue SD Stage 1", variant="primary")
+                s1_q_btn = gr.Button("Queue T-Pose", variant="primary")
                 s1_status= gr.Textbox(label="Status", value="idle", interactive=False, scale=2)
                 s1_r_btn = gr.Button("Refresh", size="sm")
             s1_img = gr.HTML(value=_url_to_img("", 350))
             s1_url = gr.Textbox(label="URL", interactive=False)
 
         # ══════════════════════════════════════════════════════════════════════
-        #  STAGE 3: SD STAGE 2 — DETAIL PASS
+        #  STAGE 3: TRELLIS 3D
         # ══════════════════════════════════════════════════════════════════════
-        with gr.Accordion("Stage 3 — SD1.5 Detail Pass", open=False):
-            s2_char, s2_major, s2_minor, s2_new_maj, s2_sid, s2_info = _make_picker(_chars)
-            gr.Markdown("---")
-            s2_src_stage, s2_src_ver, s2_src_url_st, s2_src_info = _make_src_picker(
-                ["sd_stage1", "flux", "normalize"], "sd_stage1")
-            s2_prompt = gr.Textbox(label="Prompt", lines=3)
-            s2_tok    = gr.Textbox(label="", lines=1, interactive=False)
-            s2_neg    = gr.Textbox(label="Negative", lines=2,
-                                   value="background, blurry, extra limbs, text, watermark, deformed, ugly, nsfw")
-            with gr.Row():
-                s2_denoise = gr.Slider(0.10, 0.70, value=0.35, step=0.01, label="Denoise")
-                s2_cfg     = gr.Slider(1.0, 15.0,  value=7.0,  step=0.5,  label="CFG")
-                s2_steps   = gr.Number(label="Steps", value=20, precision=0)
-            with gr.Row():
-                s2_q_btn = gr.Button("Queue SD Stage 2", variant="primary")
-                s2_status= gr.Textbox(label="Status", value="idle", interactive=False, scale=2)
-                s2_r_btn = gr.Button("Refresh", size="sm")
-            s2_img = gr.HTML(value=_url_to_img("", 350))
-            s2_url = gr.Textbox(label="URL", interactive=False)
-
-        # ══════════════════════════════════════════════════════════════════════
-        #  STAGE 4: MULTI-VIEW
-        # ══════════════════════════════════════════════════════════════════════
-        with gr.Accordion("Stage 4 — Multi-view Generation", open=False):
-            mv_char, mv_major, mv_minor, mv_new_maj, mv_sid, mv_info = _make_picker(_chars)
-            gr.Markdown("---")
-            # Shared source picker — same source for both side and back
-            mv_src_stage, mv_src_ver, mv_src_url_st, mv_src_info = _make_src_picker(
-                ["flux", "sd_stage1", "sd_stage2"], "flux")
-            with gr.Row():
-                mv_denoise = gr.Slider(0.30, 0.70, value=0.45, step=0.01, label="Denoise")
-                mv_cfg     = gr.Slider(1.0, 15.0,  value=7.0,  step=0.5,  label="CFG")
-            with gr.Row():
-                with gr.Column():
-                    mv_side_prompt = gr.Textbox(label="Side view prompt", lines=3)
-                    mv_side_tok    = gr.Textbox(label="", lines=1, interactive=False)
-                    mv_side_btn    = gr.Button("Queue Side View", variant="primary")
-                    mv_side_status = gr.Textbox(label="Status", value="idle", interactive=False)
-                    mv_side_r      = gr.Button("Refresh", size="sm")
-                    mv_side_img    = gr.HTML(value=_url_to_img("", 300))
-                    mv_side_sid    = gr.State(None)
-                with gr.Column():
-                    mv_back_prompt = gr.Textbox(label="Back view prompt", lines=3)
-                    mv_back_tok    = gr.Textbox(label="", lines=1, interactive=False)
-                    mv_back_btn    = gr.Button("Queue Back View", variant="primary")
-                    mv_back_status = gr.Textbox(label="Status", value="idle", interactive=False)
-                    mv_back_r      = gr.Button("Refresh", size="sm")
-                    mv_back_img    = gr.HTML(value=_url_to_img("", 300))
-                    mv_back_sid    = gr.State(None)
-
-        # ══════════════════════════════════════════════════════════════════════
-        #  STAGE 5: TRELLIS 3D
-        # ══════════════════════════════════════════════════════════════════════
-        with gr.Accordion("Stage 5 — TRELLIS 3D Mesh", open=False):
+        with gr.Accordion("Stage 3 — TRELLIS 3D Mesh", open=False):
             tr_char, tr_major, tr_minor, tr_new_maj, tr_sid, tr_info = _make_picker(_chars)
             gr.Markdown("---")
             gr.Markdown("**Select source version for each view:**")
             with gr.Row():
                 tr_front_stage, tr_front_ver, tr_front_url_st, tr_front_info = _make_src_picker(
-                    ["sd_stage2", "flux", "sd_stage1"], "sd_stage2")
+                    ["sd_tpose", "flux", "normalize"], "sd_tpose")
             with gr.Row():
                 tr_side_stage, tr_side_ver, tr_side_url_st, tr_side_info = _make_src_picker(
-                    ["multiview_side", "flux"], "multiview_side")
+                    ["sd_tpose", "flux", "normalize"], "sd_tpose")
             with gr.Row():
                 tr_back_stage, tr_back_ver, tr_back_url_st, tr_back_info = _make_src_picker(
-                    ["multiview_back", "flux"], "multiview_back")
+                    ["sd_tpose", "flux", "normalize"], "sd_tpose")
             with gr.Row():
                 tr_q_btn = gr.Button("Queue TRELLIS", variant="primary")
                 tr_status= gr.Textbox(label="Status", value="idle", interactive=False, scale=2)
@@ -732,9 +677,9 @@ def generation_studio_ui():
             tr_url = gr.Textbox(label="GLB URL (when done)", interactive=False)
 
         # ══════════════════════════════════════════════════════════════════════
-        #  STAGE 6: RIG
+        #  STAGE 4: RIG
         # ══════════════════════════════════════════════════════════════════════
-        with gr.Accordion("Stage 6 — Auto-Rig Pro (CPU)", open=False):
+        with gr.Accordion("Stage 4 — Auto-Rig Pro (CPU)", open=False):
             rg_char, rg_major, rg_minor, rg_new_maj, rg_sid, rg_info = _make_picker(_chars)
             gr.Markdown("---")
             # Source = trellis GLB
@@ -759,47 +704,42 @@ def generation_studio_ui():
         # ── Token counters ────────────────────────────────────────────────────
         fx_prompt.input(lambda t: _tok(t, False), [fx_prompt], [fx_tok])
         s1_prompt.input(lambda t: _tok(t, True),  [s1_prompt], [s1_tok])
-        s2_prompt.input(lambda t: _tok(t, True),  [s2_prompt], [s2_tok])
-        mv_side_prompt.input(lambda t: _tok(t, True), [mv_side_prompt], [mv_side_tok])
-        mv_back_prompt.input(lambda t: _tok(t, True), [mv_back_prompt], [mv_back_tok])
 
         # ── Global: Refresh char list ─────────────────────────────────────────
         def _do_refresh():
             chars = _list_chars()
             upd   = gr.update(choices=chars, value=(chars[0] if chars else None))
-            return [upd] * 8
+            return [upd] * 6
 
         g_refresh_btn.click(_do_refresh, [],
-                            [g_char, fx_char, nm_char, s1_char,
-                             s2_char, mv_char, tr_char, rg_char])
+                            [g_char, fx_char, nm_char, s1_char, tr_char, rg_char])
 
         # ── Global: Create New Character ──────────────────────────────────────
         def _do_create(label):
             label = (label or "").strip()
             if not label:
-                return [gr.update()] * 8 + ["Enter a character label first."]
+                return [gr.update()] * 6 + ["Enter a character label first."]
             ok    = create_character(_db(), label)
             if not ok:
-                return [gr.update()] * 8 + [f"❌ Failed to save '{label}' — check MongoDB connection."]
+                return [gr.update()] * 6 + [f"❌ Failed to save '{label}' — check MongoDB connection."]
             chars = _list_chars()
             upd   = gr.update(choices=chars, value=label)
-            return [upd] * 8 + [f"✓ Created '{label}'. Select it in any stage below and click ⬇ Prefill All Stages."]
+            return [upd] * 6 + [f"✓ Created '{label}'. Select it in any stage below and click ⬇ Prefill All Stages."]
 
         g_create_btn.click(_do_create, [g_new_char_input],
-                           [g_char, fx_char, nm_char, s1_char,
-                            s2_char, mv_char, tr_char, rg_char, g_create_info])
+                           [g_char, fx_char, nm_char, s1_char, tr_char, rg_char, g_create_info])
 
         # ── Global: Prefill All Stages ────────────────────────────────────────
         # In Gradio 5, gr.update(value=X) does NOT trigger .change handlers,
         # so we must return ALL stage data directly — no cascading events.
         def _do_prefill(char):
-            chars   = _list_chars()
+            chars    = _list_chars()
             char_upd = gr.update(choices=chars, value=char) if char else gr.update()
 
             def _load(stage_name, extract_fn):
                 """Return (major_upd, minor_upd, sid, info, *stage_data)."""
                 if not char:
-                    return gr.update(), gr.update(), None, "", *extract_fn({})
+                    return (gr.update(), gr.update(), None, "") + tuple(extract_fn({}))
                 majors = _list_majors(char, stage_name)
                 m      = majors[-1]
                 minors = _list_minors(char, stage_name, m)
@@ -808,81 +748,50 @@ def generation_studio_ui():
                 run       = _get_run_doc(char, stage_name, m, n)
                 return (gr.update(choices=majors, value=m),
                         gr.update(choices=minors, value=n),
-                        sid, info, *extract_fn(run))
-
-            # MV is special — shared major/minor controls two sub-stages
-            if char:
-                mv_majors = _list_majors(char, "multiview_side")
-                mv_m      = mv_majors[-1]
-                mv_minors = _list_minors(char, "multiview_side", mv_m)
-                mv_n      = mv_minors[-1]
-                mv_st     = _mv_state(char, mv_m, mv_n)
-            else:
-                mv_majors, mv_m, mv_minors, mv_n = [1], 1, [0], 0
-                mv_st = (None, None, "", "", 0.45, 7.0,
-                         "idle", _url_to_img("", 300), "", "idle", _url_to_img("", 300))
+                        sid, info) + tuple(extract_fn(run))
 
             # Source pickers — refresh for the default source stage of each downstream stage
             # _refresh_src_picker returns (ver_upd, src_url, info_str)
-            nm_src  = _refresh_src_picker(char, "flux")       if char else (gr.update(), "", "")
-            s1_src  = _refresh_src_picker(char, "flux")       if char else (gr.update(), "", "")
-            s2_src  = _refresh_src_picker(char, "sd_stage1")  if char else (gr.update(), "", "")
-            mv_src  = _refresh_src_picker(char, "flux")       if char else (gr.update(), "", "")
-            tr_f    = _refresh_src_picker(char, "sd_stage2")  if char else (gr.update(), "", "")
-            tr_s    = _refresh_src_picker(char, "multiview_side") if char else (gr.update(), "", "")
-            tr_b    = _refresh_src_picker(char, "multiview_back") if char else (gr.update(), "", "")
+            nm_src = _refresh_src_picker(char, "flux")     if char else (gr.update(), "", "")
+            s1_src = _refresh_src_picker(char, "flux")     if char else (gr.update(), "", "")
+            tr_f   = _refresh_src_picker(char, "sd_tpose") if char else (gr.update(), "", "")
+            tr_s   = _refresh_src_picker(char, "sd_tpose") if char else (gr.update(), "", "")
+            tr_b   = _refresh_src_picker(char, "sd_tpose") if char else (gr.update(), "", "")
 
-            return [
-                # 7 char dropdowns
-                char_upd, char_upd, char_upd, char_upd, char_upd, char_upd, char_upd,
+            return list((
+                # 5 char dropdowns
+                char_upd, char_upd, char_upd, char_upd, char_upd,
                 # flux  (major, minor, sid, info + 9 data fields = 13)
-                *_load("flux",        _ex_flux),
-                # normalize (8) + source picker (3)
-                *_load("normalize",   _ex_normalize),
+                *_load("flux",      _ex_flux),
+                # normalize (4+4=8) + source picker (3) = 11
+                *_load("normalize", _ex_normalize),
                 *nm_src,
-                # sd_stage1 (16) + source picker (3)
-                *_load("sd_stage1",   _ex_sd1),
+                # sd_tpose (4+12=16) + source picker (3) = 19
+                *_load("sd_tpose",  _ex_sd_tpose),
                 *s1_src,
-                # sd_stage2 (12) + source picker (3)
-                *_load("sd_stage2",   _ex_sd2),
-                *s2_src,
-                # multiview (major, minor + 11 mv_state fields = 13) + source picker (3)
-                gr.update(choices=mv_majors, value=mv_m),
-                gr.update(choices=mv_minors, value=mv_n),
-                *mv_st,
-                *mv_src,
-                # trellis (6) + 3 source pickers (9)
-                *_load("trellis",     _ex_trellis),
+                # trellis (4+2=6) + 3 source pickers (9) = 15
+                *_load("trellis",   _ex_trellis),
                 *tr_f, *tr_s, *tr_b,
-                # rig (7)
-                *_load("rig",         _ex_rig),
-            ]
+                # rig (4+3=7) = 7
+                *_load("rig",       _ex_rig),
+            ))
 
         g_prefill_btn.click(_do_prefill, [g_char], [
-            # char dropdowns (7)
-            fx_char, nm_char, s1_char, s2_char, mv_char, tr_char, rg_char,
+            # char dropdowns (5)
+            fx_char, nm_char, s1_char, tr_char, rg_char,
             # flux (13)
             fx_major, fx_minor, fx_sid, fx_info,
             fx_prompt, fx_negative, fx_w, fx_h, fx_steps, fx_guid, fx_status, fx_url, fx_img,
-            # normalize (8) + source picker (3)
+            # normalize (8) + source picker (3) = 11
             nm_major, nm_minor, nm_sid, nm_info,
             nm_w, nm_h, nm_status, nm_img,
             nm_src_ver, nm_src_url_st, nm_src_info,
-            # sd_stage1 (16) + source picker (3)
+            # sd_tpose (16) + source picker (3) = 19
             s1_major, s1_minor, s1_sid, s1_info,
-            s1_prompt, s1_neg, s1_denoise, s1_cfg, s1_steps, s1_op_w, s1_cn_w, s1_ip_w, s1_cat, s1_status, s1_url, s1_img,
+            s1_prompt, s1_neg, s1_denoise, s1_cfg, s1_steps,
+            s1_op_w, s1_cn_w, s1_ip_w, s1_cat, s1_status, s1_url, s1_img,
             s1_src_ver, s1_src_url_st, s1_src_info,
-            # sd_stage2 (12) + source picker (3)
-            s2_major, s2_minor, s2_sid, s2_info,
-            s2_prompt, s2_neg, s2_denoise, s2_cfg, s2_steps, s2_status, s2_url, s2_img,
-            s2_src_ver, s2_src_url_st, s2_src_info,
-            # multiview (13) + source picker (3)
-            mv_major, mv_minor,
-            mv_side_sid, mv_back_sid, mv_info,
-            mv_side_prompt, mv_denoise, mv_cfg, mv_side_status, mv_side_img,
-            mv_back_prompt, mv_back_status, mv_back_img,
-            mv_src_ver, mv_src_url_st, mv_src_info,
-            # trellis (6) + 3 source pickers (9)
+            # trellis (6) + 3 source pickers (9) = 15
             tr_major, tr_minor, tr_sid, tr_info, tr_status, tr_url,
             tr_front_ver, tr_front_url_st, tr_front_info,
             tr_side_ver,  tr_side_url_st,  tr_side_info,
@@ -909,7 +818,7 @@ def generation_studio_ui():
                     run.get("status", "idle"),
                     _url_to_img(run.get("image_url", "") or "", 300)]
 
-        def _ex_sd1(run):
+        def _ex_sd_tpose(run):
             p = run.get("params") or {}
             return [run.get("prompt", ""),
                     run.get("negative", "deformed, extra limbs, text, watermark, background, shadows, blurry, nsfw"),
@@ -917,15 +826,6 @@ def generation_studio_ui():
                     p.get("openpose_weight", 1.00), p.get("canny_weight", 0.25),
                     p.get("ip_adapter_weight", 0.65),
                     p.get("category", "humanoid"),
-                    run.get("status", "idle"),
-                    run.get("image_url", "") or "",
-                    _url_to_img(run.get("image_url", "") or "", 350)]
-
-        def _ex_sd2(run):
-            p = run.get("params") or {}
-            return [run.get("prompt", ""),
-                    run.get("negative", "background, blurry, extra limbs, text, watermark, deformed, ugly, nsfw"),
-                    p.get("denoise", 0.35), p.get("cfg", 7.0), p.get("steps", 20),
                     run.get("status", "idle"),
                     run.get("image_url", "") or "",
                     _url_to_img(run.get("image_url", "") or "", 350)]
@@ -950,15 +850,10 @@ def generation_studio_ui():
                      [nm_w, nm_h, nm_status, nm_img],
                      _ex_normalize)
 
-        _wire_picker("sd_stage1", s1_char, s1_major, s1_minor, s1_new_maj, s1_sid, s1_info,
+        _wire_picker("sd_tpose", s1_char, s1_major, s1_minor, s1_new_maj, s1_sid, s1_info,
                      [s1_prompt, s1_neg, s1_denoise, s1_cfg, s1_steps,
                       s1_op_w, s1_cn_w, s1_ip_w, s1_cat, s1_status, s1_url, s1_img],
-                     _ex_sd1)
-
-        _wire_picker("sd_stage2", s2_char, s2_major, s2_minor, s2_new_maj, s2_sid, s2_info,
-                     [s2_prompt, s2_neg, s2_denoise, s2_cfg, s2_steps,
-                      s2_status, s2_url, s2_img],
-                     _ex_sd2)
+                     _ex_sd_tpose)
 
         _wire_picker("trellis", tr_char, tr_major, tr_minor, tr_new_maj, tr_sid, tr_info,
                      [tr_status, tr_url],
@@ -968,73 +863,7 @@ def generation_studio_ui():
                      [rg_type, rg_status, rg_url],
                      _ex_rig)
 
-        # ── Wire Multiview (custom — controls both side + back sub-stages) ─────
-
-        def _mv_state(char, major, minor):
-            """Return all state fields for the multiview shared picker."""
-            sid_s, _ = _resolve_run(char, "multiview_side", int(major), int(minor))
-            sid_b, _ = _resolve_run(char, "multiview_back", int(major), int(minor))
-            info     = (f"Side: {sid_s[:8] if sid_s else 'none'}  "
-                        f"Back: {sid_b[:8] if sid_b else 'none'}")
-            run_s = _get_run_doc(char, "multiview_side", int(major), int(minor))
-            run_b = _get_run_doc(char, "multiview_back", int(major), int(minor))
-            ps    = run_s.get("params") or {}
-            return (sid_s, sid_b, info,
-                    run_s.get("prompt", ""), ps.get("denoise", 0.45), ps.get("cfg", 7.0),
-                    run_s.get("status", "idle"), _url_to_img(run_s.get("image_url", "") or "", 300),
-                    run_b.get("prompt", ""),
-                    run_b.get("status", "idle"), _url_to_img(run_b.get("image_url", "") or "", 300))
-
-        _mv_shared = [mv_side_sid, mv_back_sid, mv_info,
-                      mv_side_prompt, mv_denoise, mv_cfg,
-                      mv_side_status, mv_side_img,
-                      mv_back_prompt,
-                      mv_back_status, mv_back_img]   # 11 outputs
-
-        def _on_mv_char(char):
-            majors = _list_majors(char, "multiview_side")
-            m      = majors[-1]
-            minors = _list_minors(char, "multiview_side", m)
-            n      = minors[-1]
-            return (gr.update(choices=majors, value=m),
-                    gr.update(choices=minors, value=n)) + _mv_state(char, m, n)
-
-        def _on_mv_major(char, major):
-            if major is None: major = 1
-            minors = _list_minors(char, "multiview_side", int(major))
-            n      = minors[-1]
-            return (gr.update(choices=minors, value=n),) + _mv_state(char, major, n)
-
-        def _on_mv_minor(char, major, minor):
-            if major is None: major = 1
-            if minor is None: minor = 0
-            return _mv_state(char, major, minor)
-
-        def _mv_new_major(char):
-            if not char:
-                return gr.update(), gr.update(), None, None, "Pick a character first."
-            db    = _db()
-            new_m = next_stage_major(db, char, "multiview_side")
-            sid_s = create_run(db, char, "multiview_side", new_m, 0)
-            sid_b = create_run(db, char, "multiview_back", new_m, 0)
-            majors = _list_majors(char, "multiview_side")
-            return (gr.update(choices=majors, value=new_m),
-                    gr.update(choices=[0], value=0),
-                    sid_s, sid_b, f"Created v{new_m}.0 for side + back")
-
-        mv_char.change(_on_mv_char,  [mv_char],
-                       [mv_major, mv_minor] + _mv_shared)
-        mv_major.change(_on_mv_major, [mv_char, mv_major],
-                        [mv_minor] + _mv_shared)
-        mv_minor.change(_on_mv_minor, [mv_char, mv_major, mv_minor],
-                        _mv_shared)
-        mv_new_maj.click(_mv_new_major, [mv_char],
-                         [mv_major, mv_minor, mv_side_sid, mv_back_sid, mv_info])
-
         # ── Source picker wiring — refresh on src_stage change ─────────────────
-        # Each downstream stage: when src_stage changes → reload version list
-        # When src_ver changes → update url state
-        # When char changes → reload version list (chained onto existing char handler)
 
         def _make_src_wiring(char_comp, src_stage_comp, src_ver_comp, src_url_st_comp, src_info_comp):
             """Wire source stage/version pickers for one downstream stage."""
@@ -1057,8 +886,6 @@ def generation_studio_ui():
 
         _make_src_wiring(nm_char, nm_src_stage, nm_src_ver, nm_src_url_st, nm_src_info)
         _make_src_wiring(s1_char, s1_src_stage, s1_src_ver, s1_src_url_st, s1_src_info)
-        _make_src_wiring(s2_char, s2_src_stage, s2_src_ver, s2_src_url_st, s2_src_info)
-        _make_src_wiring(mv_char, mv_src_stage, mv_src_ver, mv_src_url_st, mv_src_info)
         _make_src_wiring(tr_char, tr_front_stage, tr_front_ver, tr_front_url_st, tr_front_info)
         _make_src_wiring(tr_char, tr_side_stage,  tr_side_ver,  tr_side_url_st,  tr_side_info)
         _make_src_wiring(tr_char, tr_back_stage,  tr_back_ver,  tr_back_url_st,  tr_back_info)
@@ -1105,15 +932,15 @@ def generation_studio_ui():
             [nm_sid, nm_minor, nm_info, nm_status, nm_img, nm_info2]
         )
 
-        # SD Stage 1
-        def _do_q_s1(char, major, minor, p, n, dn, cfg, st, opw, cnw, ipw, cat, src_stage, src_url):
+        # SD T-Pose
+        def _do_q_tp(char, major, minor, p, n, dn, cfg, st, opw, cnw, ipw, cat, src_stage, src_url):
             params = {"denoise": float(dn), "cfg": float(cfg), "steps": int(st),
                       "openpose_weight": float(opw), "canny_weight": float(cnw),
                       "ip_adapter_weight": float(ipw), "category": cat}
-            return _q_sd(char, major, minor, "sd_stage1", p, n, params, src_stage, src_url)
+            return _q_sd(char, major, minor, "sd_tpose", p, n, params, src_stage, src_url)
 
         (s1_q_btn.click(
-            _do_q_s1,
+            _do_q_tp,
             [s1_char, s1_major, s1_minor,
              s1_prompt, s1_neg, s1_denoise, s1_cfg, s1_steps,
              s1_op_w, s1_cn_w, s1_ip_w, s1_cat, s1_src_stage, s1_src_url_st],
@@ -1123,51 +950,6 @@ def generation_studio_ui():
         s1_r_btn.click(
             lambda sid: _refresh_with_img(sid, 350),
             [s1_sid], [s1_status, s1_url, s1_img]
-        )
-
-        # SD Stage 2
-        def _do_q_s2(char, major, minor, p, n, dn, cfg, st, src_stage, src_url):
-            params = {"denoise": float(dn), "cfg": float(cfg), "steps": int(st)}
-            return _q_sd(char, major, minor, "sd_stage2", p, n, params, src_stage, src_url)
-
-        (s2_q_btn.click(
-            _do_q_s2,
-            [s2_char, s2_major, s2_minor,
-             s2_prompt, s2_neg, s2_denoise, s2_cfg, s2_steps, s2_src_stage, s2_src_url_st],
-            [s2_sid, s2_minor, s2_info, s2_status],
-        ).then(lambda: gr.Timer(active=True), outputs=[stage_timer]))
-
-        s2_r_btn.click(
-            lambda sid: _refresh_with_img(sid, 350),
-            [s2_sid], [s2_status, s2_url, s2_img]
-        )
-
-        # Multiview Side
-        (mv_side_btn.click(
-            lambda char, maj, minor, p, dn, cfg, ss, su:
-                _q_multiview(char, maj, minor, "side", p, "", dn, cfg, ss, su),
-            [mv_char, mv_major, mv_minor, mv_side_prompt, mv_denoise, mv_cfg,
-             mv_src_stage, mv_src_url_st],
-            [mv_side_sid, mv_minor, mv_info, mv_side_status],
-        ).then(lambda: gr.Timer(active=True), outputs=[stage_timer]))
-
-        mv_side_r.click(
-            lambda sid: (_refresh_run(sid)[0], _url_to_img(_refresh_run(sid)[1], 300)),
-            [mv_side_sid], [mv_side_status, mv_side_img]
-        )
-
-        # Multiview Back
-        (mv_back_btn.click(
-            lambda char, maj, minor, p, dn, cfg, ss, su:
-                _q_multiview(char, maj, minor, "back", p, "", dn, cfg, ss, su),
-            [mv_char, mv_major, mv_minor, mv_back_prompt, mv_denoise, mv_cfg,
-             mv_src_stage, mv_src_url_st],
-            [mv_back_sid, mv_minor, mv_info, mv_back_status],
-        ).then(lambda: gr.Timer(active=True), outputs=[stage_timer]))
-
-        mv_back_r.click(
-            lambda sid: (_refresh_run(sid)[0], _url_to_img(_refresh_run(sid)[1], 300)),
-            [mv_back_sid], [mv_back_status, mv_back_img]
         )
 
         # TRELLIS
@@ -1200,26 +982,19 @@ def generation_studio_ui():
         # ── Auto-refresh timer ────────────────────────────────────────────────
         _ACTIVE = {"queued", "running"}
 
-        def _tick(fx_s, s1_s, s2_s, ms_s, mb_s, tr_s, rg_s):
+        def _tick(fx_s, s1_s, tr_s, rg_s):
             def _r(sid): return _refresh_run(sid)
 
-            fx_st, fx_u  = _r(fx_s)
-            s1_st, s1_u  = _r(s1_s)
-            s2_st, s2_u  = _r(s2_s)
-            ms_st, ms_u  = _r(ms_s)
-            mb_st, mb_u  = _r(mb_s)
-            tr_st, tr_u  = _r(tr_s)
-            rg_st, rg_u  = _r(rg_s)
+            fx_st, fx_u = _r(fx_s)
+            s1_st, s1_u = _r(s1_s)
+            tr_st, tr_u = _r(tr_s)
+            rg_st, rg_u = _r(rg_s)
 
-            still = any(s in _ACTIVE for s in
-                        [fx_st, s1_st, s2_st, ms_st, mb_st, tr_st, rg_st])
+            still = any(s in _ACTIVE for s in [fx_st, s1_st, tr_st, rg_st])
 
             return (
                 fx_st, fx_u, _url_to_img(fx_u),
                 s1_st, s1_u, _url_to_img(s1_u, 350),
-                s2_st, s2_u, _url_to_img(s2_u, 350),
-                ms_st, _url_to_img(ms_u, 300),
-                mb_st, _url_to_img(mb_u, 300),
                 tr_st, tr_u,
                 rg_st, rg_u,
                 gr.Timer(active=still),
@@ -1227,12 +1002,9 @@ def generation_studio_ui():
 
         stage_timer.tick(
             _tick,
-            [fx_sid, s1_sid, s2_sid, mv_side_sid, mv_back_sid, tr_sid, rg_sid],
+            [fx_sid, s1_sid, tr_sid, rg_sid],
             [fx_status, fx_url, fx_img,
              s1_status, s1_url, s1_img,
-             s2_status, s2_url, s2_img,
-             mv_side_status, mv_side_img,
-             mv_back_status, mv_back_img,
              tr_status, tr_url,
              rg_status, rg_url,
              stage_timer],
