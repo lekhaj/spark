@@ -97,24 +97,24 @@ OPENPOSE_LIMBS = [
 # Arms fully horizontal; legs straight and hip-width apart.
 TPOSE_KPS = {
     #   idx : (x,   y)
-     0: (256,  66),   # Nose
-     1: (256,  98),   # Neck
-     2: (166, 124),   # RShoulder  ← char's right = image left
-     3: ( 96, 124),   # RElbow
-     4: ( 28, 124),   # RWrist
-     5: (346, 124),   # LShoulder
-     6: (416, 124),   # LElbow
-     7: (484, 124),   # LWrist
-     8: (210, 278),   # RHip
-     9: (210, 368),   # RKnee
-    10: (210, 456),   # RAnkle
-    11: (302, 278),   # LHip
-    12: (302, 368),   # LKnee
-    13: (302, 456),   # LAnkle
-    14: (240,  52),   # REye
-    15: (272,  52),   # LEye
-    16: (222,  63),   # REar
-    17: (290,  63),   # LEar
+     0: (256,  40),   # Nose
+     1: (256,  82),   # Neck
+     2: ( 82, 108),   # RShoulder  ← char's right = image left
+     3: ( 40, 108),   # RElbow
+     4: (  4, 108),   # RWrist     — at left edge
+     5: (430, 108),   # LShoulder
+     6: (472, 108),   # LElbow
+     7: (508, 108),   # LWrist     — at right edge
+     8: (210, 270),   # RHip
+     9: (205, 372),   # RKnee
+    10: (202, 468),   # RAnkle
+    11: (302, 270),   # LHip
+    12: (307, 372),   # LKnee
+    13: (310, 468),   # LAnkle
+    14: (238,  26),   # REye
+    15: (274,  26),   # LEye
+    16: (218,  38),   # REar
+    17: (294,  38),   # LEar
 }
 
 
