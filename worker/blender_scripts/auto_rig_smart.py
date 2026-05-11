@@ -188,7 +188,7 @@ print(f"[ARP] Landmarks: shoulder=({shoulder_l_x:.3f},{shoulder_z:.3f}) "
 # ── 6. Enable ARP  (after mesh is fully loaded and processed) ─────────────────
 print("[ARP] Enabling Auto-Rig Pro...")
 ARP_ADDON_NAME = os.getenv("ARP_ADDON_NAME", "auto_rig_pro-master")
-addon_utils.enable(ARP_ADDON_NAME, default_set=True, persistent=True)
+addon_utils.enable(ARP_ADDON_NAME, default_set=False, persistent=False)
 bpy.context.view_layer.update()
 
 if not hasattr(bpy.ops, "arp"):

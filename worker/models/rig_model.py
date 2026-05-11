@@ -101,6 +101,8 @@ def run_rig(
 
     cmd = [
         BLENDER_PATH, "--background",
+        "--factory-startup",   # ignore saved user prefs — prevents ARP auto-enabling
+                               # at startup (ARP was saved to prefs via default_set=True)
         "--python", ARP_SCRIPT_PATH,
         "--",
         "--input",          input_glb_path,
