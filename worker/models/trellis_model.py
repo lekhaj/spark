@@ -5,7 +5,14 @@ trellis_model.py — TRELLIS (JeffreyXiang/TRELLIS-image-large) image-to-3D
 Public API
 ----------
     load_trellis(model_id, repo_path, remove_bg)  -> TrellisPipes
-    run_trellis(pipes, front_image, params)        -> bytes  (GLB binary)
+    run_trellis(pipes, front_image, params,
+                side_image=None, back_image=None) -> bytes  (GLB binary)
+
+Multi-view
+----------
+    If side_image or back_image are provided alongside front_image, the
+    pipeline uses run_multi_image([front, side, back]) for higher quality.
+    Side/back are optional — front-only always works.
 
 TrellisPipes (dataclass)
 ------------------------
@@ -21,7 +28,6 @@ Notes
 -----
 - Uses JeffreyXiang/TRELLIS (package: trellis, class: TrellisImageTo3DPipeline).
 - Repo must be cloned to TRELLIS_REPO_PATH (~/trellis) and added to PYTHONPATH.
-  No pip install needed — just PYTHONPATH=/home/ec2-user/trellis.
 - GLB export uses postprocessing_utils.to_glb(gaussian, mesh).
 - Returns raw GLB bytes — caller uploads directly.
 """
@@ -121,19 +127,29 @@ def run_trellis(
     pipes:       TrellisPipes,
     front_image: Image.Image,
     params:      dict | None = None,
+    side_image:  Image.Image | None = None,
+    back_image:  Image.Image | None = None,
 ) -> bytes:
     """
-    Run TRELLIS on a single front-view image and return a GLB binary.
+    Run TRELLIS on one or more views and return a GLB binary.
 
     Args:
         pipes:       TrellisPipes from load_trellis().
-        front_image: PIL.Image — the front-view character image.
+        front_image: PIL.Image — required front-view character image.
         params:      Override dict — any subset of PARAM_DEFAULTS keys:
                        texture_size (int)   — texture atlas resolution
                        simplify     (float) — mesh simplification ratio
+        side_image:  Optional PIL.Image — side view for multi-image mode.
+        back_image:  Optional PIL.Image — back view for multi-image mode.
 
     Returns:
         bytes — raw GLB binary.
+
+    Notes:
+        - If side_image or back_image are provided, uses run_multi_image()
+          for higher quality reconstruction.
+        - If only front_image, uses single-image run().
+        - Always produces a valid GLB regardless of which views are supplied.
     """
     import sys
     if TRELLIS_REPO_PATH not in sys.path:
@@ -145,12 +161,34 @@ def run_trellis(
     texture_size = int(p["texture_size"])
     simplify     = float(p["simplify"])
 
-    img = _prepare_image(front_image, pipes.rembg_session)
+    front_prep = _prepare_image(front_image, pipes.rembg_session)
 
-    logger.info(f"[trellis] run  texture={texture_size}  simplify={simplify}")
+    # Collect extra views that were actually provided
+    extra_views = []
+    if side_image is not None:
+        extra_views.append(_prepare_image(side_image, pipes.rembg_session))
+    if back_image is not None:
+        extra_views.append(_prepare_image(back_image, pipes.rembg_session))
+
+    multi_view = len(extra_views) > 0
+
+    logger.info(
+        f"[trellis] run  views={'front+' + '+'.join(['side','back'][:len(extra_views)]) if multi_view else 'front'}  "
+        f"texture={texture_size}  simplify={simplify}"
+    )
 
     with torch.no_grad():
-        outputs = pipes.pipe.run(img, formats=["mesh", "gaussian"])
+        if multi_view:
+            images = [front_prep] + extra_views
+            outputs = pipes.pipe.run_multi_image(
+                images,
+                formats=["mesh", "gaussian"],
+            )
+        else:
+            outputs = pipes.pipe.run(
+                front_prep,
+                formats=["mesh", "gaussian"],
+            )
 
     glb = postprocessing_utils.to_glb(
         outputs["gaussian"][0],
