@@ -137,14 +137,10 @@ bpy.context.view_layer.objects.active = char_mesh
 char_mesh.select_set(True)
 
 # Set character type in ARP scene settings
+# ARP 3.76+ uses BODY/FACIAL enums, not humanoid/quadruped
 scene = bpy.context.scene
 if hasattr(scene, "arp_smart_type"):
-    if CHARACTER_TYPE == "quadruped":
-        scene.arp_smart_type = "quadruped"
-    elif CHARACTER_TYPE in ("bird",):
-        scene.arp_smart_type = "bird"
-    else:
-        scene.arp_smart_type = "humanoid"
+    scene.arp_smart_type = "BODY"
 
 # Run ARP Smart — this is the one-click auto-rig operator
 try:
