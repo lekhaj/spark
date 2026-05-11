@@ -66,7 +66,7 @@ logger = logging.getLogger("ModelManager")
 FLUX_MODEL_ID       = os.getenv("FLUX_MODEL_ID",    "black-forest-labs/FLUX.1-schnell")
 SD_MODEL_ID         = os.getenv("SD_MODEL_ID",      "Lykon/DreamShaper")
 TPOSE_OPENPOSE_PATH = os.getenv("TPOSE_OPENPOSE_PATH", "")
-TRELLIS_MODEL_ID    = os.getenv("TRELLIS_MODEL_ID", "microsoft/TRELLIS.2-4B")
+TRELLIS_MODEL_ID    = os.getenv("TRELLIS_MODEL_ID", "JeffreyXiang/TRELLIS-image-large")
 TRELLIS_REPO_PATH   = os.getenv("TRELLIS_REPO_PATH", os.path.expanduser("~/trellis"))
 REMOVE_BG           = os.getenv("REMOVE_BG", "true").lower() == "true"
 
