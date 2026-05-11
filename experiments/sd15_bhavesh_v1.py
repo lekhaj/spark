@@ -47,8 +47,8 @@ IMG_SIZE = 768  # Increased from 512 — more pixels = better face & hand detail
 
 # Stage 1 — VERY LIGHT TOUCH. SD only corrects pose. Flux provides design.
 STAGE1_STEPS       = 20
-STAGE1_CFG         = 5.0
-STAGE1_STRENGTH    = 0.50   # increased to override Flux background bleed
+STAGE1_CFG         = 5.5
+STAGE1_STRENGTH    = 0.45   # push hard enough to override Flux cloth edges
 STAGE1_CN_OPENPOSE = 0.90   # strong skeleton lock for bipedal T-pose
 STAGE1_CN_CANNY    = 0.0    # DISABLED for bipedal — Canny was tracing Flux cape edges
 STAGE1_CN_CANNY_QUAD = 0.70 # quad: Canny-only (no skeleton)
@@ -72,56 +72,50 @@ CHARACTERS = {
 
     "human_ranger": {
         "creature_category": "bipedal",
-        # ── Stage 1: Pose lock only. Minimal tokens. Background anchor is critical. ─────
         "stage1_prompt": (
-            "full body female, perfect T-pose, both arms horizontal, legs straight, "
-            "standing upright, orthographic front view, "
-            "hands in full-coverage fingerless tactical gloves with armored knuckle guard, "
-            "knee-high boots, tight high bun secured with band no flyaways, "
-            "zip-up fitted bodysuit, "
-            "pure white studio background, seamless white cyclorama, studio key lighting, "
-            "character turnaround sheet, head to toe, isolated figure"
+            "full body female, standing perfectly upright, straight spine, orthographic front view, "
+            "looking directly at camera, perfect anatomical T-pose, both arms stretched out horizontally, "
+            "palms facing down, straight arms, legs straight, feet flat on ground, "
+            "hands wearing full-length black tactical gloves covering all fingers, feet wearing simple boots, neat tight bun hairstyle, "
+            "realistic human face, zip jacket, pants, "
+            "isolated on pure solid white background, studio white backdrop, no shadow, no gradient, white only background, "
+            "flat even lighting, character sheet, front view, head to toe, full body visible"
         ),
-        # ── Stage 1 Negative: Focus on background bleed and structural errors ────────
         "stage1_negative": (
-            "logo, emblem, symbol, icon, watermark, graphic, print, badge, decal, pattern, "
-            "grey background, gradient background, grey tone, dark background, textured background, "
-            "shadow, cast shadow, drop shadow, ground shadow, floor reflection, "
-            "scenery, environment, cityscape, buildings, urban, construction, machinery, pipes, "
-            "leaning, bent spine, perspective view, angled camera, "
-            "bare hands, bare fingers, visible fingers, extra fingers, fused fingers, "
-            "twintails, pigtails, ponytail, loose hair, flyaway hair, messy hair, "
-            "arms raised, arms bent, holding object, "
-            "cape, cloak, skirt, dress, robe, flowing cloth, "
-            "anime, cartoon, doll, chibi, big eyes, "
+            "leaning forward, bent spine, looking down, perspective, angled camera, "
+            "bare hands, bare fingers, skin on hands, exposed fingers, bare skin on hands, "
+            "boots on hands, shoes on hands, extra shoes, messy hair, loose hair, "
+            "arms raised, arms up, arms bent, holding object, holding bar, holding pole, "
+            "cape, cloak, skirt, dress, robe, flowing cloth, anime, doll, cartoon, big eyes, chibi, "
+            "open mouth, fused fingers, extra limbs, "
             "cropped body, cut off, missing feet, missing legs, "
-            "extra limbs, open mouth, teeth"
+            "grey background, beige background, colored background, gradient background, vignette, shadow, "
+            "background, cityscape, city, buildings, urban, construction, "
+            "machinery, pipes, scenery, environment, sky, "
+            "spiral, swirl, pattern, watermark, logo, symbol, gradient, text, design"
         ),
-        # ── Stage 2: Full visual identity. Background purity is top priority. ─────────
         "stage2_prompt": (
-            "photorealistic 3D game character asset, female ranger, T-pose, "
-            "orthographic front view, full body head to toe, "
-            "fitted tactical zip-up bodysuit with black accent panels, combat pants, knee-high boots, "
-            "full-coverage fingerless armored tactical gloves with knuckle guard, "
-            "tight high bun auburn hair secured with band, no flyaways, "
-            "symmetrical photorealistic face, natural skin, closed mouth, "
-            "pure white background, seamless white studio cyclorama, "
-            "flat diffuse studio lighting, no shadows, character reference sheet, "
-            "clean silhouette, sharp edges, game-ready mesh topology, PBR material ready"
+            "high quality 3d game asset, beautiful female ranger, standing perfectly upright, "
+            "orthographic front view, looking directly at camera, T-pose, both arms stretched horizontally, "
+            "palms facing down, straight arms not raised, legs straight, feet visible, "
+            "fitted tactical zip jacket, combat pants, leather belt, knee-high boots, "
+            "hands wearing full-length black tactical gloves covering all fingers up to wrist, no bare skin on hands, "
+            "neat tight bun auburn hair, photorealistic human face, natural facial proportions, high fashion studio photography, "
+            "isolated on pure solid white background, studio white backdrop, no shadow, no gradient, white only background, "
+            "flat studio lighting, character sheet, front view, head to toe"
         ),
-        # ── Stage 2 Negative: Full artifact suppression ──────────────────────────────
         "stage2_negative": (
-            "logo, emblem, symbol, icon, watermark, graphic, print, badge, decal, pattern, spiral, swirl, "
-            "grey background, gradient background, dark background, textured background, grey tone, "
-            "shadow, cast shadow, drop shadow, ground shadow, floor reflection, ambient occlusion bake, "
-            "scenery, environment, cityscape, buildings, machinery, pipes, props, "
-            "bare hands, bare fingers, visible fingers, extra fingers, fused fingers, "
-            "twintails, pigtails, ponytail, loose hair, flyaway hair, messy hair, windswept hair, "
-            "arms raised, arms bent, arms up, holding object, "
-            "cape, cloak, skirt, dress, robe, flowing cloth, "
-            "anime, cartoon, doll, chibi, big eyes, plastic skin, "
-            "cropped body, cut off, missing feet, missing legs, extra limbs, "
-            "open mouth, teeth, text, watermark"
+            "leaning forward, bent spine, looking down, perspective, angled camera, "
+            "bare hands, bare fingers, skin on hands, exposed fingers, "
+            "boots on hands, shoes on hands, extra shoes, messy hair, loose hair, "
+            "arms raised, arms up, arms bent, holding object, holding bar, holding pole, "
+            "cape, cloak, skirt, dress, robe, flowing cloth, windswept hair, anime, doll, cartoon, big eyes, chibi, "
+            "open mouth, fused fingers, extra limbs, bare legs, "
+            "cropped body, cut off, missing feet, missing legs, "
+            "grey background, beige background, colored background, gradient background, vignette, shadow, "
+            "background, cityscape, city, buildings, urban, construction, "
+            "machinery, pipes, scenery, environment, sky, "
+            "spiral, swirl, pattern, watermark, logo, symbol, gradient, text, design"
         ),
     },
 
