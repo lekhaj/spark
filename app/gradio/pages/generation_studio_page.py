@@ -314,7 +314,7 @@ def _prepare_run(char, stage, major, minor, prompt, neg, params):
 
 
 def _q_flux(char, major, minor, prompt, neg, w, h, steps, guidance):
-    """Queue all 3 views (front, side, back) for the Flux stage."""
+    """Queue the Flux stage generation."""
     stage  = "flux"
     params = {"width": int(w), "height": int(h),
                "steps": int(steps), "guidance_scale": float(guidance)}
@@ -333,16 +333,10 @@ def _q_flux(char, major, minor, prompt, neg, w, h, steps, guidance):
                              "char_label": char, "prompt": prompt, "negative": neg,
                              "params": params, "view": "front"})
     mark_queued(db, sid, stage=stage, task_id=tid_front)
-    # Queue side and back views (additional — no separate run doc, same session_id)
-    _push_task({"type": "flux", "session_id": sid, "stage": stage,
-                "char_label": char, "prompt": prompt, "negative": neg,
-                "params": params, "view": "side"})
-    _push_task({"type": "flux", "session_id": sid, "stage": stage,
-                "char_label": char, "prompt": prompt, "negative": neg,
-                "params": params, "view": "back"})
+    
     ver  = f"{major}.{new_n}" if new_n is not None else f"{major}.{minor}"
     info = f"{sid[:8]}…  v{ver}  [queued]"
-    return sid, minor_upd, info, f"queued ✓  v{ver}  (3 views)  task={tid_front[:8]}…"
+    return sid, minor_upd, info, f"queued ✓  v{ver}  task={tid_front[:8]}…"
 
 
 def _q_normalize(char, major, minor, w, h, src_stage, src_ver):
