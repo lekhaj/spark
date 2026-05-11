@@ -648,16 +648,28 @@ def generation_studio_ui():
                 s1_cn_w    = gr.Slider(0.0, 1.5, value=0.25, step=0.05, label="Canny weight")
                 s1_ip_w    = gr.Slider(0.0, 1.0, value=0.65, step=0.05, label="IP-Adapter weight")
             _S3 = "https://sparkassets-us.s3.us-east-1.amazonaws.com/controlnet_refs"
-            s1_openpose_ref = gr.Dropdown(
-                choices=[
-                    ("Default (active on S3)",       ""),
-                    ("V1 — Hand-drawn",               f"{_S3}/tpose_v1_user.png"),
-                    ("V2 — FBX extracted (X Bot)",    f"{_S3}/tpose_v2_fbx.png"),
-                ],
-                value="",
-                label="T-Pose Skeleton",
-                info="Which OpenPose reference skeleton to use for this run",
-            )
+            _SKEL_CHOICES = [
+                ("Default (active on S3)",       ""),
+                ("V1 — Hand-drawn",               f"{_S3}/tpose_v1_user.png"),
+                ("V2 — FBX extracted (X Bot)",    f"{_S3}/tpose_v2_fbx.png"),
+            ]
+            _DEFAULT_S3_URL = f"{_S3}/tpose_openpose.png"
+            with gr.Row():
+                s1_openpose_ref = gr.Dropdown(
+                    choices=_SKEL_CHOICES,
+                    value="",
+                    label="T-Pose Skeleton",
+                    info="Which OpenPose skeleton to use — preview updates on change",
+                    scale=2,
+                )
+                s1_skel_preview = gr.Image(
+                    value=_DEFAULT_S3_URL,
+                    label="Skeleton preview",
+                    height=160, width=160,
+                    interactive=False,
+                    show_download_button=False,
+                    scale=1,
+                )
             with gr.Row():
                 s1_q_btn = gr.Button("Queue T-Pose", variant="primary")
                 s1_status= gr.Textbox(label="Status", value="idle", interactive=False, scale=2)
@@ -945,7 +957,13 @@ def generation_studio_ui():
             [nm_sid, nm_minor, nm_info, nm_status, nm_img, nm_info2]
         )
 
-        # SD T-Pose
+        # SD T-Pose — skeleton preview updates instantly when dropdown changes
+        s1_openpose_ref.change(
+            lambda url: url if url else _DEFAULT_S3_URL,
+            [s1_openpose_ref],
+            [s1_skel_preview],
+        )
+
         def _do_q_tp(char, major, minor, p, n, dn, cfg, st, opw, cnw, ipw, cat, ref_url, src_stage, src_url):
             params = {"denoise": float(dn), "cfg": float(cfg), "steps": int(st),
                       "openpose_weight": float(opw), "canny_weight": float(cnw),
