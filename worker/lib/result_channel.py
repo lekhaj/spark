@@ -33,9 +33,14 @@ def push_running(r, session_id: str, stage: str) -> None:
     _push(r, session_id, stage, "running")
 
 
-def push_done(r, session_id: str, stage: str, image_url: str, s3_key: str) -> None:
-    """GPU worker finished — image uploaded to S3."""
-    _push(r, session_id, stage, "done", image_url=image_url, s3_key=s3_key)
+def push_done(r, session_id: str, stage: str, image_url: str, s3_key: str,
+              view: str = "front") -> None:
+    """GPU worker finished — image uploaded to S3.
+    view: 'front' (default), 'side', or 'back'.
+    For front view, image_url is stored as the primary image_url for backward compat.
+    For side/back, the view field signals the consumer to store to side_url/back_url.
+    """
+    _push(r, session_id, stage, "done", image_url=image_url, s3_key=s3_key, view=view)
 
 
 def push_glb_done(r, session_id: str, stage: str, glb_url: str, s3_key: str) -> None:

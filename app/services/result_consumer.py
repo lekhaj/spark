@@ -39,7 +39,19 @@ def _apply_result(db, msg: dict) -> None:
             # Image stages return image_url / s3_key; 3D stages return glb_url / s3_key
             image_url = msg.get("image_url") or msg.get("glb_url", "")
             s3_key    = msg.get("s3_key", "")
-            mark_done(db, session_id, stage, image_url, s3_key)
+            view      = msg.get("view", "front")
+            if view in ("side", "back"):
+                # Partial update — store side_url / back_url without overwriting status
+                from worker.lib.manual_gen_schema import update_run, _coll_for_stage, get_run_any
+                doc = get_run_any(db, session_id)
+                if doc:
+                    url_field = f"{view}_url"
+                    update_run(db, session_id, {url_field: image_url, f"{view}_s3_key": s3_key},
+                               coll=_coll_for_stage(stage))
+                else:
+                    logger.warning(f"[result_consumer] No run doc for {session_id[:8]} view={view}")
+            else:
+                mark_done(db, session_id, stage, image_url, s3_key)
 
         elif status == "error":
             mark_error(db, session_id, stage, msg.get("error", "unknown error"))

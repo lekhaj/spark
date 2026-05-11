@@ -361,3 +361,19 @@ def get_latest_done_image_url(db, char_label: str, stage: str,
                               coll: str = None) -> Optional[str]:
     doc = get_latest_done_run(db, char_label, stage, coll=coll)
     return (doc or {}).get("image_url")
+
+
+def get_view_urls(db, char_label: str, stage: str, major: int, minor: int,
+                  coll: str = None) -> dict:
+    """
+    Return all view URLs for a given (char, stage, major, minor) run.
+    Returns dict with keys: front, side, back (any may be empty string).
+    front = image_url (primary, backward-compat field).
+    """
+    coll = coll or _coll_for_stage(stage)
+    doc  = get_run_for(db, char_label, stage, major, minor, coll=coll) or {}
+    return {
+        "front": doc.get("image_url") or "",
+        "side":  doc.get("side_url")  or "",
+        "back":  doc.get("back_url")  or "",
+    }

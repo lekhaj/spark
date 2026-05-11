@@ -58,7 +58,7 @@ from lib.manual_gen_schema import (
     list_chars, list_stage_majors, list_stage_minors,
     next_stage_major,
     version_str, save_run_params, mark_queued,
-    get_latest_done_image_url, get_run_any,
+    get_latest_done_image_url, get_latest_done_run, get_run_any,
     STAGE_NAMES, COLLECTION, TPOSE_COLLECTION,
 )
 
@@ -240,6 +240,28 @@ def _refresh_src_picker(char: str, src_stage: str):
         return gr.update(choices=versions, value=latest), url, f"✓ {src_stage} v{latest}"
     return gr.update(choices=[], value=None), "", f"No done '{src_stage}' runs yet"
 
+def _get_view_urls_for_ver(char: str, stage: str, ver: str) -> dict:
+    """Return {front, side, back} URLs for (char, stage, 'major.minor')."""
+    if not all([char, stage, ver]):
+        return {"front": "", "side": "", "back": ""}
+    try:
+        from lib.manual_gen_schema import get_view_urls
+        parts = ver.split(".", 1)
+        major, minor = int(parts[0]), int(parts[1] if len(parts) > 1 else 0)
+        return get_view_urls(_db(), char, stage, major, minor)
+    except Exception:
+        return {"front": "", "side": "", "back": ""}
+
+def _view_availability_info(char: str, stage: str, ver: str) -> str:
+    """Return human-readable availability string for all 3 views."""
+    if not ver:
+        return "No version selected"
+    urls = _get_view_urls_for_ver(char, stage, ver)
+    parts = []
+    for view, label in [("front", "Front"), ("side", "Side"), ("back", "Back")]:
+        parts.append(f"{label} {'✓' if urls[view] else '✗'}")
+    return f"  |  ".join(parts)
+
 def _on_src_ver(char: str, src_stage: str, ver: str):
     """User selected a specific source version. Returns (src_url, info_str)."""
     if not ver:
@@ -292,6 +314,7 @@ def _prepare_run(char, stage, major, minor, prompt, neg, params):
 
 
 def _q_flux(char, major, minor, prompt, neg, w, h, steps, guidance):
+    """Queue all 3 views (front, side, back) for the Flux stage."""
     stage  = "flux"
     params = {"width": int(w), "height": int(h),
                "steps": int(steps), "guidance_scale": float(guidance)}
@@ -305,13 +328,21 @@ def _q_flux(char, major, minor, prompt, neg, w, h, steps, guidance):
 
     db = _db()
     save_run_params(db, sid, prompt, neg, params, stage=stage)
-    tid = _push_task({"type": "flux", "session_id": sid, "stage": stage,
-                      "char_label": char, "prompt": prompt, "negative": neg,
-                      "params": params})
-    mark_queued(db, sid, stage=stage, task_id=tid)
+    # Queue front view (primary — sets status to queued via mark_queued)
+    tid_front = _push_task({"type": "flux", "session_id": sid, "stage": stage,
+                             "char_label": char, "prompt": prompt, "negative": neg,
+                             "params": params, "view": "front"})
+    mark_queued(db, sid, stage=stage, task_id=tid_front)
+    # Queue side and back views (additional — no separate run doc, same session_id)
+    _push_task({"type": "flux", "session_id": sid, "stage": stage,
+                "char_label": char, "prompt": prompt, "negative": neg,
+                "params": params, "view": "side"})
+    _push_task({"type": "flux", "session_id": sid, "stage": stage,
+                "char_label": char, "prompt": prompt, "negative": neg,
+                "params": params, "view": "back"})
     ver  = f"{major}.{new_n}" if new_n is not None else f"{major}.{minor}"
     info = f"{sid[:8]}…  v{ver}  [queued]"
-    return sid, minor_upd, info, f"queued ✓  v{ver}  task={tid[:8]}…"
+    return sid, minor_upd, info, f"queued ✓  v{ver}  (3 views)  task={tid_front[:8]}…"
 
 
 def _q_normalize(char, major, minor, w, h, src_stage, src_ver):
@@ -400,33 +431,55 @@ def _q_sd(char, major, minor, stage, prompt, neg, params, src_stage, src_url):
     return sid, minor_upd, info, f"queued ✓  v{ver}  task={tid[:8]}…"
 
 
-def _q_trellis(char, major, minor, front_stage, front_url, side_stage, side_url, back_stage, back_url):
+def _q_trellis(char, major, minor, char_type, src_stage, src_ver):
+    """
+    Queue Trellis 3D task.
+    Reads front/side/back view URLs from the selected source stage+version.
+    Front view is required; side/back are optional enhancements.
+    """
     stage = "trellis"
-    # Resolve any missing URLs from latest done
-    db = _db()
-    if not front_url:
-        front_url = get_latest_done_image_url(db, char, front_stage) or ""
-    if not side_url:
-        side_url  = get_latest_done_image_url(db, char, side_stage)  or ""
-    if not back_url:
-        back_url  = get_latest_done_image_url(db, char, back_stage)  or ""
+    db    = _db()
+
+    # Resolve view URLs from source version (or fall back to latest done)
+    if src_ver:
+        view_urls = _get_view_urls_for_ver(char, src_stage, src_ver)
+    else:
+        # Fall back to latest done run
+        latest = get_latest_done_run(db, char, src_stage)
+        if latest:
+            view_urls = {
+                "front": latest.get("image_url") or "",
+                "side":  latest.get("side_url")  or "",
+                "back":  latest.get("back_url")  or "",
+            }
+        else:
+            view_urls = {"front": "", "side": "", "back": ""}
+
+    front_url = view_urls["front"]
+    side_url  = view_urls["side"]
+    back_url  = view_urls["back"]
 
     if not front_url:
         return None, gr.update(), gr.update(), \
-            f"No done image in '{front_stage}'. Run that stage first."
+            f"No front-view image in '{src_stage}' v{src_ver or 'latest'}. Run that stage first."
 
+    params = {"char_type": char_type or "humanoid"}
     sid, new_n, minor_upd, info_upd, err = _prepare_run(
-        char, stage, major, minor, "", "", {})
+        char, stage, major, minor, "", "", params)
     if err:
         return sid, minor_upd, gr.update(), err
 
+    save_run_params(db, sid, "", "", params, stage=stage)
     tid = _push_task({"type": "trellis", "session_id": sid, "stage": stage,
-                      "char_label": char, "input_front": front_url,
-                      "input_side": side_url, "input_back": back_url})
+                      "char_label": char, "char_type": char_type or "humanoid",
+                      "input_front": front_url,
+                      "input_side": side_url, "input_back": back_url,
+                      "params": params})
     mark_queued(db, sid, stage=stage, task_id=tid)
+    views_info = f"F{'✓' if front_url else '✗'} S{'✓' if side_url else '✗'} B{'✓' if back_url else '✗'}"
     ver  = f"{major}.{new_n}" if new_n is not None else f"{major}.{minor}"
     info = f"{sid[:8]}…  v{ver}  [queued]"
-    return sid, minor_upd, info, f"queued ✓  v{ver}  task={tid[:8]}…"
+    return sid, minor_upd, info, f"queued ✓  v{ver}  [{views_info}]  task={tid[:8]}…"
 
 
 def _q_rig(char, major, minor, char_type, trellis_src_ver):
@@ -597,11 +650,24 @@ def generation_studio_ui():
                 fx_steps= gr.Number(label="Steps",    value=4,   precision=0)
                 fx_guid = gr.Number(label="Guidance", value=0.0)
             with gr.Row():
-                fx_q_btn = gr.Button("Queue Flux", variant="primary")
+                fx_q_btn = gr.Button("Queue Flux (all 3 views)", variant="primary")
                 fx_status= gr.Textbox(label="Status", value="idle", interactive=False, scale=2)
                 fx_r_btn = gr.Button("Refresh", size="sm")
-            fx_img = gr.HTML(value=_url_to_img(""))
-            fx_url = gr.Textbox(label="Image URL", interactive=False)
+            gr.Markdown("_Queues front + side + back views automatically. "
+                        "Side/back append view suffix to your prompt._")
+            with gr.Row():
+                with gr.Column():
+                    gr.Markdown("**Front view**")
+                    fx_img      = gr.HTML(value=_url_to_img(""))
+                    fx_url      = gr.Textbox(label="Front URL", interactive=False)
+                with gr.Column():
+                    gr.Markdown("**Side view**")
+                    fx_side_img = gr.HTML(value=_url_to_img(""))
+                    fx_side_url = gr.Textbox(label="Side URL", interactive=False)
+                with gr.Column():
+                    gr.Markdown("**Back view**")
+                    fx_back_img = gr.HTML(value=_url_to_img(""))
+                    fx_back_url = gr.Textbox(label="Back URL", interactive=False)
 
         # ══════════════════════════════════════════════════════════════════════
         #  STAGE 1: NORMALIZE
@@ -671,16 +737,14 @@ def generation_studio_ui():
         with gr.Accordion("Stage 3 — TRELLIS 3D Mesh", open=False):
             tr_char, tr_major, tr_minor, tr_new_maj, tr_sid, tr_info = _make_picker(_chars)
             gr.Markdown("---")
-            gr.Markdown("**Select source version for each view:**")
-            with gr.Row():
-                tr_front_stage, tr_front_ver, tr_front_url_st, tr_front_info = _make_src_picker(
-                    ["sd_tpose", "flux", "normalize"], "sd_tpose")
-            with gr.Row():
-                tr_side_stage, tr_side_ver, tr_side_url_st, tr_side_info = _make_src_picker(
-                    ["sd_tpose", "flux", "normalize"], "sd_tpose")
-            with gr.Row():
-                tr_back_stage, tr_back_ver, tr_back_url_st, tr_back_info = _make_src_picker(
-                    ["sd_tpose", "flux", "normalize"], "sd_tpose")
+            tr_char_type = gr.Dropdown(
+                choices=["humanoid", "quadruped", "bird", "fish"],
+                value="humanoid", label="Character type")
+            gr.Markdown("**Select source stage + version (side/back views auto-loaded if available):**")
+            tr_src_stage, tr_src_ver, tr_src_url_st, tr_src_info = _make_src_picker(
+                ["sd_tpose", "flux", "normalize"], "sd_tpose")
+            tr_view_info = gr.Textbox(label="View availability", interactive=False, lines=1,
+                                      info="Shows which views are present for selected version")
             with gr.Row():
                 tr_q_btn = gr.Button("Queue TRELLIS", variant="primary")
                 tr_status= gr.Textbox(label="Status", value="idle", interactive=False, scale=2)
@@ -765,35 +829,40 @@ def generation_studio_ui():
             # _refresh_src_picker returns (ver_upd, src_url, info_str)
             nm_src = _refresh_src_picker(char, "flux")     if char else (gr.update(), "", "")
             s1_src = _refresh_src_picker(char, "flux")     if char else (gr.update(), "", "")
-            tr_f   = _refresh_src_picker(char, "sd_tpose") if char else (gr.update(), "", "")
-            tr_s   = _refresh_src_picker(char, "sd_tpose") if char else (gr.update(), "", "")
-            tr_b   = _refresh_src_picker(char, "sd_tpose") if char else (gr.update(), "", "")
+            tr_src = _refresh_src_picker(char, "sd_tpose") if char else (gr.update(), "", "")
+            # Trellis view availability info
+            if char:
+                tr_ver_val = tr_src[0].get("value") if hasattr(tr_src[0], "get") else None
+                tr_vinfo   = _view_availability_info(char, "sd_tpose", tr_ver_val or "")
+            else:
+                tr_vinfo = ""
 
             return list((
                 # 5 char dropdowns
                 char_upd, char_upd, char_upd, char_upd, char_upd,
-                # flux  (major, minor, sid, info + 9 data fields = 13)
-                *_load("flux",      _ex_flux),
+                # flux (major, minor, sid, info + 15 data fields = 19)
+                *_load("flux", _ex_flux),
                 # normalize (4+4=8) + source picker (3) = 11
                 *_load("normalize", _ex_normalize),
                 *nm_src,
                 # sd_tpose (4+13=17) + source picker (3) = 20
-                *_load("sd_tpose",  _ex_sd_tpose),
+                *_load("sd_tpose", _ex_sd_tpose),
                 *s1_src,
-                # trellis (4+2=6) + 3 source pickers (9) = 15
-                *_load("trellis",   _ex_trellis),
-                *tr_f, *tr_s, *tr_b,
+                # trellis (4+3=7) + source picker (3) + view_info (1) = 11
+                *_load("trellis", _ex_trellis),
+                *tr_src, tr_vinfo,
                 # rig (4+3=7) = 7
-                *_load("rig",       _ex_rig),
+                *_load("rig", _ex_rig),
             ))
 
         g_prefill_btn.click(_do_prefill, [g_char], [
             # char dropdowns (5)
             fx_char, nm_char, s1_char, tr_char, rg_char,
-            # flux (13)
+            # flux (4 picker + 15 data = 19)
             fx_major, fx_minor, fx_sid, fx_info,
-            fx_prompt, fx_negative, fx_w, fx_h, fx_steps, fx_guid, fx_status, fx_url, fx_img,
-            # normalize (8) + source picker (3) = 11
+            fx_prompt, fx_negative, fx_w, fx_h, fx_steps, fx_guid,
+            fx_status, fx_url, fx_img, fx_side_url, fx_side_img, fx_back_url, fx_back_img,
+            # normalize (4+4=8) + source picker (3) = 11
             nm_major, nm_minor, nm_sid, nm_info,
             nm_w, nm_h, nm_status, nm_img,
             nm_src_ver, nm_src_url_st, nm_src_info,
@@ -802,12 +871,11 @@ def generation_studio_ui():
             s1_prompt, s1_neg, s1_denoise, s1_cfg, s1_steps,
             s1_op_w, s1_cn_w, s1_ip_w, s1_cat, s1_openpose_ref, s1_status, s1_url, s1_img,
             s1_src_ver, s1_src_url_st, s1_src_info,
-            # trellis (6) + 3 source pickers (9) = 15
-            tr_major, tr_minor, tr_sid, tr_info, tr_status, tr_url,
-            tr_front_ver, tr_front_url_st, tr_front_info,
-            tr_side_ver,  tr_side_url_st,  tr_side_info,
-            tr_back_ver,  tr_back_url_st,  tr_back_info,
-            # rig (7)
+            # trellis (4+3=7) + source picker (3) + view_info (1) = 11
+            tr_major, tr_minor, tr_sid, tr_info,
+            tr_char_type, tr_status, tr_url,
+            tr_src_ver, tr_src_url_st, tr_src_info, tr_view_info,
+            # rig (4+3=7) = 7
             rg_major, rg_minor, rg_sid, rg_info, rg_type, rg_status, rg_url,
         ])
 
@@ -815,13 +883,18 @@ def generation_studio_ui():
 
         def _ex_flux(run):
             p = run.get("params") or {}
+            front_url = run.get("image_url", "") or ""
+            side_url  = run.get("side_url",   "") or ""
+            back_url  = run.get("back_url",   "") or ""
             return [run.get("prompt", ""),
                     run.get("negative", "deformed, extra limbs, text, watermark, blurry, nsfw"),
                     p.get("width", 512), p.get("height", 512),
                     p.get("steps", 4), p.get("guidance_scale", 0.0),
                     run.get("status", "idle"),
-                    run.get("image_url", "") or "",
-                    _url_to_img(run.get("image_url", "") or "")]
+                    front_url, _url_to_img(front_url),
+                    side_url,  _url_to_img(side_url),
+                    back_url,  _url_to_img(back_url),
+                    ]
 
         def _ex_normalize(run):
             p = run.get("params") or {}
@@ -843,7 +916,10 @@ def generation_studio_ui():
                     _url_to_img(run.get("image_url", "") or "", 350)]
 
         def _ex_trellis(run):
-            return [run.get("status", "idle"), run.get("image_url", "") or ""]
+            p = run.get("params") or {}
+            return [p.get("char_type", "humanoid"),
+                    run.get("status", "idle"),
+                    run.get("image_url", "") or ""]
 
         def _ex_rig(run):
             p = run.get("params") or {}
@@ -855,7 +931,7 @@ def generation_studio_ui():
 
         _wire_picker("flux", fx_char, fx_major, fx_minor, fx_new_maj, fx_sid, fx_info,
                      [fx_prompt, fx_negative, fx_w, fx_h, fx_steps, fx_guid,
-                      fx_status, fx_url, fx_img],
+                      fx_status, fx_url, fx_img, fx_side_url, fx_side_img, fx_back_url, fx_back_img],
                      _ex_flux)
 
         _wire_picker("normalize", nm_char, nm_major, nm_minor, nm_new_maj, nm_sid, nm_info,
@@ -869,7 +945,7 @@ def generation_studio_ui():
                      _ex_sd_tpose)
 
         _wire_picker("trellis", tr_char, tr_major, tr_minor, tr_new_maj, tr_sid, tr_info,
-                     [tr_status, tr_url],
+                     [tr_char_type, tr_status, tr_url],
                      _ex_trellis)
 
         _wire_picker("rig", rg_char, rg_major, rg_minor, rg_new_maj, rg_sid, rg_info,
@@ -899,9 +975,23 @@ def generation_studio_ui():
 
         _make_src_wiring(nm_char, nm_src_stage, nm_src_ver, nm_src_url_st, nm_src_info)
         _make_src_wiring(s1_char, s1_src_stage, s1_src_ver, s1_src_url_st, s1_src_info)
-        _make_src_wiring(tr_char, tr_front_stage, tr_front_ver, tr_front_url_st, tr_front_info)
-        _make_src_wiring(tr_char, tr_side_stage,  tr_side_ver,  tr_side_url_st,  tr_side_info)
-        _make_src_wiring(tr_char, tr_back_stage,  tr_back_ver,  tr_back_url_st,  tr_back_info)
+        _make_src_wiring(tr_char, tr_src_stage,  tr_src_ver,  tr_src_url_st,  tr_src_info)
+
+        # Trellis: also update view availability info when ver or stage changes
+        def _tr_update_view_info(char, src_stage, ver):
+            return _view_availability_info(char, src_stage, ver)
+
+        tr_src_ver.change(_tr_update_view_info,
+                          [tr_char, tr_src_stage, tr_src_ver],
+                          [tr_view_info])
+        tr_src_stage.change(
+            lambda char, stage: _view_availability_info(char, stage, ""),
+            [tr_char, tr_src_stage], [tr_view_info]
+        )
+        tr_char.change(
+            lambda char: _view_availability_info(char, "sd_tpose", ""),
+            [tr_char], [tr_view_info]
+        )
 
         # Rig: source is always trellis, just version picker
         def _refresh_trellis_ver(char):
@@ -933,9 +1023,29 @@ def generation_studio_ui():
             [fx_sid, fx_minor, fx_info, fx_status],
         ).then(lambda: gr.Timer(active=True), outputs=[stage_timer]))
 
+        def _refresh_flux(sid):
+            """Refresh flux: returns front status/url/img + side url/img + back url/img."""
+            if not sid:
+                return "idle", "", _url_to_img(""), "", _url_to_img(""), "", _url_to_img("")
+            try:
+                doc = get_run_any(_db(), sid)
+                if not doc:
+                    return "idle", "", _url_to_img(""), "", _url_to_img(""), "", _url_to_img("")
+                st         = doc.get("status", "idle")
+                front_url  = doc.get("image_url") or ""
+                side_url   = doc.get("side_url")  or ""
+                back_url   = doc.get("back_url")  or ""
+                if st == "done":    st = "✅ done"
+                elif st == "error": st = f"❌ {doc.get('error', 'error')}"
+                return (st, front_url, _url_to_img(front_url),
+                        side_url,  _url_to_img(side_url),
+                        back_url,  _url_to_img(back_url))
+            except Exception as exc:
+                return f"❌ {exc}", "", _url_to_img(""), "", _url_to_img(""), "", _url_to_img("")
+
         fx_r_btn.click(
-            _refresh_with_img,
-            [fx_sid], [fx_status, fx_url, fx_img]
+            _refresh_flux,
+            [fx_sid], [fx_status, fx_url, fx_img, fx_side_url, fx_side_img, fx_back_url, fx_back_img]
         )
 
         # Normalize
@@ -972,9 +1082,7 @@ def generation_studio_ui():
         (tr_q_btn.click(
             _q_trellis,
             [tr_char, tr_major, tr_minor,
-             tr_front_stage, tr_front_url_st,
-             tr_side_stage,  tr_side_url_st,
-             tr_back_stage,  tr_back_url_st],
+             tr_char_type, tr_src_stage, tr_src_ver],
             [tr_sid, tr_minor, tr_info, tr_status],
         ).then(lambda: gr.Timer(active=True), outputs=[stage_timer]))
 
@@ -1001,7 +1109,15 @@ def generation_studio_ui():
         def _tick(fx_s, s1_s, tr_s, rg_s):
             def _r(sid): return _refresh_run(sid)
 
-            fx_st, fx_u = _r(fx_s)
+            # Flux: get all 3 view URLs from doc
+            fx_doc     = get_run_any(_db(), fx_s) if fx_s else {}
+            fx_st      = fx_doc.get("status", "idle") if fx_doc else "idle"
+            fx_u       = (fx_doc or {}).get("image_url") or ""
+            fx_side_u  = (fx_doc or {}).get("side_url")  or ""
+            fx_back_u  = (fx_doc or {}).get("back_url")  or ""
+            if fx_st == "done":    fx_st = "✅ done"
+            elif fx_st == "error": fx_st = f"❌ {(fx_doc or {}).get('error', 'error')}"
+
             s1_st, s1_u = _r(s1_s)
             tr_st, tr_u = _r(tr_s)
             rg_st, rg_u = _r(rg_s)
@@ -1010,6 +1126,8 @@ def generation_studio_ui():
 
             return (
                 fx_st, fx_u, _url_to_img(fx_u),
+                fx_side_u, _url_to_img(fx_side_u),
+                fx_back_u, _url_to_img(fx_back_u),
                 s1_st, s1_u, _url_to_img(s1_u, 350),
                 tr_st, tr_u,
                 rg_st, rg_u,
@@ -1020,6 +1138,7 @@ def generation_studio_ui():
             _tick,
             [fx_sid, s1_sid, tr_sid, rg_sid],
             [fx_status, fx_url, fx_img,
+             fx_side_url, fx_side_img, fx_back_url, fx_back_img,
              s1_status, s1_url, s1_img,
              tr_status, tr_url,
              rg_status, rg_url,

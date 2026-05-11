@@ -238,14 +238,23 @@ class ManualGenWorker(BaseWorker):
     def _handle_flux(self, task: dict, r) -> None:
         session_id = task["session_id"]
         stage      = task["stage"]
-        prompt     = task.get("prompt", "")
+        base_prompt = task.get("prompt", "")
         params     = task.get("params") or {}
+        view       = task.get("view", "front")  # "front", "side", or "back"
 
+        # Append view-specific suffix so Flux generates the right camera angle
+        VIEW_SUFFIX = {
+            "front": "",                                          # prompt already targets front
+            "side":  ", strict orthographic side profile view, facing left, neutral standing pose",
+            "back":  ", orthographic back view, rear facing, neutral standing pose",
+        }
+        prompt = base_prompt.rstrip(", ") + VIEW_SUFFIX.get(view, "")
+
+        s3_key = f"manual_gen/{session_id}/{stage}_{view}.png"
         img    = run_flux(self._mgr.get("flux"), prompt, params)
-        s3_key = f"manual_gen/{session_id}/{stage}.png"
         url    = self._upload_image(img, s3_key)
-        push_done(r, session_id, stage, url, s3_key)
-        logger.info(f"[flux] → {url}")
+        push_done(r, session_id, stage, url, s3_key, view=view)
+        logger.info(f"[flux:{view}] → {url}")
 
     def _handle_sd_tpose(self, task: dict, r) -> None:
         """
