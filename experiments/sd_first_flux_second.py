@@ -62,12 +62,15 @@ CHARACTERS = {
         "sd_prompt": (
             "full body female, standing perfectly upright, straight spine, orthographic front view, "
             "looking directly at camera, perfect anatomical T-pose, both arms extended horizontally, "
-            "straight legs, bare hands, hands are bare, feet wearing simple boots, "
+            "straight legs, hands wearing tactical gloves, feet wearing simple boots, "
+            "short neat hair, realistic human face, "
             "simple zip jacket, tight pants, pure blank white background, flat lighting"
         ),
         "sd_neg": (
             "leaning forward, bent spine, looking down, perspective, angled camera, "
-            "boots on hands, shoes on hands, extra shoes, gloves, "
+            "boots on hands, shoes on hands, extra shoes, "
+            "long hair, flowing hair, wild hair, windswept hair, "
+            "anime, doll, cartoon, big eyes, chibi, "
             "arms raised, arms bent, holding object, cape, cloak, flowing cloth, "
             "cityscape, scenery, shadow, cropped body, cut off, missing feet"
         ),
@@ -75,8 +78,9 @@ CHARACTERS = {
         "flux_prompt": (
             "high quality 3d game asset, beautiful female ranger, standing perfectly upright, "
             "orthographic front view, T-pose, horizontal arms, tactical zip jacket, combat pants, "
-            "feet wearing knee-high boots, bare hands, highly detailed bare hands with 5 fingers, "
-            "auburn hair tied back, realistic skin, pure blank white background, flat studio lighting"
+            "feet wearing knee-high boots, hands wearing detailed tactical gloves, "
+            "short neat auburn hair, photorealistic human face, natural facial proportions, "
+            "realistic skin, real life photography style, pure blank white background, flat studio lighting"
         ),
     }
 }
