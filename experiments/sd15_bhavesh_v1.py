@@ -73,49 +73,31 @@ CHARACTERS = {
     "human_ranger": {
         "creature_category": "bipedal",
         "stage1_prompt": (
-            "full body female, standing perfectly upright, straight spine, orthographic front view, "
-            "looking directly at camera, perfect anatomical T-pose, both arms stretched out horizontally, "
-            "palms facing down, straight arms, legs straight, feet flat on ground, "
-            "hands wearing simple black gloves, feet wearing simple boots, neat tight bun hairstyle, "
+            "female, perfect anatomical T-pose, orthographic front view, "
+            "arms stretched horizontally, palms down, straight legs, "
+            "hands wearing simple black gloves, simple boots, tight bun hairstyle, "
             "realistic human face, zip jacket, pants, "
-            "isolated on pure solid white background, studio white backdrop, no shadow, no gradient, white only background, "
-            "flat even lighting, character sheet, front view, head to toe, full body visible"
+            "isolated on pure solid white background, flat studio lighting, full body"
         ),
         "stage1_negative": (
-            "leaning forward, bent spine, looking down, perspective, angled camera, "
-            "bare hands, bare fingers, skin on hands, exposed fingers, bare skin on hands, "
-            "boots on hands, shoes on hands, extra shoes, messy hair, loose hair, "
-            "arms raised, arms up, arms bent, holding object, holding bar, holding pole, "
-            "cape, cloak, skirt, dress, robe, flowing cloth, anime, doll, cartoon, big eyes, chibi, "
-            "open mouth, fused fingers, extra limbs, "
-            "cropped body, cut off, missing feet, missing legs, "
-            "grey background, beige background, colored background, gradient background, vignette, shadow, "
-            "background, cityscape, city, buildings, urban, construction, "
-            "machinery, pipes, scenery, environment, sky, "
-            "spiral, swirl, pattern, watermark, logo, symbol, gradient, text, design"
+            "leaning forward, perspective, angled camera, "
+            "bare hands, bare fingers, shoes on hands, messy hair, "
+            "arms raised, bent arms, holding object, anime, doll, cartoon, "
+            "open mouth, fused fingers, extra limbs, cropped body, "
+            "grey background, colored background, gradient, shadow, cityscape, scenery"
         ),
         "stage2_prompt": (
-            "high quality 3d game asset, beautiful female ranger, standing perfectly upright, "
-            "orthographic front view, looking directly at camera, T-pose, both arms stretched horizontally, "
-            "palms facing down, straight arms not raised, legs straight, feet visible, "
-            "fitted tactical zip jacket, combat pants, leather belt, knee-high boots, "
-            "hands wearing simple black gloves, "
-            "neat tight bun auburn hair, photorealistic human face, natural facial proportions, high fashion studio photography, "
-            "isolated on pure solid white background, studio white backdrop, no shadow, no gradient, white only background, "
-            "flat studio lighting, character sheet, front view, head to toe"
+            "high quality 3d game asset, beautiful female ranger, "
+            "orthographic front view, perfect T-pose, arms stretched horizontally, "
+            "fitted tactical zip jacket, combat pants, knee-high boots, "
+            "hands wearing simple black gloves, tight bun auburn hair, "
+            "photorealistic human face, isolated on pure solid white background, flat studio lighting"
         ),
         "stage2_negative": (
-            "leaning forward, bent spine, looking down, perspective, angled camera, "
-            "bare hands, bare fingers, skin on hands, exposed fingers, "
-            "boots on hands, shoes on hands, extra shoes, messy hair, loose hair, "
-            "arms raised, arms up, arms bent, holding object, holding bar, holding pole, "
-            "cape, cloak, skirt, dress, robe, flowing cloth, windswept hair, anime, doll, cartoon, big eyes, chibi, "
-            "open mouth, fused fingers, extra limbs, bare legs, "
-            "cropped body, cut off, missing feet, missing legs, "
-            "grey background, beige background, colored background, gradient background, vignette, shadow, "
-            "background, cityscape, city, buildings, urban, construction, "
-            "machinery, pipes, scenery, environment, sky, "
-            "spiral, swirl, pattern, watermark, logo, symbol, gradient, text, design"
+            "perspective, angled camera, bare hands, bare fingers, "
+            "messy hair, arms raised, bent arms, holding object, "
+            "anime, doll, cartoon, open mouth, fused fingers, extra limbs, "
+            "cropped body, grey background, colored background, gradient, shadow, cityscape, scenery"
         ),
     },
 
