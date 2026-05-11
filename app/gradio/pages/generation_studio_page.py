@@ -1108,10 +1108,16 @@ def generation_studio_ui():
                 return ""
             link = f"https://3dviewer.net/#model={url}"
             return (
+                f'<div style="display: flex; gap: 8px;">'
                 f'<a href="{link}" target="_blank" rel="noopener noreferrer" '
                 f'style="display:inline-block;padding:6px 14px;background:#2563eb;'
                 f'color:#fff;border-radius:6px;text-decoration:none;font-size:13px;">'
                 f'🧊 Open in 3dviewer.net</a>'
+                f'<a href="{url}" download target="_blank" rel="noopener noreferrer" '
+                f'style="display:inline-block;padding:6px 14px;background:#10b981;'
+                f'color:#fff;border-radius:6px;text-decoration:none;font-size:13px;">'
+                f'⬇️ Download GLB</a>'
+                f'</div>'
             )
 
         tr_url.change(_viewer_btn, [tr_url], [tr_3d_btn])
