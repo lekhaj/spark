@@ -109,10 +109,9 @@ class RigCPUWorker(BaseWorker):
             )
             run_rig(input_glb, output_glb, params)
 
-            with open(output_glb, "rb") as f:
-                glb_bytes = f.read()
+            s3_key = f"manual_gen/{session_id}/rig_{char_type}.glb"
+            self.upload_file(output_glb, s3_key, "model/gltf-binary")
+            url = self.s3_public_url(s3_key)
 
-        s3_key = f"manual_gen/{session_id}/rig_{char_type}.glb"
-        url    = self._upload_bytes(glb_bytes, s3_key, "model/gltf-binary")
         push_glb_done(r, session_id, stage, url, s3_key)
         logger.info(f"[rig] → {url}")
