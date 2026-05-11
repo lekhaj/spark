@@ -32,15 +32,10 @@ MODEL_ID    = "black-forest-labs/FLUX.1-schnell"
 CHARACTERS = {
     "human_ranger": {
         "flux_prompt": (
-            "high quality 3d game asset character sheet, beautiful female ranger, "
-            "standing perfectly upright, straight spine, orthographic front view, "
-            "looking directly at camera, T-pose, both arms stretched out horizontally, "
-            "palms facing down, legs straight, feet flat on ground, "
-            "hands wearing simple black gloves, feet wearing simple boots, neat tight bun auburn hairstyle, "
-            "photorealistic human face, natural facial proportions, high fashion studio photography, "
-            "fitted tactical zip jacket, combat pants, leather belt, "
-            "isolated on pure solid white background, studio white backdrop, no shadow, no gradient, white only background, "
-            "flat studio lighting, full body, head to toe, clean silhouette"
+            "female ranger, orthographic front view, perfect T-pose, arms stretched horizontally, "
+            "simple black gloves, boots, tight bun auburn hair, photorealistic human face, "
+            "tactical zip jacket, combat pants, "
+            "isolated on pure solid white background, no shadow, flat studio lighting, full body"
         ),
         "s3_key": f"images/{BIOME_ID}/human_ranger_flux_concept_v2.png",
         "width": 768,
@@ -93,9 +88,10 @@ def main():
         print("[ERROR] No CUDA GPU found.")
         sys.exit(1)
 
-    print("[Models] Loading Flux.1-schnell in bfloat16...")
+    print("[Models] Loading Flux.1-schnell in bfloat16 with STRICT VRAM management...")
     pipe = FluxPipeline.from_pretrained(MODEL_ID, torch_dtype=torch.bfloat16)
-    pipe.enable_model_cpu_offload()
+    pipe.enable_sequential_cpu_offload() # Extremely important to prevent OOM
+    pipe.vae.enable_slicing()
 
     s3 = get_s3_client()
     try:
