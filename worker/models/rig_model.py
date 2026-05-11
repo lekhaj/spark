@@ -118,7 +118,7 @@ def run_rig(
     # Surface relevant log lines
     blender_out = proc.stdout + proc.stderr
     for line in blender_out.splitlines():
-        if any(tag in line for tag in ("[ARP]", "Error", "error", "WARNING", "RIGGING")):
+        if any(tag in line for tag in ("[RIG]", "[ARP]", "Error", "error", "WARNING", "RIGGING")):
             logger.info(f"  blender: {line}")
 
     if proc.returncode != 0:
