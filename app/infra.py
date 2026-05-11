@@ -55,35 +55,35 @@ GPU_CONFIG: dict[str, dict] = {
         "instance_id": GPU_INSTANCE_ID,
         "ssh_user":    GPU_SSH_USER,
         "public_ip":   GPU_PUBLIC_IP,
-        "worker_service": "model-worker",
+        "worker_service": "manual_gen_worker",
     },
     "gpu_a10_image": {
         "instance_id": GPU_INSTANCE_ID,
         "ssh_user":    GPU_SSH_USER,
         "public_ip":   GPU_PUBLIC_IP,
-        "worker_service": "image-worker",
+        "worker_service": "manual_gen_worker",
     },
     "gpu_t4": {
         "instance_id": GPU_INSTANCE_ID,
         "ssh_user":    GPU_SSH_USER,
         "public_ip":   GPU_PUBLIC_IP,
-        "worker_service": "image-worker",
+        "worker_service": "manual_gen_worker",
     },
     "gpu_l4": {
         "instance_id": GPU_INSTANCE_ID,
         "ssh_user":    GPU_SSH_USER,
         "public_ip":   GPU_PUBLIC_IP,
-        "worker_service": "gpu-worker",
+        "worker_service": "manual_gen_worker",
     },
 }
 
 # ── Redis Queue → Worker Service mapping ──────────────────────────────────────
 QUEUE_WORKER_MAP: dict[str, str] = {
-    "sd15_tasks":       "gpu-worker",
-    "image_tasks":      "gpu-worker",
-    "model_tasks":      "gpu-worker",
-    "rig_model":        "gpu-worker",
-    "manual_gen_tasks": "gpu-worker",
+    "sd15_tasks":       "manual_gen_worker",
+    "image_tasks":      "manual_gen_worker",
+    "model_tasks":      "manual_gen_worker",
+    "rig_model":        "manual_gen_worker",
+    "manual_gen_tasks": "manual_gen_worker",
 }
 
 # ── All GPU Redis Queues ──────────────────────────────────────────────────────
