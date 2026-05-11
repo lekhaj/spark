@@ -59,7 +59,7 @@ from lib.manual_gen_schema import (
     next_stage_major,
     version_str, save_run_params, mark_queued,
     get_latest_done_image_url, get_latest_done_run, get_run_any,
-    STAGE_NAMES, COLLECTION, TPOSE_COLLECTION,
+    STAGE_NAMES, COLLECTION,
 )
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -186,7 +186,7 @@ def _tok(text: str, is_sd: bool) -> str:
 
 def _coll_for_stage(stage: str) -> str:
     """Return the correct MongoDB collection name for a stage."""
-    return TPOSE_COLLECTION if stage == "sd_tpose" else COLLECTION
+    return COLLECTION
 
 
 # ── Source version helpers ─────────────────────────────────────────────────────
@@ -763,6 +763,7 @@ def generation_studio_ui():
                 rg_trellis_ver = gr.Dropdown(choices=[], value=None,
                                              label="Trellis source version",
                                              info="default: latest done", scale=2)
+                rg_trellis_refresh = gr.Button("↻", size="sm", scale=0)
                 rg_trellis_info = gr.Textbox(label="Source", interactive=False, lines=1, scale=3)
             rg_type = gr.Dropdown(choices=["humanoid", "quadruped", "bird", "fish"],
                                   value="humanoid", label="Character type")
@@ -1004,6 +1005,7 @@ def generation_studio_ui():
             return gr.update(choices=[], value=None), "No done trellis runs yet"
 
         rg_char.change(_refresh_trellis_ver, [rg_char], [rg_trellis_ver, rg_trellis_info])
+        rg_trellis_refresh.click(_refresh_trellis_ver, [rg_char], [rg_trellis_ver, rg_trellis_info])
         rg_trellis_ver.change(
             lambda char, ver: (_get_src_url_for_ver(char, "trellis", ver) if ver else "",
                                f"✓ trellis v{ver}" if ver else "No version selected"),
