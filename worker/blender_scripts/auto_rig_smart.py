@@ -1,23 +1,18 @@
 """
 Auto-Rig Pro Smart Rigging — Blender headless script
 =====================================================
-Called by rig_worker.py via subprocess:
+Called by rig_cpu_worker.py via subprocess:
   blender --background --python worker/blender_scripts/auto_rig_smart.py -- \
           --input /tmp/char.glb \
           --output /tmp/char_rigged.glb \
-          --character_type humanoid   (or: quadruped, bird, fish)
+          --character_type humanoid
 
-Supports all character types via Auto-Rig Pro Smart detection.
-The Smart feature auto-detects body landmarks (head, hands, feet, spine)
-and builds a full deformation rig automatically.
+Uses Auto-Rig Pro 3.76+ Smart detection with programmatically placed markers.
+Markers are placed at mesh extremities (outside the mesh surface) so ARP's
+BVHTree raycasting can find the mesh boundaries from each marker position.
 
-ARP Smart flow:
-  1. Import GLB mesh
-  2. Normalize scale + orientation
-  3. Run ARP Smart detection (body part landmarks)
-  4. Generate full ARP armature
-  5. Bind mesh with Automatic Weights
-  6. Export rigged GLB
+Note: ARP addon files must be patched for headless mode (bpy.context.space_data
+and bpy.context.area guard-patched). See deploy_and_run.sh for patch commands.
 """
 
 import sys
@@ -27,9 +22,9 @@ import argparse
 import bpy
 import addon_utils
 import mathutils
+import bmesh
 
-
-# ── Parse args passed after "--" ─────────────────────────────────────────────
+# ── Parse args ────────────────────────────────────────────────────────────────
 argv = sys.argv
 if "--" in argv:
     argv = argv[argv.index("--") + 1:]
@@ -37,19 +32,17 @@ else:
     argv = []
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--input",          required=True,  help="Input GLB path")
-parser.add_argument("--output",         required=True,  help="Output GLB path")
+parser.add_argument("--input",          required=True)
+parser.add_argument("--output",         required=True)
 parser.add_argument("--character_type", default="humanoid",
-                    choices=["humanoid", "quadruped", "bird", "fish", "other"],
-                    help="Character type for ARP Smart")
-parser.add_argument("--scale",          type=float, default=1.0,
-                    help="Character scale override (default: auto)")
+                    choices=["humanoid", "quadruped", "bird", "fish", "other"])
+parser.add_argument("--scale",          type=float, default=1.0)
 args = parser.parse_args(argv)
 
-INPUT_GLB       = args.input
-OUTPUT_GLB      = args.output
-CHARACTER_TYPE  = args.character_type
-CHAR_SCALE      = args.scale
+INPUT_GLB      = args.input
+OUTPUT_GLB     = args.output
+CHARACTER_TYPE = args.character_type
+CHAR_SCALE     = args.scale
 
 print(f"[ARP] Input:  {INPUT_GLB}")
 print(f"[ARP] Output: {OUTPUT_GLB}")
@@ -64,142 +57,262 @@ for block in bpy.data.meshes:
     bpy.data.meshes.remove(block)
 
 
-# ── 2. Enable Auto-Rig Pro addon ─────────────────────────────────────────────
-print("[ARP] Enabling Auto-Rig Pro addon...")
+# ── 2. Enable ARP ─────────────────────────────────────────────────────────────
+print("[ARP] Enabling Auto-Rig Pro...")
 ARP_ADDON_NAME = os.getenv("ARP_ADDON_NAME", "auto_rig_pro-master")
 addon_utils.enable(ARP_ADDON_NAME, default_set=True, persistent=True)
 bpy.context.view_layer.update()
 
-# Verify ARP loaded
 if not hasattr(bpy.ops, "arp"):
-    raise RuntimeError(
-        f"Auto-Rig Pro (arp.*) operators not found after enabling {ARP_ADDON_NAME!r}. "
-        "Check addon is installed in Blender's addons directory."
-    )
-print("[ARP] Auto-Rig Pro operators available.")
+    raise RuntimeError(f"ARP operators not found after enabling {ARP_ADDON_NAME!r}.")
+print("[ARP] ARP operators available.")
 
 
 # ── 3. Import GLB ─────────────────────────────────────────────────────────────
 print(f"[ARP] Importing: {INPUT_GLB}")
 bpy.ops.import_scene.gltf(filepath=INPUT_GLB)
 
-# Collect mesh objects
 mesh_objs = [o for o in bpy.context.scene.objects if o.type == "MESH"]
 if not mesh_objs:
-    raise RuntimeError(f"No mesh objects found after importing {INPUT_GLB}")
-
+    raise RuntimeError(f"No mesh objects after importing {INPUT_GLB}")
 print(f"[ARP] Imported {len(mesh_objs)} mesh object(s): {[o.name for o in mesh_objs]}")
 
 
-# ── 4. Merge all meshes into one (ARP Smart works best with single mesh) ──────
-print("[ARP] Joining meshes into one...")
+# ── 4. Merge meshes ───────────────────────────────────────────────────────────
 bpy.ops.object.select_all(action="DESELECT")
 for obj in mesh_objs:
     obj.select_set(True)
 bpy.context.view_layer.objects.active = mesh_objs[0]
-bpy.ops.object.join()
+if len(mesh_objs) > 1:
+    bpy.ops.object.join()
 char_mesh = bpy.context.active_object
 char_mesh.name = "Character"
 
 
-# ── 5. Normalize scale and orientation ───────────────────────────────────────
-print("[ARP] Normalizing transforms...")
+# ── 5. Normalize scale + origin ───────────────────────────────────────────────
 bpy.ops.object.select_all(action="DESELECT")
 char_mesh.select_set(True)
 bpy.context.view_layer.objects.active = char_mesh
-
-# Apply all transforms
 bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
 
-# Auto-scale: normalize character height to ~2 Blender units (standard ARP scale)
-bbox = [char_mesh.matrix_world @ mathutils.Vector(v) for v in char_mesh.bound_box]
+bbox   = [char_mesh.matrix_world @ mathutils.Vector(v) for v in char_mesh.bound_box]
 height = max(v.z for v in bbox) - min(v.z for v in bbox)
 if height > 0.01 and CHAR_SCALE == 1.0:
-    scale_factor = 2.0 / height   # normalize to 2m
-    char_mesh.scale = (scale_factor, scale_factor, scale_factor)
+    sf = 2.0 / height
+    char_mesh.scale = (sf, sf, sf)
     bpy.ops.object.transform_apply(scale=True)
-    print(f"[ARP] Auto-scaled: height {height:.3f} → 2.0 (factor {scale_factor:.3f})")
+    print(f"[ARP] Auto-scaled: {height:.3f} → 2.0 (factor {sf:.3f})")
 elif CHAR_SCALE != 1.0:
     char_mesh.scale = (CHAR_SCALE, CHAR_SCALE, CHAR_SCALE)
     bpy.ops.object.transform_apply(scale=True)
 
-# Move to origin (feet at Z=0)
-bbox = [char_mesh.matrix_world @ mathutils.Vector(v) for v in char_mesh.bound_box]
+bbox  = [char_mesh.matrix_world @ mathutils.Vector(v) for v in char_mesh.bound_box]
 min_z = min(v.z for v in bbox)
 char_mesh.location.z -= min_z
 bpy.ops.object.transform_apply(location=True)
 
 
-# ── 6. Run ARP Smart Rigging ──────────────────────────────────────────────────
-print(f"[ARP] Running Smart Rigging (type={CHARACTER_TYPE})...")
+# ── 6. Analyse mesh vertices to find extremity positions ─────────────────────
+print("[ARP] Analysing mesh to find body landmarks...")
 
+verts = [char_mesh.matrix_world @ v.co for v in char_mesh.data.vertices]
+
+H      = max(v.z for v in verts)
+min_z  = min(v.z for v in verts)
+max_x  = max(v.x for v in verts)
+min_x  = min(v.x for v in verts)
+max_y  = max(v.y for v in verts)
+min_y  = min(v.y for v in verts)
+cx     = (max_x + min_x) / 2
+cy     = (max_y + min_y) / 2
+W      = max_x - min_x
+print(f"[ARP] Bounds: H={H:.3f}  W={W:.3f}  X=[{min_x:.3f},{max_x:.3f}]  cy={cy:.3f}")
+
+# ── Find arm tip positions ────────────────────────────────────────────────
+# ARP fires Y-axis rays from the marker's (X, Z) position to find mesh depth.
+# So the marker must be at an (X, Z) where mesh geometry actually exists.
+# Strategy: find verts near the X extreme (within 15% of W from the tip),
+# excluding the head zone (Z > 82% of H) to avoid sphere head skewing Z.
+
+arm_zone_max_z = H * 0.82
+left_tip_verts  = [v for v in verts if v.x > max_x - W * 0.15 and v.z < arm_zone_max_z]
+right_tip_verts = [v for v in verts if v.x < min_x + W * 0.15 and v.z < arm_zone_max_z]
+
+if left_tip_verts:
+    # Use median Z of the cluster to avoid outliers
+    zs = sorted(v.z for v in left_tip_verts)
+    hand_l_z = zs[len(zs) // 2]
+    hand_l_x = max_x - W * 0.03   # slightly inside the surface
+else:
+    hand_l_z = H * 0.72
+    hand_l_x = max_x - W * 0.03
+
+if right_tip_verts:
+    zs = sorted(v.z for v in right_tip_verts)
+    hand_r_z = zs[len(zs) // 2]
+    hand_r_x = min_x + W * 0.03
+else:
+    hand_r_z = H * 0.72
+    hand_r_x = min_x + W * 0.03
+
+hand_z = (hand_l_z + hand_r_z) / 2
+print(f"[ARP] Arm tip: hand_z={hand_z:.3f}  left_x={hand_l_x:.3f}  right_x={hand_r_x:.3f}")
+
+# ── Find shoulder ──────────────────────────────────────────────────────────
+# Shoulder = upper body Z, at moderate X (where torso meets arm)
+upper_verts = [v for v in verts if v.z > H * 0.65 and v.z < arm_zone_max_z]
+if upper_verts:
+    # Find the widest X extent in upper body, placed slightly inward from max
+    shoulder_max_x = max(v.x for v in upper_verts)
+    shoulder_l_x   = cx + (shoulder_max_x - cx) * 0.70
+    # Z: centroid of upper-body wide verts
+    wide_up = [v for v in upper_verts if v.x > cx + (shoulder_max_x - cx) * 0.40]
+    shoulder_z = sum(v.z for v in wide_up) / len(wide_up) if wide_up else H * 0.78
+else:
+    shoulder_l_x = cx + W * 0.30
+    shoulder_z   = H * 0.78
+
+# ── Find feet ─────────────────────────────────────────────────────────────
+foot_verts = [v for v in verts if v.z < H * 0.18]
+if foot_verts:
+    foot_l_x = max((v.x for v in foot_verts if v.x > cx), default=cx + W * 0.08)
+    foot_r_x = min((v.x for v in foot_verts if v.x < cx), default=cx - W * 0.08)
+else:
+    foot_l_x =  cx + W * 0.08
+    foot_r_x =  cx - W * 0.08
+
+foot_z = H * 0.04
+
+# ── Root, neck, chin heights ──────────────────────────────────────────────
+root_z  = H * 0.52
+neck_z  = H * 0.84
+chin_z  = H * 0.88
+
+print(f"[ARP] Landmarks: shoulder=({shoulder_l_x:.3f},{shoulder_z:.3f}) "
+      f"hand=({hand_l_x:.3f},{hand_z:.3f}) foot_l={foot_l_x:.3f}")
+
+
+# ── 7. Place ARP Smart body markers (OUTSIDE mesh surface) ────────────────
+# Markers must be outside the mesh so ARP's raycast can hit the surface.
+# We place them just beyond the extremity points found above.
+print("[ARP] Placing Smart markers...")
+
+scn = bpy.context.scene
+scn.arp_body_name      = "Character"
+scn.arp_smart_type     = "BODY"
+scn.arp_smart_sym      = True    # mirror: only need left-side markers
+scn.arp_fingers_enable = False   # skip AI finger detection (needs viewport)
+scn.arp_fingers_to_detect = 0
+
+def make_marker(name, x, y, z):
+    bpy.ops.object.empty_add(type="PLAIN_AXES", radius=0.04, location=(x, y, z))
+    obj = bpy.context.active_object
+    obj.name = name
+    obj.show_in_front = True
+    container = bpy.data.objects.get("arp_markers")
+    if container:
+        obj.parent = container
+    return obj
+
+# Create arp_markers parent container
+bpy.ops.object.empty_add(type="PLAIN_AXES", radius=0.01, location=(0, 0, 0))
+arp_markers = bpy.context.active_object
+arp_markers.name = "arp_markers"
+
+# Markers at mesh-internal positions (ARP fires Y-rays from marker X,Z to find depth)
+make_marker("root_loc",      cx,           cy,  root_z)
+make_marker("neck_loc",      cx,           cy,  neck_z)
+make_marker("chin_loc",      cx,           cy,  chin_z)
+make_marker("shoulder_loc",  shoulder_l_x, cy,  shoulder_z)
+make_marker("hand_loc",      hand_l_x,     cy,  hand_z)
+make_marker("foot_loc",      foot_l_x,     cy,  foot_z)
+
+print("[ARP] Markers placed.")
+for obj in bpy.data.objects:
+    if obj.name.endswith("_loc") and not obj.name.endswith("_sym"):
+        print(f"  {obj.name}: {obj.location.x:.3f}, {obj.location.z:.3f}")
+
+
+# ── 8. Run ARP Smart detection ────────────────────────────────────────────────
+print("[ARP] Running ARP Smart detection (EXEC_DEFAULT)...")
 bpy.context.view_layer.objects.active = char_mesh
 char_mesh.select_set(True)
+bpy.context.view_layer.update()
 
-# Set character type in ARP scene settings
-# ARP 3.76+ uses BODY/FACIAL enums, not humanoid/quadruped
-scene = bpy.context.scene
-if hasattr(scene, "arp_smart_type"):
-    scene.arp_smart_type = "BODY"
-
-# Run ARP Smart — this is the one-click auto-rig operator
-try:
-    result = bpy.ops.arp.search_and_rig()
-    print(f"[ARP] search_and_rig result: {result}")
-except Exception as e:
-    # Fallback: try the older smart_bones_object operator
-    print(f"[ARP] search_and_rig failed ({e}), trying smart_bones_object...")
-    try:
-        result = bpy.ops.arp.smart_bones_object()
-        print(f"[ARP] smart_bones_object result: {result}")
-    except Exception as e2:
-        raise RuntimeError(f"ARP Smart operators failed: {e} / {e2}")
-
+result = bpy.ops.id.go_detect("EXEC_DEFAULT")
+print(f"[ARP] go_detect result: {result}")
 bpy.context.view_layer.update()
 
 
-# ── 7. Bind mesh with Automatic Weights (if not already bound) ───────────────
-print("[ARP] Checking skin binding...")
+# ── 9. Verify armature ────────────────────────────────────────────────────────
 armature_objs = [o for o in bpy.context.scene.objects if o.type == "ARMATURE"]
 if not armature_objs:
-    raise RuntimeError("ARP Smart did not create an armature — rigging failed.")
-
+    raise RuntimeError("ARP Smart did not create an armature — detection failed. "
+                       "Check marker positions vs mesh geometry.")
 armature = armature_objs[0]
 print(f"[ARP] Armature: {armature.name}")
 
-# Check if mesh is already parented with armature modifier
-has_armature_mod = any(
-    m.type == "ARMATURE" for m in char_mesh.modifiers
-)
-if not has_armature_mod:
-    print("[ARP] Binding skin with Automatic Weights...")
-    bpy.ops.object.select_all(action="DESELECT")
-    char_mesh.select_set(True)
-    armature.select_set(True)
-    bpy.context.view_layer.objects.active = armature
-    bpy.ops.object.parent_set(type="ARMATURE_AUTO")
-    print("[ARP] Skin bound OK.")
-else:
-    print("[ARP] Skin already bound.")
+
+# ── 10. Bind mesh to armature ─────────────────────────────────────────────────
+# ARMATURE_AUTO (bone-heat) segfaults on headless/cloud instances with complex
+# meshes.  Use ARMATURE_ENVELOPE (distance-based) which is stable everywhere.
+# ARP's own arp.bind operator is tried first when available.
+
+# go_detect leaves Blender in POSE mode — return to OBJECT mode
+try:
+    bpy.ops.object.mode_set(mode="OBJECT")
+except Exception as e:
+    print(f"[ARP] mode_set warning: {e}")
+
+bpy.ops.object.select_all(action="DESELECT")
+# Re-fetch objects in case references changed during ARP processing
+char_mesh = bpy.data.objects.get("Character")
+armature  = next((o for o in bpy.context.scene.objects if o.type == "ARMATURE"), None)
+
+if char_mesh is None:
+    raise RuntimeError("Character mesh not found after ARP detection")
+if armature is None:
+    raise RuntimeError("No armature found after ARP detection")
+
+char_mesh.select_set(True)
+armature.select_set(True)
+bpy.context.view_layer.objects.active = armature
+
+# Try ARP's native bind first (preserves IK/FK setup); fall back to envelope
+bound = False
+if hasattr(bpy.ops, "arp") and hasattr(bpy.ops.arp, "bind"):
+    try:
+        result = bpy.ops.arp.bind("EXEC_DEFAULT")
+        print(f"[ARP] arp.bind result: {result}")
+        bound = True
+    except Exception as e:
+        print(f"[ARP] arp.bind failed ({e}), falling back to envelope")
+
+if not bound:
+    # ARMATURE_ENVELOPE: stable on headless, no bone-heat graph traversal
+    bpy.ops.object.parent_set(type="ARMATURE_ENVELOPE")
+    print("[ARP] Bound with ARMATURE_ENVELOPE (headless-safe fallback)")
+
+print("[ARP] Mesh bound OK.")
 
 
-# ── 8. Export rigged GLB ──────────────────────────────────────────────────────
+# ── 11. Export GLB ────────────────────────────────────────────────────────────
 print(f"[ARP] Exporting to: {OUTPUT_GLB}")
 os.makedirs(os.path.dirname(OUTPUT_GLB) or ".", exist_ok=True)
 
 bpy.ops.export_scene.gltf(
     filepath=OUTPUT_GLB,
     export_format="GLB",
-    export_apply=True,          # apply modifiers
+    use_selection=False,
+    export_apply=True,
     export_animations=True,
     export_skins=True,
     export_morph=True,
     export_lights=False,
     export_cameras=False,
-    export_yup=True,            # Y-up for game engines
+    export_yup=True,
 )
 
-# Verify output exists
 if not os.path.exists(OUTPUT_GLB):
     raise RuntimeError(f"Export failed — output not found: {OUTPUT_GLB}")
 
