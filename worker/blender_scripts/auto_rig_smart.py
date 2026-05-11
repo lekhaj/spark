@@ -49,6 +49,22 @@ print(f"[ARP] Output: {OUTPUT_GLB}")
 print(f"[ARP] Type:   {CHARACTER_TYPE}")
 
 
+# ── 0. Disable ARP if already active (from saved user prefs) ─────────────────
+# ARP was previously saved to user prefs (default_set=True) so Blender
+# auto-enables it at startup.  Its depsgraph_update_post handlers then fire
+# during GLB import, try bpy.context.space_data (None headless) → SIGSEGV.
+# Disable it now so its handlers are gone before we import; the prefs entry
+# it created at startup still exists so re-enabling later will succeed.
+print("[ARP] Disabling ARP handlers (if active from startup prefs)...")
+for _key in list(bpy.context.preferences.addons.keys()):
+    if "auto_rig_pro" in _key:
+        try:
+            addon_utils.disable(_key, default_set=False)
+            print(f"[ARP]   disabled addon: {_key}")
+        except Exception as _e:
+            print(f"[ARP]   disable warning: {_e}")
+
+
 # ── 1. Clean scene ────────────────────────────────────────────────────────────
 print("[ARP] Clearing scene...")
 bpy.ops.object.select_all(action="SELECT")
@@ -57,11 +73,7 @@ for block in bpy.data.meshes:
     bpy.data.meshes.remove(block)
 
 
-# ── 2. Import GLB  (BEFORE enabling ARP) ──────────────────────────────────────
-# ARP registers depsgraph_update_post handlers at enable time.  If ARP is
-# enabled before the import those handlers fire during the GLB load, try to
-# access bpy.context.space_data (None headless), and SIGSEGV (-11).
-# Importing first means ARP's handlers don't exist yet → no crash.
+# ── 2. Import GLB ─────────────────────────────────────────────────────────────
 print(f"[ARP] Importing: {INPUT_GLB}")
 bpy.ops.import_scene.gltf(filepath=INPUT_GLB)
 
@@ -185,7 +197,7 @@ print(f"[ARP] Landmarks: shoulder=({shoulder_l_x:.3f},{shoulder_z:.3f}) "
       f"hand=({hand_l_x:.3f},{hand_z:.3f}) foot_l={foot_l_x:.3f}")
 
 
-# ── 6. Enable ARP  (after mesh is fully loaded and processed) ─────────────────
+# ── 6. Enable ARP  (after mesh processed; prefs entry already exists from step 0) ──
 print("[ARP] Enabling Auto-Rig Pro...")
 ARP_ADDON_NAME = os.getenv("ARP_ADDON_NAME", "auto_rig_pro-master")
 addon_utils.enable(ARP_ADDON_NAME, default_set=False, persistent=False)
