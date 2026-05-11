@@ -323,6 +323,23 @@ def run_stage1(
     ip_adapter_weight = float(p["ip_adapter_weight"])
     category          = str(p["category"])
 
+    # ── Per-call skeleton override (for A/B testing different T-pose refs) ────
+    # Pass openpose_ref_url in params to use a different skeleton for this call
+    # without reloading the model. Falls back to pipes.openpose_ref if not set.
+    openpose_ref_url = p.get("openpose_ref_url", "")
+    if openpose_ref_url:
+        try:
+            import urllib.request, tempfile
+            tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+            urllib.request.urlretrieve(openpose_ref_url, tmp.name)
+            openpose_ref = Image.open(tmp.name).convert("RGB").resize((IMG_SIZE, IMG_SIZE))
+            logger.info(f"[sd] Using per-call openpose ref: {openpose_ref_url}")
+        except Exception as exc:
+            logger.warning(f"[sd] Failed to load openpose_ref_url ({exc}), using default")
+            openpose_ref = pipes.openpose_ref
+    else:
+        openpose_ref = pipes.openpose_ref
+
     init_img = init_img.resize((IMG_SIZE, IMG_SIZE)).convert("RGB")
 
     # ── IP-Adapter scale ──────────────────────────────────────────────────────
@@ -347,12 +364,12 @@ def run_stage1(
     with torch.no_grad():
         if category == "humanoid":
             # Canny from T-pose template — consistent direction, avoids fighting OpenPose
-            canny_img = _extract_canny(pipes.openpose_ref)
+            canny_img = _extract_canny(openpose_ref)
             result = pipes.pipe_biped(
                 prompt=prompt,
                 negative_prompt=negative,
                 image=init_img,
-                control_image=[pipes.openpose_ref, canny_img],
+                control_image=[openpose_ref, canny_img],
                 controlnet_conditioning_scale=[openpose_weight, canny_weight],
                 strength=denoise,
                 guidance_scale=cfg,
