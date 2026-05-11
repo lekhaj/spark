@@ -73,14 +73,18 @@ CHARACTERS = {
     "human_ranger": {
         "creature_category": "bipedal",
         "stage1_prompt": (
-            "full body female, T-pose, both arms stretched out horizontally at shoulder height, "
+            "full body female, standing perfectly upright, straight spine, orthographic front view, "
+            "looking directly at camera, perfect anatomical T-pose, both arms stretched out horizontally, "
             "palms facing down, straight arms, legs straight, feet flat on ground, "
-            "zip jacket, pants, boots, pure solid blank white background, nothing in background, "
+            "hands wearing tactical gloves, feet wearing simple boots, neat tight bun hairstyle, "
+            "realistic human face, zip jacket, pants, pure solid blank white background, nothing in background, "
             "flat even lighting, character sheet, front view, head to toe, full body visible"
         ),
         "stage1_negative": (
+            "leaning forward, bent spine, looking down, perspective, angled camera, "
+            "boots on hands, shoes on hands, extra shoes, messy hair, loose hair, "
             "arms raised, arms up, arms bent, holding object, holding bar, holding pole, "
-            "cape, cloak, skirt, dress, robe, flowing cloth, "
+            "cape, cloak, skirt, dress, robe, flowing cloth, anime, doll, cartoon, big eyes, chibi, "
             "loose hair, open mouth, fused fingers, extra limbs, "
             "cropped body, cut off, missing feet, missing legs, "
             "background, cityscape, city, buildings, urban, construction, "
@@ -88,16 +92,20 @@ CHARACTERS = {
             "spiral, swirl, pattern, watermark, logo, symbol, gradient, text, design"
         ),
         "stage2_prompt": (
-            "full body female ranger, T-pose, both arms stretched horizontally at shoulder height, "
+            "high quality 3d game asset, beautiful female ranger, standing perfectly upright, "
+            "orthographic front view, looking directly at camera, T-pose, both arms stretched horizontally, "
             "palms facing down, straight arms not raised, legs straight, feet visible, "
-            "fitted zip jacket, combat pants, leather belt, knee-high boots, "
-            "auburn hair tied back in bun, calm face, closed mouth, "
+            "fitted tactical zip jacket, combat pants, leather belt, knee-high boots, "
+            "hands wearing detailed tactical gloves, neat tight bun auburn hair, "
+            "photorealistic human face, natural facial proportions, high fashion studio photography, "
             "pure solid blank white background, nothing in background, "
-            "flat studio lighting, character sheet, game asset, front view, head to toe"
+            "flat studio lighting, character sheet, front view, head to toe"
         ),
         "stage2_negative": (
+            "leaning forward, bent spine, looking down, perspective, angled camera, "
+            "boots on hands, shoes on hands, extra shoes, messy hair, loose hair, "
             "arms raised, arms up, arms bent, holding object, holding bar, holding pole, "
-            "cape, cloak, skirt, dress, robe, flowing cloth, windswept hair, loose hair, "
+            "cape, cloak, skirt, dress, robe, flowing cloth, windswept hair, anime, doll, cartoon, big eyes, chibi, "
             "open mouth, fused fingers, extra limbs, bare legs, "
             "cropped body, cut off, missing feet, missing legs, "
             "background, cityscape, city, buildings, urban, construction, "
