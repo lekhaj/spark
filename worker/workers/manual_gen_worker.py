@@ -76,7 +76,7 @@ STAGE_REGISTRY: dict[str, tuple[str | None, str]] = {
     "multiview_side":     ("sd",         "_handle_multiview"),
     "multiview_back":     ("sd",         "_handle_multiview"),
     "trellis":            ("trellis",    "_handle_trellis"),
-    "rig":                (None,         "_forward_rig"),         # forwarded to rig_tasks → CPU rig worker
+    # "rig" tasks go directly to rig_tasks queue from the frontend — not routed here
     # ── Add new experiments here ────────────────────────────────────────────
     # "controlnet_pre":  ("sd",         "_handle_controlnet_pre"),
     # "sdxl_stage1":     ("sdxl",       "_handle_sdxl_stage1"),
@@ -327,13 +327,7 @@ class ManualGenWorker(BaseWorker):
         push_glb_done(r, session_id, stage, url, s3_key)
         logger.info(f"[trellis] → {url}")
 
-    def _forward_rig(self, task: dict, r) -> None:
-        """Forward rig task to the CPU rig worker via rig_tasks queue."""
-        import json as _json2
-        r.rpush("rig_tasks", _json2.dumps(task))
-        logger.info(
-            f"[rig] forwarded session={task.get('session_id','')[:8]} → rig_tasks queue (CPU)"
-        )
+
 
     # ─────────────────────────────────────────────────────────────────────────
     # Upload helpers

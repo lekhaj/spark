@@ -80,13 +80,13 @@ REDIS_QUEUE = "manual_gen_tasks"
 def _db():
     return get_db(MONGO_URI, MONGO_DB)
 
-def _push_task(payload: dict) -> str:
+def _push_task(payload: dict, queue: str = REDIS_QUEUE) -> str:
     import redis
     r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD,
                     db=0, decode_responses=True)
     payload.setdefault("task_id", str(uuid.uuid4()))
     payload.setdefault("timestamp", time.time())
-    r.rpush(REDIS_QUEUE, json.dumps(payload))
+    r.rpush(queue, json.dumps(payload))
     return payload["task_id"]
 
 def _list_chars() -> list[str]:
@@ -444,7 +444,8 @@ def _q_rig(char, major, minor, char_type, trellis_src_ver):
     save_run_params(db, sid, "", "", {"char_type": char_type or "humanoid"})
     tid = _push_task({"type": "rig", "session_id": sid, "stage": stage,
                       "char_label": char, "char_type": char_type or "humanoid",
-                      "input_glb_url": glb_url})
+                      "input_glb_url": glb_url},
+                     queue="rig_tasks")
     mark_queued(db, sid, task_id=tid)
     ver  = f"{major}.{new_n}" if new_n is not None else f"{major}.{minor}"
     info = f"{sid[:8]}…  v{ver}  [queued]"
