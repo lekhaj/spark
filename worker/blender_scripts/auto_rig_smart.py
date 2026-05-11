@@ -66,14 +66,15 @@ for block in bpy.data.meshes:
 
 # ── 2. Enable Auto-Rig Pro addon ─────────────────────────────────────────────
 print("[ARP] Enabling Auto-Rig Pro addon...")
-addon_utils.enable("auto_rig_pro", default_set=True, persistent=True)
+ARP_ADDON_NAME = os.getenv("ARP_ADDON_NAME", "auto_rig_pro-master")
+addon_utils.enable(ARP_ADDON_NAME, default_set=True, persistent=True)
 bpy.context.view_layer.update()
 
 # Verify ARP loaded
 if not hasattr(bpy.ops, "arp"):
     raise RuntimeError(
-        "Auto-Rig Pro (arp.*) operators not found. "
-        "Run install_blender_arp.sh to install the addon."
+        f"Auto-Rig Pro (arp.*) operators not found after enabling {ARP_ADDON_NAME!r}. "
+        "Check addon is installed in Blender's addons directory."
     )
 print("[ARP] Auto-Rig Pro operators available.")
 

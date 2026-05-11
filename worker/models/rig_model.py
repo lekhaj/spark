@@ -128,8 +128,11 @@ def run_rig(
         )
 
     if not os.path.exists(output_glb_path):
+        # Dump full blender log to help diagnose — script exceptions don't fail exit code
+        tail = "\n".join(blender_out.splitlines()[-40:])
         raise RuntimeError(
-            f"Blender exited OK but output GLB not found: {output_glb_path}"
+            f"Blender exited OK but output GLB not found: {output_glb_path}\n"
+            f"Last 40 lines of Blender output:\n{tail}"
         )
 
     size_mb = os.path.getsize(output_glb_path) / 1e6
