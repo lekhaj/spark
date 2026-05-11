@@ -100,7 +100,7 @@ GPU_QUEUES = (
 
 # ── Orchestrator Tuning ───────────────────────────────────────────────────────
 TASK_TTL_SECONDS      = 14400   # 4 hours — expire stale queued tasks
-IDLE_SHUTDOWN_SECONDS = 900     # 15 min idle → stop GPU instance
+IDLE_SHUTDOWN_SECONDS = 3600    # 60 min idle → stop GPU instance
 POLL_INTERVAL_SECONDS = 30      # how often orchestrator checks queues
 
 # ─────────────────────────────────────────────────────────────────────────────
