@@ -253,8 +253,10 @@ armature = armature_objs[0]
 print(f"[ARP] Armature: {armature.name}")
 
 
-# ── 10. Bind mesh with Automatic Weights ─────────────────────────────────────
-print("[ARP] Binding mesh with Automatic Weights...")
+# ── 10. Bind mesh to armature ─────────────────────────────────────────────────
+# ARMATURE_AUTO (bone-heat) segfaults on headless/cloud instances with complex
+# meshes.  Use ARMATURE_ENVELOPE (distance-based) which is stable everywhere.
+# ARP's own arp.bind operator is tried first when available.
 
 # go_detect leaves Blender in POSE mode — return to OBJECT mode
 try:
@@ -275,7 +277,22 @@ if armature is None:
 char_mesh.select_set(True)
 armature.select_set(True)
 bpy.context.view_layer.objects.active = armature
-bpy.ops.object.parent_set(type="ARMATURE_AUTO")
+
+# Try ARP's native bind first (preserves IK/FK setup); fall back to envelope
+bound = False
+if hasattr(bpy.ops, "arp") and hasattr(bpy.ops.arp, "bind"):
+    try:
+        result = bpy.ops.arp.bind("EXEC_DEFAULT")
+        print(f"[ARP] arp.bind result: {result}")
+        bound = True
+    except Exception as e:
+        print(f"[ARP] arp.bind failed ({e}), falling back to envelope")
+
+if not bound:
+    # ARMATURE_ENVELOPE: stable on headless, no bone-heat graph traversal
+    bpy.ops.object.parent_set(type="ARMATURE_ENVELOPE")
+    print("[ARP] Bound with ARMATURE_ENVELOPE (headless-safe fallback)")
+
 print("[ARP] Mesh bound OK.")
 
 

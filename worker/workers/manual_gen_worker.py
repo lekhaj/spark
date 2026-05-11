@@ -52,7 +52,7 @@ if _WORKER_ROOT not in sys.path:
 
 from model_manager import ModelManager
 from models.flux_model    import run_flux
-from models.sd_model      import run_stage1 as run_tpose  # run_stage1 = T-pose lock
+from models.sd_model      import run_stage1, run_stage2, run_multiview
 from models.trellis_model import run_trellis
 
 logger = logging.getLogger("ManualGenWorker")
@@ -71,18 +71,16 @@ logger = logging.getLogger("ManualGenWorker")
 STAGE_REGISTRY: dict[str, tuple[str | None, str]] = {
     # stage name          model family   handler method name
     "flux":               ("flux",       "_handle_flux"),
-    "sd_tpose":           ("sd",         "_handle_sd_tpose"),     # T-pose + IP-Adapter
+    "sd_stage1":          ("sd",         "_handle_sd_stage1"),
+    "sd_stage2":          ("sd",         "_handle_sd_stage2"),
+    "multiview_side":     ("sd",         "_handle_multiview"),
+    "multiview_back":     ("sd",         "_handle_multiview"),
     "trellis":            ("trellis",    "_handle_trellis"),
-    "rig":                (None,         "_forward_rig"),          # forwarded to rig_tasks → CPU rig worker
-    # ── Legacy stages (commented out) ───────────────────────────────────────
-    # "sd_stage1":        ("sd",         "_handle_sd_stage1"),    # superseded by sd_tpose
-    # "sd_stage2":        ("sd",         "_handle_sd_stage2"),    # removed — detail pass
-    # "multiview_side":   ("sd",         "_handle_multiview"),    # future: multi-view
-    # "multiview_back":   ("sd",         "_handle_multiview"),    # future: multi-view
-    # "normalize":        (None,         "_handle_normalize"),    # CPU-only resize
+    # "rig" tasks go directly to rig_tasks queue from the frontend — not routed here
     # ── Add new experiments here ────────────────────────────────────────────
     # "controlnet_pre":  ("sd",         "_handle_controlnet_pre"),
     # "sdxl_stage1":     ("sdxl",       "_handle_sdxl_stage1"),
+    # "animatediff":     ("animatediff","_handle_animatediff"),
 }
 
 
@@ -237,82 +235,59 @@ class ManualGenWorker(BaseWorker):
     def _handle_flux(self, task: dict, r) -> None:
         session_id = task["session_id"]
         stage      = task["stage"]
-        base_prompt = task.get("prompt", "")
+        prompt     = task.get("prompt", "")
         params     = task.get("params") or {}
-        view       = task.get("view", "front")  # "front", "side", or "back"
 
-        # Append view-specific suffix so Flux generates the right camera angle
-        VIEW_SUFFIX = {
-            "front": "",                                          # prompt already targets front
-            "side":  ", strict orthographic side profile view, facing left, neutral standing pose",
-            "back":  ", orthographic back view, rear facing, neutral standing pose",
-        }
-        prompt = base_prompt.rstrip(", ") + VIEW_SUFFIX.get(view, "")
-
-        s3_key = f"manual_gen/{session_id}/{stage}_{view}.png"
         img    = run_flux(self._mgr.get("flux"), prompt, params)
+        s3_key = f"manual_gen/{session_id}/{stage}.png"
         url    = self._upload_image(img, s3_key)
-        push_done(r, session_id, stage, url, s3_key, view=view)
-        logger.info(f"[flux:{view}] → {url}")
+        push_done(r, session_id, stage, url, s3_key)
+        logger.info(f"[flux] → {url}")
 
-    def _handle_sd_tpose(self, task: dict, r) -> None:
-        """
-        SD1.5 T-Pose Lock with IP-Adapter identity preservation.
-
-        Takes the Flux character image and outputs the same character in T-pose:
-          - IP-Adapter encodes Flux image → preserves character identity/details
-          - OpenPose ControlNet: pre-baked T-pose skeleton → locks pose
-          - Canny ControlNet:    edges from T-pose template (not Flux)
-          - High denoise (0.65 default): enough freedom to fully change pose
-
-        Input:  flux image URL (task["input_url"])
-        Output: T-pose image → S3 → push_done
-
-        Params (all optional, see STAGE1_DEFAULTS in sd_model.py):
-            denoise          (float) 0.65
-            cfg              (float) 7.0
-            steps            (int)   25
-            openpose_weight  (float) 1.00
-            canny_weight     (float) 0.25
-            ip_adapter_weight(float) 0.65
-            category         (str)   "humanoid" | "quadruped"
-        """
+    def _handle_sd_stage1(self, task: dict, r) -> None:
         session_id      = task["session_id"]
-        stage           = task["stage"]           # "sd_tpose"
+        stage           = task["stage"]
         prompt          = task.get("prompt", "")
         negative        = task.get("negative", "")
         params          = task.get("params") or {}
         input_image_url = task.get("input_url") or task.get("input_image_url", "")
 
         init_img = self._download_image(input_image_url)
-
-        # Flux image is BOTH the init image AND the IP-Adapter identity source
-        img = run_tpose(
-            self._mgr.get("sd"),
-            init_img,
-            prompt,
-            negative,
-            params,
-            ip_adapter_image=init_img,
-        )
-        s3_key = f"manual_gen/{session_id}/{stage}.png"
-        url    = self._upload_image(img, s3_key)
+        img      = run_stage1(self._mgr.get("sd"), init_img, prompt, negative, params)
+        s3_key   = f"manual_gen/{session_id}/{stage}.png"
+        url      = self._upload_image(img, s3_key)
         push_done(r, session_id, stage, url, s3_key)
-        logger.info(f"[sd_tpose] → {url}")
+        logger.info(f"[sd_stage1] → {url}")
 
-    # ── Legacy handlers (kept for reference, not in STAGE_REGISTRY) ──────────
+    def _handle_sd_stage2(self, task: dict, r) -> None:
+        session_id      = task["session_id"]
+        stage           = task["stage"]
+        prompt          = task.get("prompt", "")
+        negative        = task.get("negative", "")
+        params          = task.get("params") or {}
+        input_image_url = task.get("input_url") or task.get("input_image_url", "")
 
-    # def _handle_sd_stage1(self, task, r):
-    #     """Superseded by _handle_sd_tpose."""
-    #     pass
+        init_img = self._download_image(input_image_url)
+        img      = run_stage2(self._mgr.get("sd"), init_img, prompt, negative, params)
+        s3_key   = f"manual_gen/{session_id}/{stage}.png"
+        url      = self._upload_image(img, s3_key)
+        push_done(r, session_id, stage, url, s3_key)
+        logger.info(f"[sd_stage2] → {url}")
 
-    # def _handle_sd_stage2(self, task, r):
-    #     """Detail pass — removed. T-pose stage handles quality in one pass."""
-    #     pass
+    def _handle_multiview(self, task: dict, r) -> None:
+        session_id      = task["session_id"]
+        stage           = task["stage"]
+        prompt          = task.get("prompt", "")
+        negative        = task.get("negative", "")
+        params          = task.get("params") or {}
+        input_image_url = task.get("input_url") or task.get("input_image_url", "")
 
-    # def _handle_multiview(self, task, r):
-    #     """Multi-view generation — planned, not yet active."""
-    #     pass
+        init_img = self._download_image(input_image_url)
+        img      = run_multiview(self._mgr.get("sd"), init_img, prompt, negative, params)
+        s3_key   = f"manual_gen/{session_id}/{stage}.png"
+        url      = self._upload_image(img, s3_key)
+        push_done(r, session_id, stage, url, s3_key)
+        logger.info(f"[{stage}] → {url}")
 
     def _handle_trellis(self, task: dict, r) -> None:
         session_id = task["session_id"]
@@ -323,7 +298,7 @@ class ManualGenWorker(BaseWorker):
         if not front_url:
             raise ValueError(
                 "trellis task missing input_front URL — "
-                "ensure sd_tpose is done and its URL is passed as input_front."
+                "ensure sd_stage2 is done and its URL is passed."
             )
 
         front_img = self._download_image(front_url)
@@ -352,13 +327,7 @@ class ManualGenWorker(BaseWorker):
         push_glb_done(r, session_id, stage, url, s3_key)
         logger.info(f"[trellis] → {url}")
 
-    def _forward_rig(self, task: dict, r) -> None:
-        """Forward rig task to the CPU rig worker via rig_tasks queue."""
-        import json as _json2
-        r.rpush("rig_tasks", _json2.dumps(task))
-        logger.info(
-            f"[rig] forwarded session={task.get('session_id','')[:8]} → rig_tasks queue (CPU)"
-        )
+
 
     # ─────────────────────────────────────────────────────────────────────────
     # Upload helpers
