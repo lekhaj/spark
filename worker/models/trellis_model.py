@@ -1,6 +1,6 @@
 """
-trellis_model.py — TRELLIS image-to-3D reconstruction
-======================================================
+trellis_model.py — TRELLIS.2 image-to-3D reconstruction
+=========================================================
 
 Public API
 ----------
@@ -9,22 +9,22 @@ Public API
 
 TrellisPipes (dataclass)
 ------------------------
-    pipe          — TrellisImageTo3DPipeline on CUDA
+    pipe          — Trellis2ImageTo3DPipeline on CUDA
     rembg_session — rembg session for background removal (or None)
 
 Param defaults
 --------------
-    texture_size  (int)  1024   — baked texture atlas resolution
-    simplify      (float) 0.95  — fraction of triangles to remove (0=none, 1=all)
+    texture_size     (int)   1024    — baked texture atlas resolution
+    decimation_target(int)   1000000 — target face count
+    remesh           (bool)  True    — remesh before decimation
 
 Notes
 -----
-- Uses the original microsoft/TRELLIS repo (package name: trellis).
-- Repo must be at TRELLIS_REPO_PATH (/home/ec2-user/trellis by default)
-  OR installed into the Python env.
-- Input image is converted to RGBA, background optionally removed,
-  composited on white, then resized to 512×512 before passing to TRELLIS.
-- Returns raw GLB bytes — caller writes them to disk or uploads directly.
+- Uses microsoft/TRELLIS.2 repo (package: trellis2, class: Trellis2ImageTo3DPipeline).
+- Repo must be cloned to TRELLIS_REPO_PATH (/home/ec2-user/trellis).
+  Run: bash worker/gpu_setup/install_trellis.sh  to install.
+- GLB export uses o_voxel.postprocess.to_glb() — requires o_voxel extension built.
+- Returns raw GLB bytes — caller uploads directly.
 """
 
 from __future__ import annotations
@@ -43,8 +43,9 @@ logger = logging.getLogger("models.trellis")
 TRELLIS_REPO_PATH = os.getenv("TRELLIS_REPO_PATH", "/home/ec2-user/trellis")
 
 PARAM_DEFAULTS: dict = {
-    "texture_size": 1024,
-    "simplify":     0.95,
+    "texture_size":      1024,
+    "decimation_target": 1_000_000,
+    "remesh":            True,
 }
 
 
@@ -55,18 +56,21 @@ class TrellisPipes:
 
 
 def load_trellis(
-    model_id:   str  = "JeffreyXiang/TRELLIS-image-large",
+    model_id:   str  = "microsoft/TRELLIS.2-4B",
     repo_path:  str  = TRELLIS_REPO_PATH,
     remove_bg:  bool = True,
 ) -> TrellisPipes:
     """
-    Load TRELLIS pipeline onto CUDA.
+    Load TRELLIS.2 pipeline onto CUDA.
 
     Args:
-        model_id:  HuggingFace model ID (default: JeffreyXiang/TRELLIS-image-large)
-        repo_path: Path to cloned TRELLIS repo — added to sys.path so the
-                   'trellis' package is importable without pip install.
-        remove_bg: Whether to load the rembg background-removal session.
+        model_id:  HuggingFace model ID (microsoft/TRELLIS.2-4B)
+        repo_path: Path to cloned TRELLIS.2 repo — added to sys.path.
+        remove_bg: Whether to load rembg background-removal session.
+
+    Raises:
+        ImportError: If trellis2 package is not importable.
+                     Run: bash worker/gpu_setup/install_trellis.sh
     """
     import sys
     if repo_path and os.path.isdir(repo_path) and repo_path not in sys.path:
@@ -75,15 +79,15 @@ def load_trellis(
 
     logger.info(f"[trellis] Loading pipeline: {model_id}")
     try:
-        from trellis.pipelines import TrellisImageTo3DPipeline
+        from trellis2.pipelines import Trellis2ImageTo3DPipeline
     except ImportError as exc:
         raise ImportError(
-            f"trellis package not found (tried repo_path={repo_path!r}). "
-            "Clone https://github.com/microsoft/TRELLIS.git to /home/ec2-user/trellis "
-            "and run bash worker/gpu_setup/install_trellis.sh"
+            "trellis2 package not found. "
+            "Run: bash worker/gpu_setup/install_trellis.sh\n"
+            f"(repo_path={repo_path!r}  error={exc})"
         ) from exc
 
-    pipe = TrellisImageTo3DPipeline.from_pretrained(model_id)
+    pipe = Trellis2ImageTo3DPipeline.from_pretrained(model_id)
     pipe.cuda()
     logger.info("[trellis] Pipeline loaded on CUDA.")
 
@@ -108,7 +112,7 @@ def _prepare_image(image: Image.Image, rembg_session) -> Image.Image:
             import rembg
             image = rembg.remove(image, session=rembg_session)
         except Exception as exc:
-            logger.warning(f"[trellis] rembg failed: {exc} — using original")
+            logger.warning(f"[trellis] rembg failed: {exc} — using original image")
 
     bg = Image.new("RGBA", image.size, (255, 255, 255, 255))
     bg.paste(image, mask=image.split()[3])
@@ -121,14 +125,15 @@ def run_trellis(
     params:      dict | None = None,
 ) -> bytes:
     """
-    Run TRELLIS on a single front-view image and return a GLB binary.
+    Run TRELLIS.2 on a single front-view image and return a GLB binary.
 
     Args:
         pipes:       TrellisPipes from load_trellis().
         front_image: PIL.Image — the front-view character image.
         params:      Override dict — any subset of PARAM_DEFAULTS keys:
-                       texture_size (int)   — texture atlas resolution
-                       simplify     (float) — triangle reduction ratio (0–1)
+                       texture_size      (int)  — texture atlas resolution
+                       decimation_target (int)  — target face count
+                       remesh            (bool) — remesh before decimation
 
     Returns:
         bytes — raw GLB binary.
@@ -137,32 +142,43 @@ def run_trellis(
     if TRELLIS_REPO_PATH not in sys.path:
         sys.path.insert(0, TRELLIS_REPO_PATH)
 
-    from trellis.utils import postprocessing_utils
+    import o_voxel
 
-    p            = {**PARAM_DEFAULTS, **(params or {})}
-    texture_size = int(p["texture_size"])
-    simplify     = float(p["simplify"])
+    p                = {**PARAM_DEFAULTS, **(params or {})}
+    texture_size     = int(p["texture_size"])
+    decimation_target = int(p["decimation_target"])
+    remesh           = bool(p["remesh"])
 
     img = _prepare_image(front_image, pipes.rembg_session)
 
-    logger.info(f"[trellis] run  texture={texture_size}  simplify={simplify}")
+    logger.info(
+        f"[trellis] run  texture={texture_size}  "
+        f"decimation={decimation_target}  remesh={remesh}"
+    )
 
     with torch.no_grad():
-        outputs = pipes.pipe.run(
-            img,
-            formats=["mesh", "gaussian"],
-            preprocess_image=False,  # already preprocessed above
-        )
+        mesh = pipes.pipe.run(img)[0]
 
-    glb = postprocessing_utils.to_glb(
-        outputs["gaussian"][0],
-        outputs["mesh"][0],
-        simplify=simplify,
-        texture_size=texture_size,
+    mesh.simplify(16_777_216)  # nvdiffrast vertex limit
+
+    glb = o_voxel.postprocess.to_glb(
+        vertices         = mesh.vertices,
+        faces            = mesh.faces,
+        attr_volume      = mesh.attrs,
+        coords           = mesh.coords,
+        attr_layout      = mesh.layout,
+        voxel_size       = mesh.voxel_size,
+        aabb             = [[-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]],
+        decimation_target = decimation_target,
+        texture_size     = texture_size,
+        remesh           = remesh,
+        remesh_band      = 1,
+        remesh_project   = 0,
+        verbose          = False,
     )
 
     buf = io.BytesIO()
-    glb.export(buf)
+    glb.export(buf, extension_webp=True)
     glb_bytes = buf.getvalue()
 
     torch.cuda.empty_cache()
