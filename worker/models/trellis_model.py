@@ -199,7 +199,7 @@ def run_trellis(
     )
 
     buf = io.BytesIO()
-    glb.export(buf)
+    glb.export(buf, file_type="glb")
     glb_bytes = buf.getvalue()
 
     torch.cuda.empty_cache()
