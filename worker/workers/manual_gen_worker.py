@@ -51,9 +51,11 @@ if _WORKER_ROOT not in sys.path:
     sys.path.insert(0, _WORKER_ROOT)
 
 from model_manager import ModelManager
-from models.flux_model    import run_flux
-from models.sd_model      import run_stage1, run_stage2, run_multiview
-from models.trellis_model import run_trellis
+from models.flux_model import run_flux
+# NOTE: sd_model and trellis_model are imported lazily inside handlers.
+# This prevents flash-attention version errors (diffusers.loaders.ip_adapter
+# enforces flash-attn <=2.7.4) from crashing the worker at startup when
+# only flux tasks are needed.
 
 logger = logging.getLogger("ManualGenWorker")
 
@@ -245,6 +247,7 @@ class ManualGenWorker(BaseWorker):
         logger.info(f"[flux] → {url}")
 
     def _handle_sd_stage1(self, task: dict, r) -> None:
+        from models.sd_model import run_stage1  # lazy — avoids flash-attn check at startup
         session_id      = task["session_id"]
         stage           = task["stage"]
         prompt          = task.get("prompt", "")
@@ -260,6 +263,7 @@ class ManualGenWorker(BaseWorker):
         logger.info(f"[sd_stage1] → {url}")
 
     def _handle_sd_stage2(self, task: dict, r) -> None:
+        from models.sd_model import run_stage2  # lazy — avoids flash-attn check at startup
         session_id      = task["session_id"]
         stage           = task["stage"]
         prompt          = task.get("prompt", "")
@@ -275,6 +279,7 @@ class ManualGenWorker(BaseWorker):
         logger.info(f"[sd_stage2] → {url}")
 
     def _handle_multiview(self, task: dict, r) -> None:
+        from models.sd_model import run_multiview  # lazy — avoids flash-attn check at startup
         session_id      = task["session_id"]
         stage           = task["stage"]
         prompt          = task.get("prompt", "")
@@ -290,6 +295,7 @@ class ManualGenWorker(BaseWorker):
         logger.info(f"[{stage}] → {url}")
 
     def _handle_trellis(self, task: dict, r) -> None:
+        from models.trellis_model import run_trellis  # lazy — avoids flash-attn check at startup
         session_id = task["session_id"]
         stage      = task.get("stage", "trellis")
         params     = task.get("params") or {}

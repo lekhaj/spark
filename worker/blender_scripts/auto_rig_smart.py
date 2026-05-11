@@ -251,6 +251,29 @@ for obj in bpy.data.objects:
 
 # ── 8. Run ARP Smart detection ────────────────────────────────────────────────
 
+# HEADLESS PATCH: ARP calls display_popup_message() after go_detect to show a
+# success/warning dialog.  That function calls bpy.types.UILayout.popup_menu()
+# which needs bpy.context.window to be non-None (it's None in --background).
+# This causes SIGSEGV at the C level even though rigging itself succeeded.
+# Patching display_popup_message to a no-op before calling go_detect is safe:
+# the armature is already created by the time the popup fires.
+try:
+    import auto_rig_pro.src.auto_rig as _arp_auto_rig  # type: ignore
+    _orig_popup = getattr(_arp_auto_rig, "display_popup_message", None)
+    _arp_auto_rig.display_popup_message = lambda *a, **kw: None
+    print("[ARP] Patched display_popup_message → no-op (headless-safe)")
+except Exception as _pe:
+    print(f"[ARP] Could not patch display_popup_message ({_pe}) — continuing anyway")
+
+# Also patch via the smart module path
+try:
+    import auto_rig_pro.src.auto_rig_smart as _arp_smart_mod  # type: ignore
+    if hasattr(_arp_smart_mod, "display_popup_message"):
+        _arp_smart_mod.display_popup_message = lambda *a, **kw: None
+        print("[ARP] Patched auto_rig_smart.display_popup_message → no-op")
+except Exception as _pe2:
+    pass  # not present in all ARP versions
+
 print("[ARP] Running ARP Smart detection (EXEC_DEFAULT)...")
 bpy.context.view_layer.objects.active = char_mesh
 char_mesh.select_set(True)
