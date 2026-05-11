@@ -2,9 +2,9 @@
 """
 rig_cpu_worker.py — CPU-side Auto-Rig Pro worker
 =================================================
-Reads rig tasks from the ``rig_tasks`` Redis queue (forwarded by the GPU
-manual_gen_worker), runs Blender + ARP headlessly, and pushes the result
-back via the standard result_channel.
+Reads rig tasks from the ``rig_tasks`` Redis queue (queued directly by the
+frontend via _q_rig in generation_studio_page.py), runs Blender + ARP
+headlessly, and pushes the result back via the standard result_channel.
 
 No GPU or ML dependencies — pure CPU subprocess worker.
 """
