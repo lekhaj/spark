@@ -63,23 +63,30 @@ CHARACTERS = {
             "full body female, standing perfectly upright, straight spine, orthographic front view, "
             "looking directly at camera, perfect anatomical T-pose, both arms extended horizontally, "
             "straight legs, hands wearing tactical gloves, feet wearing simple boots, "
-            "short neat hair, realistic human face, "
+            "neat tight bun hairstyle, no loose strands, clean hair silhouette, "
+            "highly detailed symmetric realistic human face, natural skin texture, "
             "simple zip jacket, tight pants, pure blank white background, flat lighting"
         ),
         "sd_neg": (
             "leaning forward, bent spine, looking down, perspective, angled camera, "
             "boots on hands, shoes on hands, extra shoes, "
-            "long hair, flowing hair, wild hair, windswept hair, "
-            "anime, doll, cartoon, big eyes, chibi, "
-            "arms raised, arms bent, holding object, cape, cloak, flowing cloth, "
-            "cityscape, scenery, shadow, cropped body, cut off, missing feet"
+            "messy hair, long hair, flowing hair, wild hair, windswept hair, "
+            "anime, doll, cartoon, big eyes, chibi, plastic texture, "
+            "arms raised, arms up, arms bent, holding object, holding bar, holding pole, "
+            "cape, cloak, skirt, dress, robe, flowing cloth, "
+            "loose hair, open mouth, fused fingers, extra limbs, "
+            "cropped body, cut off, missing feet, missing legs, "
+            "background, cityscape, city, buildings, urban, construction, "
+            "machinery, pipes, scenery, environment, sky, shadow, grey background, "
+            "spiral, swirl, pattern, watermark, logo, symbol, gradient, text, design"
         ),
         
         "flux_prompt": (
             "high quality 3d game asset, beautiful female ranger, standing perfectly upright, "
             "orthographic front view, T-pose, horizontal arms, tactical zip jacket, combat pants, "
             "feet wearing knee-high boots, hands wearing detailed tactical gloves, "
-            "short neat auburn hair, photorealistic human face, natural facial proportions, "
+            "neat tight bun auburn hair, clean hair silhouette, photorealistic human face, "
+            "highly detailed symmetric facial features, natural skin texture, professional studio photography, "
             "realistic skin, real life photography style, pure blank white background, flat studio lighting"
         ),
     }
