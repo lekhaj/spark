@@ -57,18 +57,11 @@ for block in bpy.data.meshes:
     bpy.data.meshes.remove(block)
 
 
-# ── 2. Enable ARP ─────────────────────────────────────────────────────────────
-print("[ARP] Enabling Auto-Rig Pro...")
-ARP_ADDON_NAME = os.getenv("ARP_ADDON_NAME", "auto_rig_pro-master")
-addon_utils.enable(ARP_ADDON_NAME, default_set=True, persistent=True)
-bpy.context.view_layer.update()
-
-if not hasattr(bpy.ops, "arp"):
-    raise RuntimeError(f"ARP operators not found after enabling {ARP_ADDON_NAME!r}.")
-print("[ARP] ARP operators available.")
-
-
-# ── 3. Import GLB ─────────────────────────────────────────────────────────────
+# ── 2. Import GLB  (BEFORE enabling ARP) ──────────────────────────────────────
+# ARP registers depsgraph_update_post handlers at enable time.  If ARP is
+# enabled before the import those handlers fire during the GLB load, try to
+# access bpy.context.space_data (None headless), and SIGSEGV (-11).
+# Importing first means ARP's handlers don't exist yet → no crash.
 print(f"[ARP] Importing: {INPUT_GLB}")
 bpy.ops.import_scene.gltf(filepath=INPUT_GLB)
 
@@ -78,7 +71,7 @@ if not mesh_objs:
 print(f"[ARP] Imported {len(mesh_objs)} mesh object(s): {[o.name for o in mesh_objs]}")
 
 
-# ── 4. Merge meshes ───────────────────────────────────────────────────────────
+# ── 3. Merge meshes ───────────────────────────────────────────────────────────
 bpy.ops.object.select_all(action="DESELECT")
 for obj in mesh_objs:
     obj.select_set(True)
@@ -89,7 +82,7 @@ char_mesh = bpy.context.active_object
 char_mesh.name = "Character"
 
 
-# ── 5. Normalize scale + origin ───────────────────────────────────────────────
+# ── 4. Normalize scale + origin ───────────────────────────────────────────────
 bpy.ops.object.select_all(action="DESELECT")
 char_mesh.select_set(True)
 bpy.context.view_layer.objects.active = char_mesh
@@ -112,7 +105,7 @@ char_mesh.location.z -= min_z
 bpy.ops.object.transform_apply(location=True)
 
 
-# ── 6. Analyse mesh vertices to find extremity positions ─────────────────────
+# ── 5. Analyse mesh vertices to find extremity positions ─────────────────────
 print("[ARP] Analysing mesh to find body landmarks...")
 
 verts = [char_mesh.matrix_world @ v.co for v in char_mesh.data.vertices]
@@ -192,6 +185,17 @@ print(f"[ARP] Landmarks: shoulder=({shoulder_l_x:.3f},{shoulder_z:.3f}) "
       f"hand=({hand_l_x:.3f},{hand_z:.3f}) foot_l={foot_l_x:.3f}")
 
 
+# ── 6. Enable ARP  (after mesh is fully loaded and processed) ─────────────────
+print("[ARP] Enabling Auto-Rig Pro...")
+ARP_ADDON_NAME = os.getenv("ARP_ADDON_NAME", "auto_rig_pro-master")
+addon_utils.enable(ARP_ADDON_NAME, default_set=True, persistent=True)
+bpy.context.view_layer.update()
+
+if not hasattr(bpy.ops, "arp"):
+    raise RuntimeError(f"ARP operators not found after enabling {ARP_ADDON_NAME!r}.")
+print("[ARP] ARP operators available.")
+
+
 # ── 7. Place ARP Smart body markers (OUTSIDE mesh surface) ────────────────
 # Markers must be outside the mesh so ARP's raycast can hit the surface.
 # We place them just beyond the extremity points found above.
@@ -234,6 +238,7 @@ for obj in bpy.data.objects:
 
 
 # ── 8. Run ARP Smart detection ────────────────────────────────────────────────
+
 print("[ARP] Running ARP Smart detection (EXEC_DEFAULT)...")
 bpy.context.view_layer.objects.active = char_mesh
 char_mesh.select_set(True)
@@ -245,6 +250,7 @@ bpy.context.view_layer.update()
 
 
 # ── 9. Verify armature ────────────────────────────────────────────────────────
+
 armature_objs = [o for o in bpy.context.scene.objects if o.type == "ARMATURE"]
 if not armature_objs:
     raise RuntimeError("ARP Smart did not create an armature — detection failed. "
@@ -254,6 +260,7 @@ print(f"[ARP] Armature: {armature.name}")
 
 
 # ── 10. Bind mesh to armature ─────────────────────────────────────────────────
+
 # ARMATURE_AUTO (bone-heat) segfaults on headless/cloud instances with complex
 # meshes.  Use ARMATURE_ENVELOPE (distance-based) which is stable everywhere.
 # ARP's own arp.bind operator is tried first when available.
@@ -297,6 +304,7 @@ print("[ARP] Mesh bound OK.")
 
 
 # ── 11. Export GLB ────────────────────────────────────────────────────────────
+
 print(f"[ARP] Exporting to: {OUTPUT_GLB}")
 os.makedirs(os.path.dirname(OUTPUT_GLB) or ".", exist_ok=True)
 
