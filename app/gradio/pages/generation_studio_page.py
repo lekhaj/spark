@@ -647,6 +647,17 @@ def generation_studio_ui():
                 s1_op_w    = gr.Slider(0.0, 1.5, value=1.00, step=0.05, label="OpenPose weight")
                 s1_cn_w    = gr.Slider(0.0, 1.5, value=0.25, step=0.05, label="Canny weight")
                 s1_ip_w    = gr.Slider(0.0, 1.0, value=0.65, step=0.05, label="IP-Adapter weight")
+            _S3 = "https://sparkassets-us.s3.us-east-1.amazonaws.com/controlnet_refs"
+            s1_openpose_ref = gr.Dropdown(
+                choices=[
+                    ("Default (active on S3)",       ""),
+                    ("V1 — Hand-drawn",               f"{_S3}/tpose_v1_user.png"),
+                    ("V2 — FBX extracted (X Bot)",    f"{_S3}/tpose_v2_fbx.png"),
+                ],
+                value="",
+                label="T-Pose Skeleton",
+                info="Which OpenPose reference skeleton to use for this run",
+            )
             with gr.Row():
                 s1_q_btn = gr.Button("Queue T-Pose", variant="primary")
                 s1_status= gr.Textbox(label="Status", value="idle", interactive=False, scale=2)
@@ -766,7 +777,7 @@ def generation_studio_ui():
                 # normalize (4+4=8) + source picker (3) = 11
                 *_load("normalize", _ex_normalize),
                 *nm_src,
-                # sd_tpose (4+12=16) + source picker (3) = 19
+                # sd_tpose (4+13=17) + source picker (3) = 20
                 *_load("sd_tpose",  _ex_sd_tpose),
                 *s1_src,
                 # trellis (4+2=6) + 3 source pickers (9) = 15
@@ -786,10 +797,10 @@ def generation_studio_ui():
             nm_major, nm_minor, nm_sid, nm_info,
             nm_w, nm_h, nm_status, nm_img,
             nm_src_ver, nm_src_url_st, nm_src_info,
-            # sd_tpose (16) + source picker (3) = 19
+            # sd_tpose (17) + source picker (3) = 20
             s1_major, s1_minor, s1_sid, s1_info,
             s1_prompt, s1_neg, s1_denoise, s1_cfg, s1_steps,
-            s1_op_w, s1_cn_w, s1_ip_w, s1_cat, s1_status, s1_url, s1_img,
+            s1_op_w, s1_cn_w, s1_ip_w, s1_cat, s1_openpose_ref, s1_status, s1_url, s1_img,
             s1_src_ver, s1_src_url_st, s1_src_info,
             # trellis (6) + 3 source pickers (9) = 15
             tr_major, tr_minor, tr_sid, tr_info, tr_status, tr_url,
@@ -826,6 +837,7 @@ def generation_studio_ui():
                     p.get("openpose_weight", 1.00), p.get("canny_weight", 0.25),
                     p.get("ip_adapter_weight", 0.65),
                     p.get("category", "humanoid"),
+                    p.get("openpose_ref_url", ""),
                     run.get("status", "idle"),
                     run.get("image_url", "") or "",
                     _url_to_img(run.get("image_url", "") or "", 350)]
@@ -852,7 +864,8 @@ def generation_studio_ui():
 
         _wire_picker("sd_tpose", s1_char, s1_major, s1_minor, s1_new_maj, s1_sid, s1_info,
                      [s1_prompt, s1_neg, s1_denoise, s1_cfg, s1_steps,
-                      s1_op_w, s1_cn_w, s1_ip_w, s1_cat, s1_status, s1_url, s1_img],
+                      s1_op_w, s1_cn_w, s1_ip_w, s1_cat, s1_openpose_ref,
+                      s1_status, s1_url, s1_img],
                      _ex_sd_tpose)
 
         _wire_picker("trellis", tr_char, tr_major, tr_minor, tr_new_maj, tr_sid, tr_info,
@@ -933,17 +946,20 @@ def generation_studio_ui():
         )
 
         # SD T-Pose
-        def _do_q_tp(char, major, minor, p, n, dn, cfg, st, opw, cnw, ipw, cat, src_stage, src_url):
+        def _do_q_tp(char, major, minor, p, n, dn, cfg, st, opw, cnw, ipw, cat, ref_url, src_stage, src_url):
             params = {"denoise": float(dn), "cfg": float(cfg), "steps": int(st),
                       "openpose_weight": float(opw), "canny_weight": float(cnw),
                       "ip_adapter_weight": float(ipw), "category": cat}
+            if ref_url:
+                params["openpose_ref_url"] = ref_url
             return _q_sd(char, major, minor, "sd_tpose", p, n, params, src_stage, src_url)
 
         (s1_q_btn.click(
             _do_q_tp,
             [s1_char, s1_major, s1_minor,
              s1_prompt, s1_neg, s1_denoise, s1_cfg, s1_steps,
-             s1_op_w, s1_cn_w, s1_ip_w, s1_cat, s1_src_stage, s1_src_url_st],
+             s1_op_w, s1_cn_w, s1_ip_w, s1_cat, s1_openpose_ref,
+             s1_src_stage, s1_src_url_st],
             [s1_sid, s1_minor, s1_info, s1_status],
         ).then(lambda: gr.Timer(active=True), outputs=[stage_timer]))
 
