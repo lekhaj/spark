@@ -54,7 +54,6 @@ from model_manager import ModelManager
 from models.flux_model    import run_flux
 from models.sd_model      import run_stage1, run_stage2, run_multiview
 from models.trellis_model import run_trellis
-from models.rig_model     import run_rig
 
 logger = logging.getLogger("ManualGenWorker")
 
@@ -77,7 +76,7 @@ STAGE_REGISTRY: dict[str, tuple[str | None, str]] = {
     "multiview_side":     ("sd",         "_handle_multiview"),
     "multiview_back":     ("sd",         "_handle_multiview"),
     "trellis":            ("trellis",    "_handle_trellis"),
-    "rig":                (None,         "_handle_rig"),          # CPU-only
+    "rig":                (None,         "_forward_rig"),         # forwarded to rig_tasks → CPU rig worker
     # ── Add new experiments here ────────────────────────────────────────────
     # "controlnet_pre":  ("sd",         "_handle_controlnet_pre"),
     # "sdxl_stage1":     ("sdxl",       "_handle_sdxl_stage1"),
@@ -328,43 +327,13 @@ class ManualGenWorker(BaseWorker):
         push_glb_done(r, session_id, stage, url, s3_key)
         logger.info(f"[trellis] → {url}")
 
-    def _handle_rig(self, task: dict, r) -> None:
-        session_id    = task["session_id"]
-        stage         = task.get("stage", "rig")
-        params        = task.get("params") or {}
-        input_glb_url = task.get("input_glb_url") or task.get("glb_url", "")
-
-        if not input_glb_url:
-            raise ValueError(
-                "rig task missing input_glb_url — "
-                "ensure trellis stage is done and its GLB URL is passed."
-            )
-
-        char_type = task.get("char_type") or params.get("char_type", "humanoid")
-        params    = {**params, "char_type": char_type}
-
-        with tempfile.TemporaryDirectory() as tmp:
-            input_glb  = os.path.join(tmp, "input.glb")
-            output_glb = os.path.join(tmp, "output_rigged.glb")
-
-            resp = requests.get(input_glb_url, timeout=60)
-            resp.raise_for_status()
-            with open(input_glb, "wb") as f:
-                f.write(resp.content)
-
-            logger.info(
-                f"[rig] session={task['session_id'][:8]}  char_type={char_type}  "
-                f"input={os.path.getsize(input_glb)/1e6:.2f} MB"
-            )
-            run_rig(input_glb, output_glb, params)
-
-            with open(output_glb, "rb") as f:
-                glb_bytes = f.read()
-
-        s3_key = f"manual_gen/{session_id}/rig_{char_type}.glb"
-        url    = self._upload_bytes(glb_bytes, s3_key, "model/gltf-binary")
-        push_glb_done(r, session_id, stage, url, s3_key)
-        logger.info(f"[rig] → {url}")
+    def _forward_rig(self, task: dict, r) -> None:
+        """Forward rig task to the CPU rig worker via rig_tasks queue."""
+        import json as _json2
+        r.rpush("rig_tasks", _json2.dumps(task))
+        logger.info(
+            f"[rig] forwarded session={task.get('session_id','')[:8]} → rig_tasks queue (CPU)"
+        )
 
     # ─────────────────────────────────────────────────────────────────────────
     # Upload helpers

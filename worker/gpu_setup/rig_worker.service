@@ -1,0 +1,17 @@
+[Unit]
+Description=Spark CPU Rig Worker (Auto-Rig Pro via Blender)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/spark/worker
+EnvironmentFile=/home/ubuntu/spark/.env
+ExecStart=/home/ubuntu/spark/venv/bin/python run_rig_worker.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
