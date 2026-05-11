@@ -76,7 +76,7 @@ CHARACTERS = {
             "full body female, standing perfectly upright, straight spine, orthographic front view, "
             "looking directly at camera, perfect anatomical T-pose, both arms stretched out horizontally, "
             "palms facing down, straight arms, legs straight, feet flat on ground, "
-            "hands wearing full-length black tactical gloves covering all fingers, feet wearing simple boots, neat tight bun hairstyle, "
+            "hands wearing simple black gloves, feet wearing simple boots, neat tight bun hairstyle, "
             "realistic human face, zip jacket, pants, "
             "isolated on pure solid white background, studio white backdrop, no shadow, no gradient, white only background, "
             "flat even lighting, character sheet, front view, head to toe, full body visible"
@@ -99,7 +99,7 @@ CHARACTERS = {
             "orthographic front view, looking directly at camera, T-pose, both arms stretched horizontally, "
             "palms facing down, straight arms not raised, legs straight, feet visible, "
             "fitted tactical zip jacket, combat pants, leather belt, knee-high boots, "
-            "hands wearing full-length black tactical gloves covering all fingers up to wrist, no bare skin on hands, "
+            "hands wearing simple black gloves, "
             "neat tight bun auburn hair, photorealistic human face, natural facial proportions, high fashion studio photography, "
             "isolated on pure solid white background, studio white backdrop, no shadow, no gradient, white only background, "
             "flat studio lighting, character sheet, front view, head to toe"
@@ -728,14 +728,12 @@ def main():
         # Key insight: hands are at extreme edges of T-pose image.
         # We use a very specific prompt about palm direction and finger separation.
         hand_prompt = (
-            "open human hand, palm facing camera, five separate individual fingers, "
-            "fingers slightly spread, relaxed hand, detailed finger joints, "
-            "natural skin texture, realistic anatomy, clear fingernails"
+            "simple black glove, clenched fist, solid pure white background, isolated on white"
         )
         hand_neg = (
-            "fused fingers, merged fingers, melted fingers, blob hand, mitten, "
-            "extra fingers, missing fingers, six fingers, four fingers, "
-            "deformed hand, cartoon hand, anime hand, blurry, distorted"
+            "bare hand, bare fingers, skin, detailed fingers, fingernails, "
+            "grey background, circle, halo, vignette, pattern, dark background, "
+            "deformed, cartoon, anime, blurry, distorted"
         )
 
         # Left hand (image left side) — slightly wider crop to catch full hand
