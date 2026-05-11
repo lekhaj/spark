@@ -773,23 +773,6 @@ def main():
         print("  ✓ Hand enhancement done.")
         torch.cuda.empty_cache()
 
-        # ── Fix 4: Force Pure White Background via Rembg ─────────────────────────
-        print("  [Background] Removing AI background and forcing pure white...")
-        try:
-            import rembg
-            # Rembg returns an RGBA image with a transparent background
-            no_bg = rembg.remove(refined_img)
-            # Create a pure white image
-            white_bg = Image.new("RGB", refined_img.size, (255, 255, 255))
-            # Paste the character onto the white background using the alpha channel as mask
-            white_bg.paste(no_bg, (0, 0), no_bg)
-            refined_img = white_bg
-            print("  ✓ Background completely removed and set to white.")
-        except ImportError:
-            print("  [Warning] rembg not installed. Skipping explicit background removal.")
-        except Exception as e:
-            print(f"  [Warning] rembg failed: {e}")
-
         refined_key = f"images/{BIOME_ID}/{char_name}_refined_v2.png"
 
         # ── Step 5: Upload Stage 2 to S3 ──────────────────────────────────────
