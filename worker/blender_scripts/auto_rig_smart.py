@@ -258,19 +258,22 @@ for obj in bpy.data.objects:
 # Patching display_popup_message to a no-op before calling go_detect is safe:
 # the armature is already created by the time the popup fires.
 try:
-    import auto_rig_pro.src.auto_rig as _arp_auto_rig  # type: ignore
-    _orig_popup = getattr(_arp_auto_rig, "display_popup_message", None)
-    _arp_auto_rig.display_popup_message = lambda *a, **kw: None
-    print("[ARP] Patched display_popup_message → no-op (headless-safe)")
+    import sys
+    _arp_auto_rig = sys.modules.get(f"{ARP_ADDON_NAME}.src.auto_rig")
+    if _arp_auto_rig:
+        _arp_auto_rig.display_popup_message = lambda *a, **kw: None
+        print(f"[ARP] Patched {ARP_ADDON_NAME}.src.auto_rig.display_popup_message → no-op")
+    else:
+        print(f"[ARP] {ARP_ADDON_NAME}.src.auto_rig not found in sys.modules")
 except Exception as _pe:
     print(f"[ARP] Could not patch display_popup_message ({_pe}) — continuing anyway")
 
 # Also patch via the smart module path
 try:
-    import auto_rig_pro.src.auto_rig_smart as _arp_smart_mod  # type: ignore
-    if hasattr(_arp_smart_mod, "display_popup_message"):
+    _arp_smart_mod = sys.modules.get(f"{ARP_ADDON_NAME}.src.auto_rig_smart")
+    if _arp_smart_mod and hasattr(_arp_smart_mod, "display_popup_message"):
         _arp_smart_mod.display_popup_message = lambda *a, **kw: None
-        print("[ARP] Patched auto_rig_smart.display_popup_message → no-op")
+        print(f"[ARP] Patched {ARP_ADDON_NAME}.src.auto_rig_smart.display_popup_message → no-op")
 except Exception as _pe2:
     pass  # not present in all ARP versions
 
