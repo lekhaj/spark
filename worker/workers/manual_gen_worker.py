@@ -303,9 +303,28 @@ class ManualGenWorker(BaseWorker):
             )
 
         front_img = self._download_image(front_url)
-        glb_bytes = run_trellis(self._mgr.get("trellis"), front_img, params)
-        s3_key    = f"manual_gen/{session_id}/trellis.glb"
-        url       = self._upload_bytes(glb_bytes, s3_key, "model/gltf-binary")
+
+        # Optional side/back views — use multi-image pipeline if provided
+        side_img = back_img = None
+        side_url = task.get("input_side") or params.get("side_url", "")
+        back_url = task.get("input_back") or params.get("back_url", "")
+        if side_url:
+            try:
+                side_img = self._download_image(side_url)
+            except Exception as exc:
+                logger.warning(f"[trellis] side image download failed ({exc}) — front-only mode")
+        if back_url:
+            try:
+                back_img = self._download_image(back_url)
+            except Exception as exc:
+                logger.warning(f"[trellis] back image download failed ({exc}) — skipping back view")
+
+        glb_bytes = run_trellis(
+            self._mgr.get("trellis"), front_img, params,
+            side_image=side_img, back_image=back_img,
+        )
+        s3_key = f"manual_gen/{session_id}/trellis.glb"
+        url    = self._upload_bytes(glb_bytes, s3_key, "model/gltf-binary")
         push_glb_done(r, session_id, stage, url, s3_key)
         logger.info(f"[trellis] → {url}")
 
