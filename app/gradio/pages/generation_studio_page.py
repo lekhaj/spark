@@ -721,6 +721,7 @@ def generation_studio_ui():
                 tr_status= gr.Textbox(label="Status", value="idle", interactive=False, scale=2)
                 tr_r_btn = gr.Button("Refresh", size="sm")
             tr_url = gr.Textbox(label="GLB URL (when done)", interactive=False)
+            tr_3d_btn = gr.HTML(value="")
 
         # ══════════════════════════════════════════════════════════════════════
         #  STAGE 6: RIG
@@ -741,6 +742,7 @@ def generation_studio_ui():
                 rg_status= gr.Textbox(label="Status", value="idle", interactive=False, scale=2)
                 rg_r_btn = gr.Button("Refresh", size="sm")
             rg_url = gr.Textbox(label="Rigged GLB URL (when done)", interactive=False)
+            rg_3d_btn = gr.HTML(value="")
 
 
         # ══════════════════════════════════════════════════════════════════════
@@ -1090,6 +1092,21 @@ def generation_studio_ui():
             [rg_sid], [rg_status, rg_url]
         )
 
+        # ── 3D viewer button helper ───────────────────────────────────────────
+        def _viewer_btn(url: str) -> str:
+            if not url:
+                return ""
+            link = f"https://3dviewer.net/#model={url}"
+            return (
+                f'<a href="{link}" target="_blank" rel="noopener noreferrer" '
+                f'style="display:inline-block;padding:6px 14px;background:#2563eb;'
+                f'color:#fff;border-radius:6px;text-decoration:none;font-size:13px;">'
+                f'🧊 Open in 3dviewer.net</a>'
+            )
+
+        tr_url.change(_viewer_btn, [tr_url], [tr_3d_btn])
+        rg_url.change(_viewer_btn, [rg_url], [rg_3d_btn])
+
         # ── Auto-refresh timer ────────────────────────────────────────────────
         _ACTIVE = {"queued", "running"}
 
@@ -1113,8 +1130,8 @@ def generation_studio_ui():
                 s2_st, s2_u, _url_to_img(s2_u, 350),
                 ms_st, _url_to_img(ms_u, 300),
                 mb_st, _url_to_img(mb_u, 300),
-                tr_st, tr_u,
-                rg_st, rg_u,
+                tr_st, tr_u, _viewer_btn(tr_u),
+                rg_st, rg_u, _viewer_btn(rg_u),
                 gr.Timer(active=still),
             )
 
@@ -1126,8 +1143,8 @@ def generation_studio_ui():
              s2_status, s2_url, s2_img,
              mv_side_status, mv_side_img,
              mv_back_status, mv_back_img,
-             tr_status, tr_url,
-             rg_status, rg_url,
+             tr_status, tr_url, tr_3d_btn,
+             rg_status, rg_url, rg_3d_btn,
              stage_timer],
         )
 
