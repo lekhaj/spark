@@ -73,22 +73,26 @@ CHARACTERS = {
     "human_ranger": {
         "creature_category": "bipedal",
         "stage1_prompt": (
-            "female ranger, perfect T-pose, arms horizontally straight, "
+            "female ranger, full body, head to toe, completely showing feet, perfect T-pose, arms horizontally straight, "
             "simple black gloves, black zip jacket, realistic human face, "
-            "pure solid white background, no shadow, clean white backdrop"
+            "fully simple white background, purely solid white, nothing in background"
         ),
         "stage1_negative": (
-            "arms raised, bent arms, dark background, grey background, shadows, "
-            "bare hands, exposed fingers, anime, cartoon, text, watermark"
+            "cropped body, out of frame, missing legs, missing feet, "
+            "gradient, fog, dark shadows at bottom, floor, "
+            "arms raised, bent arms, dark background, grey background, "
+            "bare hands, exposed fingers, anime, cartoon"
         ),
         "stage2_prompt": (
-            "beautiful female ranger, perfect T-pose, arms horizontally straight, "
+            "beautiful female ranger, full body, head to toe, completely showing feet, perfect T-pose, arms horizontally straight, "
             "simple black gloves, black zip jacket, photorealistic human face, "
-            "pure solid white background, no shadow, clean white backdrop"
+            "fully simple white background, purely solid white, nothing in background"
         ),
         "stage2_negative": (
-            "arms raised, bent arms, dark background, grey background, shadows, "
-            "bare hands, exposed fingers, anime, cartoon, text, watermark"
+            "cropped body, out of frame, missing legs, missing feet, "
+            "gradient, fog, dark shadows at bottom, floor, "
+            "arms raised, bent arms, dark background, grey background, "
+            "bare hands, exposed fingers, anime, cartoon"
         ),
     },
 

@@ -33,9 +33,10 @@ CHARACTERS = {
     "human_ranger": {
         "flux_prompt": (
             "A female ranger standing in a perfect T-pose with both arms stretched out straight horizontally. "
+            "Full body shot, head to toe, completely showing feet. "
             "She has a tight auburn bun and a photorealistic human face. "
             "She is wearing a black zip jacket, combat pants, and simple black gloves. "
-            "The background is completely pure solid blank white with no shadows, no shapes, and no floor."
+            "The background is purely simple solid white. Nothing in the background, just fully simple white."
         ),
         "s3_key": f"images/{BIOME_ID}/human_ranger_flux_concept_v2.png",
         "width": 768,
