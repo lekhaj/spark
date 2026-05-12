@@ -296,8 +296,11 @@ def _prepare_run(char, stage, major, minor, prompt, neg, params):
         if st in ("queued", "running"):
             return run["_id"], None, gr.update(), gr.update(), f"⚠️ {stage} is already {st}."
         if st == "done":
-            return run["_id"], None, gr.update(), gr.update(), \
-                "⚠️ Already done — click ＋ Major to start a new design iteration."
+            # Auto-create next minor — same as error retry so user can keep running
+            sid, new_n = auto_retry_run(db, char, stage, major, prompt, neg, params)
+            minors = list_stage_minors(db, char, stage, major)
+            info   = f"{sid[:8]}…  v{major}.{new_n}  [idle]"
+            return sid, new_n, gr.update(choices=minors, value=new_n), info, None
         if st == "error":
             # Auto-create next minor for retry
             sid, new_n = auto_retry_run(db, char, stage, major, prompt, neg, params)
