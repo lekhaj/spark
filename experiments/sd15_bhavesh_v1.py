@@ -73,31 +73,22 @@ CHARACTERS = {
     "human_ranger": {
         "creature_category": "bipedal",
         "stage1_prompt": (
-            "female, perfect anatomical T-pose, orthographic front view, "
-            "arms stretched horizontally, palms down, straight legs, "
-            "hands wearing simple black gloves, simple boots, tight bun hairstyle, "
-            "realistic human face, zip jacket, pants, "
-            "isolated on pure solid white background, flat studio lighting, full body"
+            "female ranger, perfect T-pose, arms horizontally straight, "
+            "simple black gloves, black zip jacket, realistic human face, "
+            "pure solid white background, no shadow, clean white backdrop"
         ),
         "stage1_negative": (
-            "leaning forward, perspective, angled camera, "
-            "bare hands, bare fingers, shoes on hands, messy hair, "
-            "arms raised, bent arms, holding object, anime, doll, cartoon, "
-            "open mouth, fused fingers, extra limbs, cropped body, "
-            "grey background, colored background, gradient, shadow, cityscape, scenery"
+            "arms raised, bent arms, dark background, grey background, shadows, "
+            "bare hands, exposed fingers, anime, cartoon, text, watermark"
         ),
         "stage2_prompt": (
-            "high quality 3d game asset, beautiful female ranger, "
-            "orthographic front view, perfect T-pose, arms stretched horizontally, "
-            "fitted tactical zip jacket, combat pants, knee-high boots, "
-            "hands wearing simple black gloves, tight bun auburn hair, "
-            "photorealistic human face, isolated on pure solid white background, flat studio lighting"
+            "beautiful female ranger, perfect T-pose, arms horizontally straight, "
+            "simple black gloves, black zip jacket, photorealistic human face, "
+            "pure solid white background, no shadow, clean white backdrop"
         ),
         "stage2_negative": (
-            "perspective, angled camera, bare hands, bare fingers, "
-            "messy hair, arms raised, bent arms, holding object, "
-            "anime, doll, cartoon, open mouth, fused fingers, extra limbs, "
-            "cropped body, grey background, colored background, gradient, shadow, cityscape, scenery"
+            "arms raised, bent arms, dark background, grey background, shadows, "
+            "bare hands, exposed fingers, anime, cartoon, text, watermark"
         ),
     },
 

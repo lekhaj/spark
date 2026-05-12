@@ -32,10 +32,10 @@ MODEL_ID    = "black-forest-labs/FLUX.1-schnell"
 CHARACTERS = {
     "human_ranger": {
         "flux_prompt": (
-            "female ranger, orthographic front view, perfect T-pose, arms stretched horizontally, "
-            "simple black gloves, boots, tight bun auburn hair, photorealistic human face, "
-            "tactical zip jacket, combat pants, "
-            "isolated on pure solid white background, no shadow, flat studio lighting, full body"
+            "A female ranger standing in a perfect T-pose with both arms stretched out straight horizontally. "
+            "She has a tight auburn bun and a photorealistic human face. "
+            "She is wearing a black zip jacket, combat pants, and simple black gloves. "
+            "The background is completely pure solid blank white with no shadows, no shapes, and no floor."
         ),
         "s3_key": f"images/{BIOME_ID}/human_ranger_flux_concept_v2.png",
         "width": 768,
