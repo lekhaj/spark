@@ -37,6 +37,13 @@ from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
+# ── Ensure worker/lib is importable (result_channel, manual_gen_schema …) ─────
+_this_dir = os.path.dirname(os.path.abspath(__file__))
+_lib_dir  = os.path.join(_this_dir, "lib")
+for _p in (_this_dir, _lib_dir):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
@@ -91,8 +98,8 @@ def main():
     parser = argparse.ArgumentParser(description="Spark GPU Worker Manager")
     parser.add_argument(
         "--workers",
-        default="sd15,trellis,rig,manual",
-        help="Comma-separated list of workers: sd15, trellis, rig, manual (default: all)",
+        default="manual",
+        help="Comma-separated list of workers: manual, sd15, trellis, rig (default: manual)",
     )
     parser.add_argument(
         "--no-shutdown",

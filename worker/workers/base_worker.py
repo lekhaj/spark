@@ -34,6 +34,8 @@ logging.basicConfig(
 class WorkerConfig:
     REDIS_HOST     = os.getenv("REDIS_HOST",   "localhost")
     REDIS_PORT     = int(os.getenv("REDIS_PORT", 6379))
+    # Redis on the CPU instance now requires auth (post May 2026 abuse incident).
+    REDIS_PASSWORD = os.getenv("REDIS_PASSWORD") or None
     MONGO_URI      = (
         os.getenv("MONGO_URI") or
         os.getenv("MONGODB_URL") or
@@ -82,6 +84,7 @@ class BaseWorker(ABC):
             self._redis = redis.Redis(
                 host=self.cfg.REDIS_HOST,
                 port=self.cfg.REDIS_PORT,
+                password=self.cfg.REDIS_PASSWORD,
                 db=0,
                 decode_responses=True,
                 socket_connect_timeout=10,
@@ -187,11 +190,13 @@ class BaseWorker(ABC):
         """Process one task popped from input_queue."""
         ...
 
-    def run(self, idle_notify_callback=None):
+    def run(self, idle_notify_callback=None, active_callback=None, done_callback=None):
         """
         Main blocking loop.
-        idle_notify_callback(seconds_idle) is called each poll with no task,
-        used by AutoShutdown to track idle time.
+        idle_notify_callback(seconds_idle) — called each poll with no task.
+        active_callback()                  — called when a task starts processing.
+        done_callback()                    — called when a task finishes (success or error).
+        All three are used by AutoShutdown to track idle/active state.
         """
         self.logger.info(f"{self.worker_name} starting — queue: {self.input_queue}")
         self.load_models()
@@ -230,6 +235,8 @@ class BaseWorker(ABC):
                 f"Task → biome={task.get('biome_id')}  "
                 f"char={task.get('character_name')}  type={task.get('character_type')}"
             )
+            if active_callback:
+                active_callback()
             try:
                 self.process_task(task, r, db)
             except Exception as exc:
@@ -241,3 +248,6 @@ class BaseWorker(ABC):
                     )
                 except Exception:
                     pass
+            finally:
+                if done_callback:
+                    done_callback()

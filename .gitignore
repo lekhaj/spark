@@ -1,6 +1,17 @@
+# Local workspace infra details (SSH paths, IPs — not for version control)
+LOCAL_INFRA.md
+
+# Claude Code session metadata (worktrees, locks, transcripts)
+.claude/
+
 # Environment variables and secrets
 env/
 .env
+.env.cpu
+.env.gpu
+.env.bak.*
+.env.cpu.bak.*
+.env.gpu.bak.*
 
 !.env.example
 .aws

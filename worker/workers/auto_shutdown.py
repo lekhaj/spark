@@ -8,7 +8,9 @@ via boto3 so the user is not charged for idle GPU time.
 
 Usage (from gpu_main.py):
     from workers.auto_shutdown import AutoShutdown
-    shutdown = AutoShutdown(queues=["sd15_tasks", "model_tasks"])
+    shutdown = AutoShutdown(queues=[
+        "sd15_tasks", "model_tasks", "rig_model", "manual_gen_tasks"
+    ])
     shutdown.start()          # background thread
     # in worker idle callback:
     shutdown.notify_idle(seconds_idle)
@@ -27,12 +29,15 @@ import redis
 logger = logging.getLogger("AutoShutdown")
 
 # ── Config ────────────────────────────────────────────────────────────────────
-IDLE_THRESHOLD_MIN = int(os.getenv("IDLE_SHUTDOWN_MINUTES", "15"))  # default 15 min
-CHECK_INTERVAL_SEC = int(os.getenv("IDLE_CHECK_INTERVAL_SEC", "60")) # check every 60s
+# REDIS_HOST defaults to the CPU's private VPC IP — the public IP is firewalled
+# off from GPU egress and AWS-throttled during abuse-case mitigations.
+IDLE_THRESHOLD_MIN = int(os.getenv("IDLE_SHUTDOWN_MINUTES", "15"))
+CHECK_INTERVAL_SEC = int(os.getenv("IDLE_CHECK_INTERVAL_SEC", "60"))
 INSTANCE_ID        = os.getenv("AWS_GPU_INSTANCE_ID", "i-0d6b9d6d34ccc053d")
 AWS_REGION         = os.getenv("AWS_REGION", "us-east-1")
-REDIS_HOST         = os.getenv("REDIS_HOST", "18.207.13.85")
-REDIS_PORT         = int(os.getenv("REDIS_PORT", 6380))
+REDIS_HOST         = os.getenv("REDIS_HOST", "172.31.26.6")   # CPU private IP
+REDIS_PORT         = int(os.getenv("REDIS_PORT", "6379"))
+REDIS_PASSWORD     = os.getenv("REDIS_PASSWORD") or None
 
 
 class AutoShutdown:
@@ -84,6 +89,7 @@ class AutoShutdown:
         try:
             r = redis.Redis(
                 host=REDIS_HOST, port=REDIS_PORT, db=0,
+                password=REDIS_PASSWORD,
                 socket_connect_timeout=5, socket_timeout=5,
             )
             r.ping()

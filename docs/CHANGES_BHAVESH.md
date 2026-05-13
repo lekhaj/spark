@@ -47,8 +47,8 @@
 
 | Issue | Description | Status |
 |---|---|---|
-| Task stays "queued" | GPU worker not picking up tasks from Redis port 6380 | 🔧 Being fixed |
-| Service reads `.env` not `.env.gpu` | The systemd service on GPU reads `/home/ec2-user/spark/.env`. Need `cp .env.gpu .env` after every pull. Consider automating. | 📋 Future task |
+| Task stays "queued" | GPU worker not picking up tasks from Redis | ✅ Fixed in Change #6 & #7 |
+| Service reads `.env` not `.env.gpu` | Need `cp .env.gpu .env` after every pull | 📋 Future automation task |
 
 ---
 
@@ -56,9 +56,9 @@
 ```
 Website (Gradio UI on CPU)
   ↓  clicks "Queue SD Stage 1"
-FastAPI (CPU) → pushes task to Redis on port 6380
+FastAPI (CPU) → pushes task to Redis on localhost:6379
   ↓
-GPU Worker picks task from Redis port 6380
+GPU Worker picks task from Redis at 172.31.92.14:6379 (private IP, always reachable)
   ↓  runs AI model
 Uploads image to S3
   ↓

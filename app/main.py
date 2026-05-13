@@ -13,6 +13,7 @@ from enum import Enum
 import asyncio
 from app.routes import mongo_routes 
 from app.services.orchestrator_service import orchestrator_main
+from app.services.result_consumer import result_consumer_main
 from app.services.mongo_service import get_db
 from app.config import settings
 from app.routes.mongo_routes import router as mongo_router
@@ -77,19 +78,22 @@ async def lifespan(app: FastAPI):
     else:
         logger.error("MongoDB connection failed on startup.")
 
-    # Start orchestrator as background task
-    orchestrator_task = asyncio.create_task(orchestrator_main())
-    logger.info("Orchestrator background task started")
+    # Start orchestrator + result consumer as background tasks
+    orchestrator_task    = asyncio.create_task(orchestrator_main())
+    result_consumer_task = asyncio.create_task(result_consumer_main())
+    logger.info("Orchestrator + result consumer background tasks started")
 
     yield  # App runs here
 
     # Shutdown
     logger.info("Shutting down FastAPI application...")
-    orchestrator_task.cancel()
-    try:
-        await orchestrator_task
-    except asyncio.CancelledError:
-        logger.info("Orchestrator task cancelled successfully")
+    for task in (orchestrator_task, result_consumer_task):
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    logger.info("Background tasks cancelled successfully")
 
 app = FastAPI(
     title="Dual Model Generation API",

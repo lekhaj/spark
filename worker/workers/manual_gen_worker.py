@@ -1,546 +1,365 @@
 #!/usr/bin/env python3
 """
-ManualGenWorker
-===============
-GPU worker for the manual character-image generation pipeline.
+manual_gen_worker.py — Registry-based pipeline router
+======================================================
 
-Handles all stages driven by the Pipeline Dashboard:
-    flux          — Flux.1-schnell text-to-image concept art
-    sd_stage1     — SD1.5 + ControlNet (openpose+canny for humanoid,
-                    canny-only for quadruped) img2img refinement
-    sd_stage2     — SD1.5 plain img2img polish pass
-    multiview_side/back — SD1.5 plain img2img for alternate views
-    trellis       — forwards task to the TRELLIS 3D worker queue
+Receives tasks from the ``manual_gen_tasks`` Redis queue and routes each task
+to the correct handler via STAGE_REGISTRY.
 
-Model loading is lazy (first use) to avoid spending GPU memory on a backend
-that may never be needed in a given session.
+How to add a new stage / experiment
+-------------------------------------
+1. Write ``worker/models/your_model.py`` with ``load_xxx()`` + ``run_xxx()``.
+2. If it's a new model *family* (not reusing flux/sd/trellis):
+     - Add it to ModelManager via ``mgr.register(...)`` in the
+       ``_register_custom_families()`` method below.
+3. Add a handler method ``_handle_xxx(self, task, r)`` to this class.
+4. Add one line to ``STAGE_REGISTRY``:
+     "your_stage_name": ("model_family", ManualGenWorker._handle_xxx),
 
-Queue:  manual_gen_tasks
-Schema: lib/manual_gen_schema.py  (COLLECTION = "manual_gen_sessions")
+That's it.  The queue loop, VRAM eviction, status tracking, and error
+handling all work automatically.
+
+STAGE_REGISTRY format
+---------------------
+    { stage_name: (model_family, handler_method) }
+
+    stage_name    — matches task["stage"] from the Redis payload
+    model_family  — passed to mgr.ensure(family) before handler is called
+                    use None for CPU-only stages (no VRAM management)
+    handler_method — unbound method on ManualGenWorker
 """
 
 from __future__ import annotations
 
 import io
-import json
+import json as _json
 import logging
 import os
+import sys
+import tempfile
 import time
-from typing import Optional
 
-import cv2
-import numpy as np
 import requests
-import torch
 from PIL import Image
 
 from workers.base_worker import BaseWorker
-from lib.manual_gen_schema import (
-    COLLECTION,
-    mark_running,
-    mark_done,
-    mark_error,
-    mark_queued,
-    get_stage_image_url,
-)
+from result_channel import push_running, push_done, push_error, push_glb_done
 
-# ── Constants ─────────────────────────────────────────────────────────────────
+# ── Ensure worker root is importable ─────────────────────────────────────────
+_WORKER_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _WORKER_ROOT not in sys.path:
+    sys.path.insert(0, _WORKER_ROOT)
 
-IMG_SIZE       = 512
-FLUX_MODEL     = os.getenv("FLUX_MODEL_ID",  "black-forest-labs/FLUX.1-schnell")
-SD_MODEL       = os.getenv("SD_MODEL_ID",    "Lykon/DreamShaper")
-TPOSE_OPENPOSE_PATH = os.getenv("TPOSE_OPENPOSE_PATH", "")
-
-# Downstream TRELLIS worker queue name (must match trellis_worker.py)
-TRELLIS_QUEUE  = "model_tasks"
+from model_manager import ModelManager
+from models.flux_model import run_flux
+# NOTE: sd_model and trellis_model are imported lazily inside handlers.
+# This prevents flash-attention version errors (diffusers.loaders.ip_adapter
+# enforces flash-attn <=2.7.4) from crashing the worker at startup when
+# only flux tasks are needed.
 
 logger = logging.getLogger("ManualGenWorker")
 
 
-# ── Helper ─────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# STAGE REGISTRY
+# ─────────────────────────────────────────────────────────────────────────────
+# One entry per stage name.  Format:
+#   "stage_name": ("model_family", ManualGenWorker._handle_method)
+#
+# To add a new stage add ONE line here and ONE handler method below.
+# Nothing else in this file needs to change.
+# ─────────────────────────────────────────────────────────────────────────────
 
-def _extract_canny(img: Image.Image) -> Image.Image:
-    """Return a 3-channel Canny edge map (512×512) for *img*."""
-    img_r = img.resize((IMG_SIZE, IMG_SIZE)).convert("RGB")
-    arr   = np.array(img_r)
-    gray  = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
-    gray  = cv2.GaussianBlur(gray, (5, 5), 0)
-    edges = cv2.Canny(gray, 80, 180)
-    return Image.fromarray(np.stack([edges] * 3, axis=-1).astype(np.uint8))
+STAGE_REGISTRY: dict[str, tuple[str | None, str]] = {
+    # stage name          model family   handler method name
+    "flux":               ("flux",       "_handle_flux"),
+    "sd_stage1":          ("sd",         "_handle_sd_stage1"),
+    "sd_stage2":          ("sd",         "_handle_sd_stage2"),
+    "multiview_side":     ("sd",         "_handle_multiview"),
+    "multiview_back":     ("sd",         "_handle_multiview"),
+    "trellis":            ("trellis",    "_handle_trellis"),
+    # "rig" tasks go directly to rig_tasks queue from the frontend — not routed here
+    # ── Add new experiments here ────────────────────────────────────────────
+    # "controlnet_pre":  ("sd",         "_handle_controlnet_pre"),
+    # "sdxl_stage1":     ("sdxl",       "_handle_sdxl_stage1"),
+    # "animatediff":     ("animatediff","_handle_animatediff"),
+}
 
-
-def _blank_image(w: int = IMG_SIZE, h: int = IMG_SIZE) -> Image.Image:
-    """Return a solid-black RGB image (used as fallback openpose reference)."""
-    return Image.new("RGB", (w, h), color=(0, 0, 0))
-
-
-# ── Worker ────────────────────────────────────────────────────────────────────
 
 class ManualGenWorker(BaseWorker):
-    """GPU worker for the manual character generation pipeline."""
-
     worker_name = "ManualGenWorker"
     input_queue = "manual_gen_tasks"
 
     def __init__(self):
         super().__init__()
+        self._mgr = ModelManager()
+        self._register_custom_families()
 
-        # Lazy-loaded model handles — None until first use.
-        self._flux_pipe    = None   # FluxPipeline
+    # ── Custom family registration ────────────────────────────────────────────
+    # When you add a new model family that isn't flux/sd/trellis/rig:
+    #   self._mgr.register("sdxl", lambda: load_sdxl(...), evicts={"flux","trellis"})
 
-        self._pipe_cn      = None   # StableDiffusionControlNetPipeline (base, openpose)
-        self._pipe_biped   = None   # StableDiffusionControlNetImg2ImgPipeline (openpose+canny)
-        self._pipe_quad    = None   # StableDiffusionControlNetImg2ImgPipeline (canny only)
-        self._pipe_i2i     = None   # StableDiffusionImg2ImgPipeline (no controlnet)
-        self._cn_canny     = None   # ControlNetModel (canny)
-        self._cn_openpose  = None   # ControlNetModel (openpose)
+    def _register_custom_families(self) -> None:
+        pass  # nothing custom yet
 
-    # ── BaseWorker abstract ───────────────────────────────────────────────────
+    # ── Startup ───────────────────────────────────────────────────────────────
 
     def load_models(self):
-        """No-op: all models are loaded lazily on first use."""
-        self.logger.info("ManualGenWorker ready — models will load lazily on first use.")
+        logger.info(
+            f"ManualGenWorker ready — {len(STAGE_REGISTRY)} stages registered, "
+            "models load lazily on first use."
+        )
+        logger.info(self._mgr.vram_summary())
+
+    # ── Queue loop ────────────────────────────────────────────────────────────
+
+    def run(self, idle_notify_callback=None, active_callback=None, done_callback=None):
+        logger.info(f"{self.worker_name} starting — queue: {self.input_queue}")
+        self.load_models()
+
+        r          = self.get_redis()
+        idle_since = time.time()
+
+        while True:
+            try:
+                raw = r.blpop(self.input_queue, timeout=30)
+            except Exception as exc:
+                logger.error(f"Redis error: {exc}; reconnecting in 5s")
+                time.sleep(5)
+                self._redis = None
+                continue
+
+            if raw is None:
+                if idle_notify_callback:
+                    idle_notify_callback(time.time() - idle_since)
+                continue
+
+            idle_since = time.time()
+            _, payload = raw
+
+            try:
+                task = _json.loads(payload)
+            except _json.JSONDecodeError:
+                logger.error(f"Bad JSON in queue: {payload[:120]}")
+                continue
+
+            if self.is_expired(task):
+                continue
+
+            if active_callback:
+                active_callback()
+
+            logger.info(
+                f"Task → session={task.get('session_id','?')[:8]}  "
+                f"stage={task.get('stage','?')}  char={task.get('char_label','?')}"
+            )
+            try:
+                self.process_task(task, r, None)
+            except Exception as exc:
+                logger.exception(f"Task failed: {exc}")
+                try:
+                    push_error(r, task.get("session_id", ""), task.get("stage", ""), str(exc))
+                except Exception:
+                    pass
+            finally:
+                if done_callback:
+                    done_callback()
+
+    # ── Router ────────────────────────────────────────────────────────────────
 
     def process_task(self, task: dict, r, db) -> None:
-        """Route an incoming task to the correct stage handler."""
+        """
+        Route task to the correct handler via STAGE_REGISTRY.
+
+        Steps:
+          1. Look up stage in STAGE_REGISTRY → (family, handler_name)
+          2. If family is not None → mgr.ensure(family)   [loads + evicts]
+          3. Call handler(task, r)
+          4. Handler uploads result and pushes done/error via result_channel
+        """
         session_id = task.get("session_id", "")
         stage      = task.get("stage", "")
         task_id    = task.get("task_id", "")
 
-        self.logger.info(
-            f"[{task_id[:8]}] session={session_id[:8]} stage={stage} "
-            f"char={task.get('char_label', '?')}"
+        logger.info(
+            f"[{task_id[:8]}] session={session_id[:8]}  "
+            f"stage={stage}  char={task.get('char_label','?')}"
         )
+        push_running(r, session_id, stage)
 
-        # Mark stage as running in MongoDB
-        try:
-            mark_running(db, session_id, stage)
-        except Exception as exc:
-            self.logger.warning(f"mark_running failed: {exc}")
-
-        try:
-            if stage == "flux":
-                self._run_flux(task, db)
-            elif stage == "sd_stage1":
-                self._run_sd_stage1(task, db)
-            elif stage == "sd_stage2":
-                self._run_sd_stage2(task, db)
-            elif stage in ("multiview_side", "multiview_back"):
-                self._run_multiview(task, db)
-            elif stage == "trellis":
-                self._run_trellis(task, r, db)
-            else:
-                raise ValueError(f"Unknown stage: '{stage}'")
-
-        except Exception as exc:
-            self.logger.exception(
-                f"[{task_id[:8]}] stage={stage} FAILED: {exc}"
+        # ── Registry lookup ───────────────────────────────────────────────────
+        entry = STAGE_REGISTRY.get(stage)
+        if entry is None:
+            err = (
+                f"Unknown stage: {stage!r}. "
+                f"Registered stages: {sorted(STAGE_REGISTRY)}"
             )
+            logger.error(err)
+            push_error(r, session_id, stage, err)
+            return
+
+        family, handler_name = entry
+
+        # ── VRAM: load model, evict incompatible families ─────────────────────
+        if family is not None:
             try:
-                mark_error(db, session_id, stage, str(exc))
-            except Exception as db_exc:
-                self.logger.error(f"mark_error also failed: {db_exc}")
+                self._mgr.ensure(family)
+                logger.info(f"  {self._mgr.vram_summary()}")
+            except Exception as exc:
+                push_error(r, session_id, stage, f"Model load failed: {exc}")
+                raise
 
-    # ── Lazy model loaders ────────────────────────────────────────────────────
-
-    def _ensure_flux(self):
-        """Load Flux pipeline into GPU memory if not already loaded."""
-        if self._flux_pipe is not None:
+        # ── Dispatch to handler ───────────────────────────────────────────────
+        handler = getattr(self, handler_name, None)
+        if handler is None:
+            err = f"Handler {handler_name!r} not found on {self.__class__.__name__}"
+            logger.error(err)
+            push_error(r, session_id, stage, err)
             return
 
-        self.logger.info(f"Loading Flux model: {FLUX_MODEL}")
-        from diffusers import FluxPipeline
+        try:
+            handler(task, r)
+        except Exception as exc:
+            logger.exception(f"[{task_id[:8]}] stage={stage} FAILED: {exc}")
+            push_error(r, session_id, stage, str(exc))
 
-        pipe = FluxPipeline.from_pretrained(FLUX_MODEL, torch_dtype=torch.bfloat16)
-        pipe.enable_sequential_cpu_offload()
-        pipe.vae.enable_slicing()
-        self._flux_pipe = pipe
-        self.logger.info("Flux model loaded.")
+    # ─────────────────────────────────────────────────────────────────────────
+    # STAGE HANDLERS
+    # Each handler:
+    #   1. Reads what it needs from task (prompt, params, input URLs, …)
+    #   2. Calls the model function (already loaded by process_task)
+    #   3. Uploads result → push_done / push_glb_done
+    #
+    # Handlers do NOT call mgr.ensure() — process_task handles that.
+    # To add a handler: add a method here + one line in STAGE_REGISTRY above.
+    # ─────────────────────────────────────────────────────────────────────────
 
-    def _ensure_sd(self):
-        """Load SD1.5 + ControlNet pipelines into GPU memory if not already loaded."""
-        if self._pipe_i2i is not None:
-            return
-
-        self.logger.info(f"Loading SD1.5 model: {SD_MODEL}")
-        from diffusers import (
-            ControlNetModel,
-            StableDiffusionControlNetImg2ImgPipeline,
-            StableDiffusionControlNetPipeline,
-            StableDiffusionImg2ImgPipeline,
-            UniPCMultistepScheduler,
-        )
-
-        # ControlNet models
-        self.logger.info("Loading ControlNet: openpose")
-        cn_openpose = ControlNetModel.from_pretrained(
-            "lllyasviel/control_v11p_sd15_openpose",
-            torch_dtype=torch.float16,
-        )
-        self.logger.info("Loading ControlNet: canny")
-        cn_canny = ControlNetModel.from_pretrained(
-            "lllyasviel/control_v11p_sd15_canny",
-            torch_dtype=torch.float16,
-        )
-
-        # Base pipeline (openpose controlnet)
-        self.logger.info("Loading SD1.5 base (openpose controlnet) pipeline")
-        pipe_cn = StableDiffusionControlNetPipeline.from_pretrained(
-            SD_MODEL,
-            controlnet=cn_openpose,
-            torch_dtype=torch.float16,
-            safety_checker=None,
-        )
-        pipe_cn.scheduler = UniPCMultistepScheduler.from_config(
-            pipe_cn.scheduler.config
-        )
-        pipe_cn.enable_xformers_memory_efficient_attention()
-        pipe_cn.to("cuda")
-
-        # Move standalone canny controlnet to CUDA
-        cn_canny.to("cuda")
-
-        base_components = dict(pipe_cn.components)
-
-        # Bipedal (humanoid): dual controlnet [openpose, canny]
-        biped_components = {**base_components, "controlnet": [cn_openpose, cn_canny]}
-        pipe_biped_i2i = StableDiffusionControlNetImg2ImgPipeline(**biped_components)
-
-        # Quadruped: canny only
-        quad_components = {**base_components, "controlnet": cn_canny}
-        pipe_quad_i2i = StableDiffusionControlNetImg2ImgPipeline(**quad_components)
-
-        # Plain img2img (no controlnet)
-        i2i_components = {k: v for k, v in base_components.items() if k != "controlnet"}
-        pipe_i2i = StableDiffusionImg2ImgPipeline(**i2i_components)
-
-        # Store all references
-        self._cn_openpose  = cn_openpose
-        self._cn_canny     = cn_canny
-        self._pipe_cn      = pipe_cn
-        self._pipe_biped   = pipe_biped_i2i
-        self._pipe_quad    = pipe_quad_i2i
-        self._pipe_i2i     = pipe_i2i
-
-        self.logger.info("SD1.5 + ControlNet pipelines loaded.")
-
-    # ── Stage handlers ─────────────────────────────────────────────────────────
-
-    def _run_flux(self, task: dict, db) -> None:
-        """
-        Generate a concept image with Flux.1-schnell (text → image).
-
-        Task params: width, height, steps, guidance_scale
-        """
+    def _handle_flux(self, task: dict, r) -> None:
         session_id = task["session_id"]
-        stage      = task["stage"]   # "flux"
+        stage      = task["stage"]
         prompt     = task.get("prompt", "")
         params     = task.get("params") or {}
 
-        width          = int(params.get("width",          768))
-        height         = int(params.get("height",         1024))
-        steps          = int(params.get("steps",          4))
-        guidance_scale = float(params.get("guidance_scale", 0.0))
-
-        self._ensure_flux()
-
-        self.logger.info(
-            f"[flux] session={session_id[:8]} "
-            f"size={width}x{height} steps={steps} guidance={guidance_scale}"
-        )
-
-        with torch.no_grad():
-            result = self._flux_pipe(
-                prompt=prompt,
-                width=width,
-                height=height,
-                num_inference_steps=steps,
-                guidance_scale=guidance_scale,
-                num_images_per_prompt=1,
-            )
-
-        img     = result.images[0]
-        s3_key  = f"manual_gen/{session_id}/{stage}.png"
-        self.upload_image(img, s3_key)
-        url     = self.s3_public_url(s3_key)
-
-        torch.cuda.empty_cache()
-
-        mark_done(db, session_id, stage, url, s3_key)
-        self.logger.info(f"[flux] done → {url}")
-
-    def _run_sd_stage1(self, task: dict, db) -> None:
-        """
-        SD1.5 + ControlNet img2img refinement (Stage 1).
-
-        - humanoid: StableDiffusionControlNetImg2ImgPipeline with [openpose, canny]
-        - quadruped: StableDiffusionControlNetImg2ImgPipeline with canny only
-
-        Task params: denoise, cfg, steps, openpose_weight, canny_weight, category
-        """
-        session_id       = task["session_id"]
-        stage            = task["stage"]   # "sd_stage1"
-        prompt           = task.get("prompt", "")
-        negative         = task.get("negative", "")
-        params           = task.get("params") or {}
-        input_image_url  = task.get("input_url") or task.get("input_image_url", "")
-
-        denoise          = float(params.get("denoise",          0.20))
-        cfg              = float(params.get("cfg",              5.5))
-        steps            = int(params.get("steps",              20))
-        openpose_weight  = float(params.get("openpose_weight",  0.85))
-        canny_weight     = float(params.get("canny_weight",     0.55))
-        category         = params.get("category",               "humanoid")
-
-        self._ensure_sd()
-
-        # Download init image
-        init_img = self._download_image(input_image_url)
-        init_img = init_img.resize((IMG_SIZE, IMG_SIZE)).convert("RGB")
-
-        # Canny control image (always needed)
-        canny_img = _extract_canny(init_img)
-
-        self.logger.info(
-            f"[sd_stage1] session={session_id[:8]} category={category} "
-            f"denoise={denoise} cfg={cfg} steps={steps}"
-        )
-
-        with torch.no_grad():
-            if category == "humanoid":
-                # Load openpose reference (T-pose skeleton image)
-                openpose_ref = self._load_openpose_ref()
-                result = self._pipe_biped(
-                    prompt=prompt,
-                    negative_prompt=negative,
-                    image=init_img,
-                    control_image=[openpose_ref, canny_img],
-                    controlnet_conditioning_scale=[openpose_weight, canny_weight],
-                    strength=denoise,
-                    guidance_scale=cfg,
-                    num_inference_steps=steps,
-                    num_images_per_prompt=1,
-                )
-            else:
-                # Quadruped: canny only
-                result = self._pipe_quad(
-                    prompt=prompt,
-                    negative_prompt=negative,
-                    image=init_img,
-                    control_image=canny_img,
-                    controlnet_conditioning_scale=canny_weight,
-                    strength=denoise,
-                    guidance_scale=cfg,
-                    num_inference_steps=steps,
-                    num_images_per_prompt=1,
-                )
-
-        img    = result.images[0]
+        img    = run_flux(self._mgr.get("flux"), prompt, params)
         s3_key = f"manual_gen/{session_id}/{stage}.png"
-        self.upload_image(img, s3_key)
-        url    = self.s3_public_url(s3_key)
+        url    = self._upload_image(img, s3_key)
+        push_done(r, session_id, stage, url, s3_key)
+        logger.info(f"[flux] → {url}")
 
-        torch.cuda.empty_cache()
-
-        mark_done(db, session_id, stage, url, s3_key)
-        self.logger.info(f"[sd_stage1] done → {url}")
-
-    def _run_sd_stage2(self, task: dict, db) -> None:
-        """
-        SD1.5 plain img2img polish pass (Stage 2). No ControlNet.
-
-        Task params: denoise, cfg, steps
-        """
+    def _handle_sd_stage1(self, task: dict, r) -> None:
+        from models.sd_model import run_stage1  # lazy — avoids flash-attn check at startup
         session_id      = task["session_id"]
-        stage           = task["stage"]   # "sd_stage2"
+        stage           = task["stage"]
         prompt          = task.get("prompt", "")
         negative        = task.get("negative", "")
         params          = task.get("params") or {}
         input_image_url = task.get("input_url") or task.get("input_image_url", "")
 
-        denoise = float(params.get("denoise", 0.35))
-        cfg     = float(params.get("cfg",     7.0))
-        steps   = int(params.get("steps",     20))
-
-        self._ensure_sd()
-
         init_img = self._download_image(input_image_url)
-        init_img = init_img.resize((IMG_SIZE, IMG_SIZE)).convert("RGB")
+        img      = run_stage1(self._mgr.get("sd"), init_img, prompt, negative, params)
+        s3_key   = f"manual_gen/{session_id}/{stage}.png"
+        url      = self._upload_image(img, s3_key)
+        push_done(r, session_id, stage, url, s3_key)
+        logger.info(f"[sd_stage1] → {url}")
 
-        self.logger.info(
-            f"[sd_stage2] session={session_id[:8]} "
-            f"denoise={denoise} cfg={cfg} steps={steps}"
-        )
-
-        with torch.no_grad():
-            result = self._pipe_i2i(
-                prompt=prompt,
-                negative_prompt=negative,
-                image=init_img,
-                strength=denoise,
-                guidance_scale=cfg,
-                num_inference_steps=steps,
-                num_images_per_prompt=1,
-            )
-
-        img    = result.images[0]
-        s3_key = f"manual_gen/{session_id}/{stage}.png"
-        self.upload_image(img, s3_key)
-        url    = self.s3_public_url(s3_key)
-
-        torch.cuda.empty_cache()
-
-        mark_done(db, session_id, stage, url, s3_key)
-        self.logger.info(f"[sd_stage2] done → {url}")
-
-    def _run_multiview(self, task: dict, db) -> None:
-        """
-        Generate a multiview image (side or back) via plain SD1.5 img2img.
-
-        Stage is "multiview_side" or "multiview_back".
-        Task params: denoise, cfg, steps
-        """
+    def _handle_sd_stage2(self, task: dict, r) -> None:
+        from models.sd_model import run_stage2  # lazy — avoids flash-attn check at startup
         session_id      = task["session_id"]
-        stage           = task["stage"]   # "multiview_side" | "multiview_back"
+        stage           = task["stage"]
         prompt          = task.get("prompt", "")
         negative        = task.get("negative", "")
         params          = task.get("params") or {}
         input_image_url = task.get("input_url") or task.get("input_image_url", "")
 
-        denoise = float(params.get("denoise", 0.45))
-        cfg     = float(params.get("cfg",     7.0))
-        steps   = int(params.get("steps",     20))
+        init_img = self._download_image(input_image_url)
+        img      = run_stage2(self._mgr.get("sd"), init_img, prompt, negative, params)
+        s3_key   = f"manual_gen/{session_id}/{stage}.png"
+        url      = self._upload_image(img, s3_key)
+        push_done(r, session_id, stage, url, s3_key)
+        logger.info(f"[sd_stage2] → {url}")
 
-        self._ensure_sd()
+    def _handle_multiview(self, task: dict, r) -> None:
+        from models.sd_model import run_multiview  # lazy — avoids flash-attn check at startup
+        session_id      = task["session_id"]
+        stage           = task["stage"]
+        prompt          = task.get("prompt", "")
+        negative        = task.get("negative", "")
+        params          = task.get("params") or {}
+        input_image_url = task.get("input_url") or task.get("input_image_url", "")
 
         init_img = self._download_image(input_image_url)
-        init_img = init_img.resize((IMG_SIZE, IMG_SIZE)).convert("RGB")
+        img      = run_multiview(self._mgr.get("sd"), init_img, prompt, negative, params)
+        s3_key   = f"manual_gen/{session_id}/{stage}.png"
+        url      = self._upload_image(img, s3_key)
+        push_done(r, session_id, stage, url, s3_key)
+        logger.info(f"[{stage}] → {url}")
 
-        self.logger.info(
-            f"[{stage}] session={session_id[:8]} "
-            f"denoise={denoise} cfg={cfg} steps={steps}"
-        )
-
-        with torch.no_grad():
-            result = self._pipe_i2i(
-                prompt=prompt,
-                negative_prompt=negative,
-                image=init_img,
-                strength=denoise,
-                guidance_scale=cfg,
-                num_inference_steps=steps,
-                num_images_per_prompt=1,
-            )
-
-        img    = result.images[0]
-        s3_key = f"manual_gen/{session_id}/{stage}.png"
-        self.upload_image(img, s3_key)
-        url    = self.s3_public_url(s3_key)
-
-        torch.cuda.empty_cache()
-
-        mark_done(db, session_id, stage, url, s3_key)
-        self.logger.info(f"[{stage}] done → {url}")
-
-    def _run_trellis(self, task: dict, r, db) -> None:
-        """
-        Forward a TRELLIS 3D reconstruction task to the TRELLIS worker queue.
-
-        Does NOT run any GPU inference itself — just translates the manual_gen
-        task payload into the format expected by trellis_worker.py and pushes
-        it onto the model_tasks Redis queue.
-
-        Marks the trellis stage as "queued" in MongoDB (waiting for TRELLIS worker).
-
-        Task params (expected inside task["params"]):
-            front_url  — public S3 URL of front image
-            side_url   — public S3 URL of side image
-            back_url   — public S3 URL of back image
-        """
+    def _handle_trellis(self, task: dict, r) -> None:
+        from models.trellis_model import run_trellis  # lazy — avoids flash-attn check at startup
         session_id = task["session_id"]
-        task_id    = task["task_id"]
-        stage      = task["stage"]   # "trellis"
+        stage      = task.get("stage", "trellis")
         params     = task.get("params") or {}
 
-        # UI sends top-level input_front/input_side/input_back
-        front_url  = (task.get("input_front") or params.get("front_url",  ""))
-        side_url   = (task.get("input_side")  or params.get("side_url",   ""))
-        back_url   = (task.get("input_back")  or params.get("back_url",   ""))
-        output_key = f"manual_gen/{session_id}/trellis.glb"
-
+        front_url = task.get("input_front") or params.get("front_url", "")
         if not front_url:
             raise ValueError(
-                "trellis task missing required param: front_url. "
-                "Ensure sd_stage2 has completed and front_url is populated in params."
+                "trellis task missing input_front URL — "
+                "ensure sd_stage2 is done and its URL is passed."
             )
 
-        trellis_payload = {
-            "task_id":    task_id,
-            "session_id": session_id,
-            "stage":      "trellis",
-            "front_url":  front_url,
-            "side_url":   side_url,
-            "back_url":   back_url,
-            "output_key": output_key,
-            "timestamp":  time.time(),
-        }
+        front_img = self._download_image(front_url)
 
-        r.rpush(TRELLIS_QUEUE, json.dumps(trellis_payload))
-        self.logger.info(
-            f"[trellis] session={session_id[:8]} pushed to {TRELLIS_QUEUE} "
-            f"front={front_url!r}"
+        # Optional side/back views — use multi-image pipeline if provided
+        side_img = back_img = None
+        side_url = task.get("input_side") or params.get("side_url", "")
+        back_url = task.get("input_back") or params.get("back_url", "")
+        if side_url:
+            try:
+                side_img = self._download_image(side_url)
+            except Exception as exc:
+                logger.warning(f"[trellis] side image download failed ({exc}) — front-only mode")
+        if back_url:
+            try:
+                back_img = self._download_image(back_url)
+            except Exception as exc:
+                logger.warning(f"[trellis] back image download failed ({exc}) — skipping back view")
+
+        glb_bytes = run_trellis(
+            self._mgr.get("trellis"), front_img, params,
+            side_image=side_img, back_image=back_img,
         )
+        s3_key = f"manual_gen/{session_id}/trellis.glb"
+        url    = self._upload_bytes(glb_bytes, s3_key, "model/gltf-binary")
+        push_glb_done(r, session_id, stage, url, s3_key)
+        logger.info(f"[trellis] → {url}")
 
-        # Mark the trellis stage as queued (not done — TRELLIS worker owns done/error)
-        mark_queued(db, session_id, stage, task_id)
-        self.logger.info(f"[trellis] session={session_id[:8]} stage marked queued.")
 
-    # ── Utilities ─────────────────────────────────────────────────────────────
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Upload helpers
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _download_image(self, url: str) -> Image.Image:
-        """
-        Download an image from an S3 public URL (or any HTTP URL).
-
-        Returns a PIL Image in RGB mode.
-        Raises requests.HTTPError on non-2xx status.
-        """
         if not url:
             raise ValueError("_download_image: url is empty")
-
-        self.logger.debug(f"Downloading image: {url}")
         resp = requests.get(url, timeout=30)
         resp.raise_for_status()
-        img = Image.open(io.BytesIO(resp.content)).convert("RGB")
-        self.logger.debug(f"Downloaded image size: {img.size}")
-        return img
+        return Image.open(io.BytesIO(resp.content)).convert("RGB")
 
-    def _load_openpose_ref(self) -> Image.Image:
-        """
-        Load the T-pose openpose skeleton reference image.
+    def _upload_image(self, img: Image.Image, s3_key: str) -> str:
+        self.upload_image(img, s3_key)
+        return self.s3_public_url(s3_key)
 
-        Priority:
-          1. TPOSE_OPENPOSE_PATH env var — local file path to a pre-rendered
-             openpose skeleton image (512×512 RGB).
-          2. Blank black image fallback (ControlNet will receive no guidance).
-        """
-        if TPOSE_OPENPOSE_PATH and os.path.isfile(TPOSE_OPENPOSE_PATH):
-            try:
-                img = Image.open(TPOSE_OPENPOSE_PATH).convert("RGB")
-                img = img.resize((IMG_SIZE, IMG_SIZE))
-                self.logger.debug(f"Loaded T-pose openpose ref: {TPOSE_OPENPOSE_PATH}")
-                return img
-            except Exception as exc:
-                self.logger.warning(
-                    f"Failed to load TPOSE_OPENPOSE_PATH={TPOSE_OPENPOSE_PATH!r}: {exc}. "
-                    "Using blank fallback."
-                )
-
-        self.logger.warning(
-            "TPOSE_OPENPOSE_PATH not set or file not found — "
-            "using blank black image as openpose reference. "
-            "Set TPOSE_OPENPOSE_PATH to a real T-pose skeleton image for better results."
-        )
-        return _blank_image(IMG_SIZE, IMG_SIZE)
+    def _upload_bytes(self, data: bytes, s3_key: str, content_type: str) -> str:
+        suffix = os.path.splitext(s3_key)[1] or ".bin"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f:
+            f.write(data)
+            tmp_path = f.name
+        try:
+            self.upload_file(tmp_path, s3_key, content_type)
+        finally:
+            os.unlink(tmp_path)
+        return self.s3_public_url(s3_key)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

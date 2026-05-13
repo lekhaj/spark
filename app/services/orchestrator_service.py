@@ -1,17 +1,9 @@
 """
-GPU Orchestrator — Fixed On-Demand Instance Edition
-=====================================================
-Watches Redis queues and manages the fixed g5.2xlarge GPU instance.
-
-Flow:
-  1. Poll all GPU queues (image_tasks, model_tasks, rig_model)
-  2. Expire stale tasks (older than TASK_TTL)
-  3. If tasks pending → ensure GPU instance is running → start workers
-  4. If all queues empty + no workers active → idle timer → stop GPU instance
-
-NOTE: Spot-instance orchestration is implemented in spot_gpu_service.py but
-      is DISABLED until a custom AMI is ready. Switch by replacing the
-      `aws_service` calls below with `spot_gpu` calls (see commented blocks).
+GPU Orchestrator
+================
+Polls Redis queues every POLL_INTERVAL seconds.
+When tasks arrive: ensures GPU instance is running and workers are active.
+Shutdown is handled GPU-side (auto_shutdown.py) — orchestrator only starts.
 """
 
 import asyncio
@@ -23,9 +15,6 @@ import redis as _redis
 from app.config import settings
 from app import infra
 from app.services import aws_service
-
-# ── Spot import — DISABLED (re-enable after custom AMI is ready) ──────────────
-# from app.services.spot_gpu_service import spot_gpu
 
 logger = logging.getLogger("orchestrator")
 
@@ -39,26 +28,12 @@ GPU_QUEUES            = infra.GPU_QUEUES
 
 
 class GPUOrchestrator:
-    """
-    Fixed on-demand GPU orchestrator.
-
-    Manages the single GPU instance defined in infra.py:
-      image_tasks  → image-worker  (SD 1.5 + ControlNet)
-      model_tasks  → model-worker  (TRELLIS 3D)
-      rig_model    → rig-worker    (UniRig)
-
-    Lifecycle:
-      - Any queue has tasks        → ensure GPU instance is running → start workers
-      - All queues empty + idle    → idle timer → stop GPU instance (saves cost)
-    """
-
     def __init__(self):
         self.poll_interval  = POLL_INTERVAL_SECONDS
         self.idle_shutdown  = IDLE_SHUTDOWN_SECONDS
         self.task_ttl       = TASK_TTL_SECONDS
         self.idle_since     = None
         self.auto_mode      = True
-        # The logical GPU type used for all calls to aws_service
         self._gpu_alias     = "gpu_a10"
 
     # ── Queue helpers ─────────────────────────────────────────────────────────
@@ -73,7 +48,7 @@ class GPUOrchestrator:
         """Remove tasks older than task_ttl from image/model queues."""
         now = time.time()
         expired_count = 0
-        for queue_name in ("image_tasks", "model_tasks"):
+        for queue_name in GPU_QUEUES:
             length = r.llen(queue_name)
             if length == 0:
                 continue
@@ -150,13 +125,6 @@ class GPUOrchestrator:
     # ── Main orchestration loop ───────────────────────────────────────────────
 
     async def manage_gpu(self):
-        """
-        Core orchestration logic (runs every poll_interval seconds):
-          1. Expire stale tasks
-          2. Check all GPU queues
-          3. If any queue has work → ensure instance running → start workers
-          4. If all empty + no workers → idle timer → stop instance
-        """
         if not self.auto_mode:
             return
 
@@ -167,63 +135,38 @@ class GPUOrchestrator:
         gpu_state   = aws_service.get_instance_state(self._gpu_alias)
         gpu_running = gpu_state == "running"
 
-        logger.info(
-            f"[GPU] image={queues['image_tasks']} model={queues['model_tasks']} "
-            f"rig={queues['rig_model']} instance={gpu_state} "
-            f"ip={infra.GPU_PUBLIC_IP}"
-        )
+        logger.info(f"[GPU] {' '.join(f'{q}={n}' for q,n in queues.items())} instance={gpu_state} ip={infra.GPU_PUBLIC_IP}")
 
         if total > 0:
-            # Work to do — reset idle timer
-            self.idle_since = None
-
+            self.idle_since = None          # tasks arrived — reset idle clock
             if not gpu_running:
-                logger.info(f"[GPU] {total} task(s) queued — starting GPU instance...")
-                started = aws_service.start_instance(self._gpu_alias)
-                if not started:
-                    logger.error("[GPU] Failed to start GPU instance — will retry next cycle")
+                logger.info(f"[GPU] {total} task(s) queued — starting instance...")
+                if not aws_service.start_instance(self._gpu_alias):
+                    logger.error("[GPU] Failed to start instance — will retry next cycle")
                     return
-                logger.info("[GPU] GPU instance running — starting workers...")
-
-            # Instance is running — start any missing workers
             self._ensure_workers_for_queues(queues)
-
-            # ── SPOT INSTANCE PATH (disabled) ─────────────────────────────
-            # launched = spot_gpu.ensure_gpu_available()
-            # if launched:
-            #     self._ensure_workers_for_queues(queues)
-
-        elif gpu_running:
-            # Queues empty — check if workers are still processing
-            workers_busy = self._any_worker_active()
-
-            if workers_busy:
-                self.idle_since = None
-                logger.info("[GPU] Queues empty but workers still active — keeping instance alive")
-            elif self.idle_since is None:
-                self.idle_since = time.time()
-                logger.info(
-                    f"[GPU] All queues empty, no workers active — "
-                    f"stopping instance in {self.idle_shutdown // 60}min if no new tasks"
-                )
-            else:
-                idle_elapsed = time.time() - self.idle_since
-                remaining    = max(0, self.idle_shutdown - idle_elapsed)
-                if idle_elapsed >= self.idle_shutdown:
-                    logger.info("[GPU] Idle timeout reached — stopping GPU instance")
-                    aws_service.stop_instance(self._gpu_alias)
-                    self.idle_since = None
-
-                    # ── SPOT INSTANCE PATH (disabled) ──────────────────────
-                    # spot_gpu.terminate()
-                else:
-                    logger.info(
-                        f"[GPU] Idle for {idle_elapsed:.0f}s, "
-                        f"shutdown in {remaining:.0f}s"
-                    )
         else:
-            # No GPU running, no tasks — nothing to do
-            self.idle_since = None
+            # No work in any queue — track idle time and stop when threshold hit
+            if not gpu_running:
+                self.idle_since = None      # already stopped, nothing to do
+            else:
+                if self.idle_since is None:
+                    self.idle_since = time.time()
+                    logger.info("[GPU] All queues empty — idle timer started")
+                else:
+                    idle_elapsed = time.time() - self.idle_since
+                    idle_min     = idle_elapsed / 60
+                    logger.info(
+                        f"[GPU] Idle {idle_min:.1f}/{self.idle_shutdown // 60} min "
+                        f"(threshold={self.idle_shutdown // 60} min)"
+                    )
+                    if idle_elapsed >= self.idle_shutdown:
+                        logger.warning(
+                            f"[GPU] Idle threshold reached ({self.idle_shutdown // 60} min) "
+                            f"— stopping instance {infra.GPU_INSTANCE_ID}"
+                        )
+                        aws_service.stop_instance(self._gpu_alias)
+                        self.idle_since = None
 
     # ── Status ────────────────────────────────────────────────────────────────
 
@@ -236,35 +179,20 @@ class GPUOrchestrator:
             idle_elapsed = round(time.time() - self.idle_since)
 
         return {
-            "auto_mode":            self.auto_mode,
-            "task_ttl_minutes":     self.task_ttl // 60,
+            "auto_mode":             self.auto_mode,
+            "task_ttl_minutes":      self.task_ttl // 60,
             "idle_shutdown_minutes": self.idle_shutdown // 60,
-            "pipeline":             "image_tasks + model_tasks + rig_model → GPU (fixed on-demand)",
             "gpu_instance": {
-                "instance_id":   infra.GPU_INSTANCE_ID,
-                "instance_type": "g5.2xlarge",
-                "public_ip":     infra.GPU_PUBLIC_IP,
-                "state":         gpu_state,
+                "instance_id": infra.GPU_INSTANCE_ID,
+                "public_ip":   infra.GPU_PUBLIC_IP,
+                "state":       gpu_state,
             },
-            "queues": {
-                "image_tasks": queues["image_tasks"],
-                "model_tasks": queues["model_tasks"],
-                "rig_model":   queues["rig_model"],
-            },
+            "queues":       queues,
             "idle_seconds": idle_elapsed,
         }
 
-    # ── Run loop ──────────────────────────────────────────────────────────────
-
     async def run(self):
-        logger.info(
-            f"[ORCHESTRATOR] Started — auto_mode={self.auto_mode} | "
-            f"queues={GPU_QUEUES} | "
-            f"task_ttl={self.task_ttl // 60}min | "
-            f"idle_shutdown={self.idle_shutdown // 60}min | "
-            f"poll={self.poll_interval}s | "
-            f"gpu_instance={infra.GPU_INSTANCE_ID} ({infra.GPU_PUBLIC_IP})"
-        )
+        logger.info(f"[ORCHESTRATOR] Started — poll={self.poll_interval}s gpu={infra.GPU_INSTANCE_ID} ({infra.GPU_PUBLIC_IP})")
         while True:
             try:
                 await self.manage_gpu()

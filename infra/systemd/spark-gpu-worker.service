@@ -1,0 +1,46 @@
+[Unit]
+# spark-gpu-worker — runs all four GPU workers (sd15, trellis, rig, manual)
+# plus the AutoShutdown thread inside one process.
+#
+# Why one unit instead of four:
+#   - gpu_main.py already manages threads + a single AutoShutdown monitor.
+#   - Running four units would duplicate the auto-shutdown clock and race
+#     stop_instances() calls. One process, one clock.
+#
+# Auto-shutdown lives in worker/workers/auto_shutdown.py and stops THIS
+# instance via boto3 once every queue has been empty for IDLE_SHUTDOWN_MINUTES.
+# The CPU orchestrator only starts the instance; it never stops it.
+Description=Spark GPU worker (sd15 + trellis + rig + manual_gen + auto-shutdown)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ec2-user
+Group=ec2-user
+WorkingDirectory=/home/ec2-user/spark
+
+# All env (REDIS_HOST/PASSWORD, MONGO_URI, AWS_*, IDLE_SHUTDOWN_MINUTES, …)
+# is owned by /home/ec2-user/spark/.env.gpu — same file the dev shell sources.
+EnvironmentFile=/home/ec2-user/spark/.env.gpu
+Environment=PYTHONPATH=/home/ec2-user/trellis
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/home/ec2-user/miniconda3/envs/spark/bin/python /home/ec2-user/spark/worker/gpu_main.py --workers sd15,trellis,rig,manual
+
+# Auto-restart on crash, but cap to avoid hot-loop on a broken deploy.
+Restart=on-failure
+RestartSec=15
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# gpu_main.py self-shuts the instance via boto3.stop_instances() — give
+# Python 30s to flush logs before systemd force-kills.
+TimeoutStopSec=30
+KillSignal=SIGINT
+
+StandardOutput=append:/var/log/spark-gpu-worker.log
+StandardError=append:/var/log/spark-gpu-worker.log
+
+[Install]
+WantedBy=multi-user.target

@@ -40,6 +40,7 @@ import torch
 from PIL import Image
 
 from .base_worker import BaseWorker
+from result_channel import push_running, push_glb_done, push_error
 
 logger = logging.getLogger("TRELLISWorker")
 
@@ -112,6 +113,39 @@ class TRELLISWorker(BaseWorker):
 
     # ── Background removal ────────────────────────────────────────────────────
 
+    def _process_manual_gen(self, task: dict, r) -> None:
+        """Handle a TRELLIS task originating from the manual-gen pipeline.
+
+        Uses result_channel (Redis) for status updates — no MongoDB writes.
+        Input image URL is task["front_url"] (S3 public URL).
+        """
+        import requests, io as _io
+        session_id = task["session_id"]
+        stage      = task.get("stage", "trellis")
+        front_url  = task.get("front_url", "")
+        output_key = task.get("output_key", f"manual_gen/{session_id}/trellis.glb")
+
+        push_running(r, session_id, stage)
+
+        # Download front image
+        resp = requests.get(front_url, timeout=30)
+        resp.raise_for_status()
+        image = Image.open(_io.BytesIO(resp.content)).convert("RGBA")
+
+        if REMOVE_BG:
+            image = self._remove_background(image)
+
+        glb_path, glb_tmp = self._run_trellis(image)
+
+        try:
+            self.upload_file(glb_path, output_key, "model/gltf-binary")
+        finally:
+            shutil.rmtree(glb_tmp, ignore_errors=True)
+
+        glb_url = self.s3_public_url(output_key)
+        push_glb_done(r, session_id, stage, glb_url, output_key)
+        logger.info(f"[manual_gen trellis] session={session_id[:8]} done → {glb_url}")
+
     def _remove_background(self, image: Image.Image) -> Image.Image:
         """Return RGBA image with background removed. Falls back to original if unavailable."""
         if self.bg_remover is None:
@@ -169,6 +203,13 @@ class TRELLISWorker(BaseWorker):
     # ── Task Processing ───────────────────────────────────────────────────────
 
     def process_task(self, task: dict, r, db) -> None:
+        # ── Route by pipeline type ────────────────────────────────────────────
+        # New manual-gen pipeline: task has session_id, no biome_id
+        if "session_id" in task and "biome_id" not in task:
+            self._process_manual_gen(task, r)
+            return
+
+        # Legacy biome pipeline: task has biome_id + character_name
         biome_id  = task["biome_id"]
         char_name = task["character_name"]
         char_type = task.get("character_type", "humanoid")

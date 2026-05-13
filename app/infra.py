@@ -9,13 +9,19 @@ All services (orchestrator, aws_service, workers) import from here.
 """
 
 # ── EC2 Instance IDs ─────────────────────────────────────────────────────────
-CPU_INSTANCE_ID  = "i-0663f7700a2da31c7"   # FastAPI / orchestrator / Redis / MongoDB (us-east-1)
+CPU_INSTANCE_ID  = "i-0f5a6edd3ce343281"             # new instance (AMI launch 2026-05-09)
 GPU_INSTANCE_ID  = "i-0d6b9d6d34ccc053d"   # g6.2xlarge — L4 GPU workers (image + 3D + rig)
 
 # ── Public IPs ───────────────────────────────────────────────────────────────
 CPU_PUBLIC_IP = "18.207.13.85"
 GPU_PUBLIC_IP = "3.215.211.192"
 GPU_PUBLIC_DNS = "ec2-3-215-211-192.compute-1.amazonaws.com"
+GPU_PRIVATE_IP = "172.31.42.124"   # updated after instance restart 2026-05-10
+
+# ── Private VPC IP (CPU side) ────────────────────────────────────────────────
+# GPU→CPU Redis/MongoDB traffic uses this. GPU's own private IP is not
+# pinned here; the GPU side resolves it via metadata at start-time.
+CPU_PRIVATE_IP = "172.31.26.6"
 
 # ── SSH Configuration ────────────────────────────────────────────────────────
 SSH_USER     = "ubuntu"       # CPU instance user
@@ -49,42 +55,52 @@ GPU_CONFIG: dict[str, dict] = {
         "instance_id": GPU_INSTANCE_ID,
         "ssh_user":    GPU_SSH_USER,
         "public_ip":   GPU_PUBLIC_IP,
-        "worker_service": "model-worker",
+        "worker_service": "manual_gen_worker",
     },
     "gpu_a10_image": {
         "instance_id": GPU_INSTANCE_ID,
         "ssh_user":    GPU_SSH_USER,
         "public_ip":   GPU_PUBLIC_IP,
-        "worker_service": "image-worker",
+        "worker_service": "manual_gen_worker",
     },
     "gpu_t4": {
         "instance_id": GPU_INSTANCE_ID,
         "ssh_user":    GPU_SSH_USER,
         "public_ip":   GPU_PUBLIC_IP,
-        "worker_service": "image-worker",
+        "worker_service": "manual_gen_worker",
     },
     "gpu_l4": {
         "instance_id": GPU_INSTANCE_ID,
         "ssh_user":    GPU_SSH_USER,
         "public_ip":   GPU_PUBLIC_IP,
-        "worker_service": "gpu-worker",
+        "worker_service": "manual_gen_worker",
     },
 }
 
 # ── Redis Queue → Worker Service mapping ──────────────────────────────────────
 QUEUE_WORKER_MAP: dict[str, str] = {
-    "sd15_tasks":  "gpu-worker",
-    "image_tasks": "gpu-worker",
-    "model_tasks": "gpu-worker",
-    "rig_model":   "gpu-worker",
+    "sd15_tasks":       "manual_gen_worker",
+    "image_tasks":      "manual_gen_worker",
+    "model_tasks":      "manual_gen_worker",
+    "rig_model":        "manual_gen_worker",
+    "manual_gen_tasks": "manual_gen_worker",
 }
 
 # ── All GPU Redis Queues ──────────────────────────────────────────────────────
-GPU_QUEUES = ("sd15_tasks", "image_tasks", "model_tasks", "rig_model")
+# Orchestrator polls every queue listed here when deciding whether the GPU
+# has work or is idle. Adding a queue here is required for the GPU to be
+# auto-started when work arrives and auto-stopped when idle.
+GPU_QUEUES = (
+    "sd15_tasks",
+    "image_tasks",
+    "model_tasks",
+    "rig_model",
+    "manual_gen_tasks",
+)
 
 # ── Orchestrator Tuning ───────────────────────────────────────────────────────
 TASK_TTL_SECONDS      = 14400   # 4 hours — expire stale queued tasks
-IDLE_SHUTDOWN_SECONDS = 900     # 15 min idle → stop GPU instance
+IDLE_SHUTDOWN_SECONDS = 3600    # 60 min idle → stop GPU instance
 POLL_INTERVAL_SECONDS = 30      # how often orchestrator checks queues
 
 # ─────────────────────────────────────────────────────────────────────────────
