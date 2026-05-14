@@ -224,6 +224,33 @@ def _pipeline() -> None:
         raise RuntimeError(f"ARP operators unavailable after enabling {ARP_ADDON_NAME!r}.")
     print("[ARP] ARP operators ready.")
 
+    # ── 5b. Set ai_presets_path explicitly ────────────────────────────────────
+    # ARP's get_prefs() uses __package__[:-4] to look up addon prefs.  After a
+    # disable/enable cycle the saved value may be missing, causing get_prefs()
+    # to return a _HeadlessFallback with ai_presets_path = '' → screenshots
+    # would be saved to /inference/front1.jpg (root fs).
+    # We set it explicitly here so ARP always finds the inference binaries.
+    _ai_path = os.getenv(
+        "ARP_AI_PATH",
+        os.path.expanduser("~/Documents/AI")
+    )
+    _arp_addon_entry = bpy.context.preferences.addons.get(ARP_ADDON_NAME)
+    if _arp_addon_entry and hasattr(_arp_addon_entry, "preferences"):
+        _arp_addon_entry.preferences.ai_presets_path = _ai_path
+        print(f"[ARP] ai_presets_path → {_ai_path}")
+    else:
+        # Preferences not accessible via addon entry — patch via sys.modules
+        _prefs_mod = sys.modules.get(f"{ARP_ADDON_NAME}.src.auto_rig_prefs")
+        if _prefs_mod and hasattr(_prefs_mod, "get_prefs"):
+            class _PrefsPatch:
+                ai_presets_path = _ai_path
+                def __getattr__(self, name):
+                    return ""
+            _prefs_mod.get_prefs = lambda: _PrefsPatch()
+            print(f"[ARP] ai_presets_path patched via get_prefs() → {_ai_path}")
+        else:
+            print(f"[ARP] WARNING: could not set ai_presets_path — binaries may not be found")
+
     # ── 6. Configure ARP scene settings ───────────────────────────────────────
     scn = bpy.context.scene
     scn.arp_smart_type            = "BODY"
