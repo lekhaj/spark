@@ -244,11 +244,37 @@ bpy.ops.object.select_all(action="DESELECT")
 char_mesh.select_set(True)
 bpy.context.view_layer.objects.active = char_mesh
 
+# ── Helper: get VIEW_3D context override ────────────────────────────────────
+# ARP calls bpy.ops.view3d.* operators internally which require a VIEW_3D area
+# as the active context.  Even without --background, Python operator calls run
+# in the default (non-area) context.  We must use temp_override so that all
+# view3d operators called inside ARP can see context.space_data as SpaceView3D.
+def _get_view3d_override():
+    window = bpy.context.window_manager.windows[0]
+    for area in window.screen.areas:
+        if area.type == 'VIEW_3D':
+            for region in area.regions:
+                if region.type == 'WINDOW':
+                    return {"window": window, "area": area, "region": region}
+    # Fallback: change first area to VIEW_3D temporarily
+    window = bpy.context.window_manager.windows[0]
+    area = window.screen.areas[0]
+    old_type = area.type
+    area.type = 'VIEW_3D'
+    region = next((r for r in area.regions if r.type == 'WINDOW'), area.regions[0])
+    print(f"[ARP] No VIEW_3D found — temporarily changed area[0] from {old_type} to VIEW_3D")
+    return {"window": window, "area": area, "region": region}
+
+_v3d_ctx = _get_view3d_override()
+print(f"[ARP] VIEW_3D override: area={_v3d_ctx['area'].type} region={_v3d_ctx['region'].type}")
+
 # ── 6b-i. get_selected_objects — duplicates mesh and renames to body_temp ────
 # This is the ARP "Smart" button in the UI. MUST be called before guess_markers
 # so that body_temp exists for _screenshot_char to render.
+# Wrapped in temp_override so ARP's internal view3d.view_axis calls have context.
 print("[ARP] Running get_selected_objects to prepare body_temp...")
-result = bpy.ops.id.get_selected_objects("EXEC_DEFAULT")
+with bpy.context.temp_override(**_v3d_ctx):
+    result = bpy.ops.id.get_selected_objects("EXEC_DEFAULT")
 print(f"[ARP] get_selected_objects result: {result}")
 bpy.context.view_layer.update()
 
@@ -264,7 +290,8 @@ else:
     raise RuntimeError("body_temp not found after get_selected_objects — ARP setup failed")
 
 try:
-    result = bpy.ops.arp.guess_markers()
+    with bpy.context.temp_override(**_v3d_ctx):
+        result = bpy.ops.arp.guess_markers()
     print(f"[ARP] guess_markers result: {result}")
 except Exception as e:
     print(f"[ARP] WARNING: guess_markers failed ({e})")
@@ -309,7 +336,8 @@ body_temp.select_set(True)
 bpy.context.view_layer.objects.active = body_temp
 bpy.context.view_layer.update()
 
-result = bpy.ops.id.go_detect("EXEC_DEFAULT")
+with bpy.context.temp_override(**_v3d_ctx):
+    result = bpy.ops.id.go_detect("EXEC_DEFAULT")
 print(f"[ARP] go_detect result: {result}")
 bpy.context.view_layer.update()
 
