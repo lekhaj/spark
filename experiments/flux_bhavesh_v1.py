@@ -34,8 +34,9 @@ CHARACTERS = {
             "plain gray hanfu robe, rope belt, lean build, topknot hair, "
             "white background, flat lighting, full body"
         ),
-        "width":               768,
-        "height":              1024,
+# Updated sizes to prevent AWS instance crashes/freezes
+        "width":               512,
+        "height":              768,
         "num_inference_steps": 4,
         "guidance_scale":      0.0,
     },
@@ -47,8 +48,8 @@ CHARACTERS = {
             "fitted dark iron plate armor, pauldrons, gauntlets, dark red short cape, "
             "sturdy boots, short dark hair, white background, flat lighting, full body"
         ),
-        "width":               768,
-        "height":              1024,
+        "width":               512,
+        "height":              768,
         "num_inference_steps": 4,
         "guidance_scale":      0.0,
     },
