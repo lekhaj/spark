@@ -65,7 +65,9 @@ def load_flux_production():
         "black-forest-labs/FLUX.1-schnell",
         torch_dtype=torch.bfloat16,
     )
-    pipe.enable_sequential_cpu_offload()
+    # CHANGED: Sequential is for 8GB GPUs and takes 15 mins.
+    # L4 has 24GB VRAM, so model_cpu_offload is much faster (~15 secs) and won't hang.
+    pipe.enable_model_cpu_offload()
     pipe.vae.enable_slicing()
     return pipe
 
