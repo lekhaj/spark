@@ -148,19 +148,32 @@ def run_rig(
         if any(tag in line for tag in ("[RIG]", "[ARP]", "Error", "error", "WARNING", "RIGGING")):
             logger.info(f"  blender: {line}")
 
+    output_exists = os.path.exists(output_glb_path)
+
+    # Check output file FIRST: Blender can SIGSEGV during Python finalisation
+    # (e.g. double quit_blender in atexit) even after a fully successful export.
+    # If the GLB is present and non-empty we treat that as success regardless of
+    # exit code, and just log a warning about the non-zero code.
+    if output_exists and os.path.getsize(output_glb_path) > 0:
+        if proc.returncode != 0:
+            logger.warning(
+                f"[rig] Blender exited {proc.returncode} but output GLB exists "
+                f"— treating as success (likely post-export crash in atexit/GC)"
+            )
+        size_mb = os.path.getsize(output_glb_path) / 1e6
+        logger.info(f"[rig] done  rigged GLB {size_mb:.2f} MB")
+        return
+
+    # Output not found — now the exit code matters for the error message
     if proc.returncode != 0:
         tail = "\n".join(blender_out.splitlines()[-20:])
         raise RuntimeError(
             f"Blender exited {proc.returncode}.\nLast 20 lines:\n{tail}"
         )
 
-    if not os.path.exists(output_glb_path):
-        # Dump full blender log to help diagnose — script exceptions don't fail exit code
-        tail = "\n".join(blender_out.splitlines()[-40:])
-        raise RuntimeError(
-            f"Blender exited OK but output GLB not found: {output_glb_path}\n"
-            f"Last 40 lines of Blender output:\n{tail}"
-        )
-
-    size_mb = os.path.getsize(output_glb_path) / 1e6
-    logger.info(f"[rig] done  rigged GLB {size_mb:.2f} MB")
+    # Exited 0 but no output — script bug or silent failure
+    tail = "\n".join(blender_out.splitlines()[-40:])
+    raise RuntimeError(
+        f"Blender exited OK but output GLB not found: {output_glb_path}\n"
+        f"Last 40 lines of Blender output:\n{tail}"
+    )

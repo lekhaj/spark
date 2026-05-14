@@ -82,15 +82,19 @@ _exit_code = [0]   # mutable box so atexit can read the final code
 def _quit(code: int = 0) -> None:
     """Exit Blender cleanly. Without --background Blender would hang otherwise."""
     _exit_code[0] = code
+    # Unregister the atexit handler FIRST so it doesn't fire a second
+    # quit_blender() call during Python finalization — that double-call
+    # causes a SIGSEGV in PyObject_GC_UnTrack (Blender already shutting down).
+    atexit.unregister(_atexit_quit)
     try:
         bpy.ops.wm.quit_blender()
     except Exception:
         pass
-    sys.exit(code)   # fallback
+    sys.exit(code)   # fallback if quit_blender() hasn't fired yet
 
 
 def _atexit_quit() -> None:
-    """Guarantee Blender quits even if an unhandled exception escapes the timer."""
+    """Guarantee Blender quits if the pipeline crashes before _quit() is called."""
     try:
         bpy.ops.wm.quit_blender()
     except Exception:
