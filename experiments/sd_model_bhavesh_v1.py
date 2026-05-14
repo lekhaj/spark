@@ -3,21 +3,26 @@ sd_model_bhavesh_v1.py — SANDBOX EXPERIMENT COPY
 ==================================================
 Original file : worker/models/sd_model.py
 Branch        : bhavesh-dev
-Purpose       : Testing two parameter changes to fix T-pose instability.
+Purpose       : Fixing ghost hand hallucination in T-pose generation.
 
 CHANGES FROM ORIGINAL (sd_model.py):
 --------------------------------------
-1. ip_adapter_weight : 0.45 → 0.25
-   WHY: At 0.45 the IP-Adapter was encoding not just the character's appearance
-   but also the A-pose from the Flux image. Lowering it to 0.25 lets the
-   IP-Adapter remember the face and clothes but gives the OpenPose ControlNet
-   enough room to fully pull the arms into T-pose.
+1. ip_adapter_weight : 0.45 → 0.10
+   WHY: The wide hanfu sleeves were being encoded by IP-Adapter as a
+   "downward arm shape". Even at 0.25 this caused ghost hands in front
+   of the body. At 0.10 it keeps face/color identity but stops encoding
+   the sleeve silhouette as a competing arm signal.
 
-2. canny_weight : 0.20 → 0.0
-   WHY: Canny edges are extracted from the T-pose skeleton but a baggy hoodie
-   creates strong downward fabric edge signals that look like "arms hanging down"
-   to the Canny ControlNet. This directly fights the OpenPose skeleton signal.
-   Disabling Canny entirely lets OpenPose work alone without interference.
+2. openpose_weight : 1.30 → 1.70
+   WHY: OpenPose skeleton must DOMINATE over the IP-Adapter's sleeve
+   shape memory. Higher weight means the model commits fully to the
+   T-pose skeleton and has no room to also generate the drooping sleeves.
+
+3. canny_weight : 0.20 → 0.05
+   WHY: Completely disabling Canny (0.0) removed all structural anchor,
+   leaving the model free to hallucinate ghost arms in empty space.
+   A tiny value (0.05) acts as a subtle structural fence to prevent
+   floating artifacts without fighting the OpenPose skeleton.
 
 DO NOT MERGE THIS FILE TO MAIN.
 After testing, if results are good, report parameter values to Lekhaj.
@@ -55,9 +60,9 @@ STAGE1_DEFAULTS: dict = {
     "denoise":           0.82,   # unchanged — high denoise needed to change pose
     "cfg":               7.5,    # unchanged
     "steps":             30,     # unchanged
-    "openpose_weight":   1.30,   # unchanged — strong T-pose skeleton force
-    "canny_weight":      0.0,    # ← CHANGED (was 0.20): disabled — hoodie fabric edges fight T-pose
-    "ip_adapter_weight": 0.25,   # ← CHANGED (was 0.45): lower = less A-pose bleed from Flux image
+    "openpose_weight":   1.70,   # ← CHANGED (was 1.30): stronger skeleton dominance, reduces ghost arms
+    "canny_weight":      0.05,   # ← CHANGED (was 0.0): tiny structural anchor, stops ghost arms floating
+    "ip_adapter_weight": 0.10,   # ← CHANGED (was 0.25): low enough to stop sleeve shape bleed
     "category":          "humanoid",
 }
 
