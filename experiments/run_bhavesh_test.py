@@ -37,8 +37,11 @@ def main():
 
     print("[2/4] Creating WHITE init image and dummy IP-Adapter image...")
     init_img = Image.new("RGB", (512, 512), (255, 255, 255))  # white bg for img2img base
-    # To test color consistency, we pass a solid CRIMSON RED image to the IP-Adapter.
-    ip_image = Image.new("RGB", (512, 512), (200, 20, 20))
+    # IMPORTANT: IP-Adapter must get a NEUTRAL grey, not a solid color.
+    # A solid red block has no human body structure → causes spread legs + cape hallucinations.
+    # Color should be controlled via the TEXT PROMPT only in test mode.
+    # In production, the Flux character image goes here instead.
+    ip_image = Image.new("RGB", (512, 512), (128, 128, 128))  # neutral grey
 
     prompt = (
         "full body female ranger, T-pose, arms extended horizontally, "
