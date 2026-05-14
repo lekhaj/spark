@@ -37,14 +37,13 @@ def main():
 
     print("[2/4] Creating WHITE init image and dummy IP-Adapter image...")
     init_img = Image.new("RGB", (512, 512), (255, 255, 255))  # white bg for img2img base
-    # IP-Adapter requires an image or it crashes. In production this is the Flux image.
-    # We use a neutral grey mock image here just to satisfy the pipeline.
-    ip_image = Image.new("RGB", (512, 512), (128, 128, 128))
+    # To test color consistency, we pass a solid CRIMSON RED image to the IP-Adapter.
+    ip_image = Image.new("RGB", (512, 512), (200, 20, 20))
 
     prompt = (
         "full body female ranger, T-pose, arms extended horizontally, "
         "legs straight, head to toe, feet visible, "
-        "black zip jacket, black gloves, black pants, boots, "
+        "crimson red zip jacket, black gloves, crimson red pants, dark boots, "
         "pure white background, flat lighting, no shadows"
     )
     negative = (
