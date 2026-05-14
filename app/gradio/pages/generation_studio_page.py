@@ -331,9 +331,11 @@ def _q_flux(char, major, minor, prompt, neg, w, h, steps, guidance):
 
     db = _db()
     save_run_params(db, sid, prompt, neg, params, stage=stage)
+    _ver_minor = new_n if new_n is not None else int(minor)
     # Queue front view (primary — sets status to queued via mark_queued)
     tid_front = _push_task({"type": "flux", "session_id": sid, "stage": stage,
-                             "char_label": char, "prompt": prompt, "negative": neg,
+                             "char_name": char, "major": int(major), "minor": _ver_minor,
+                             "prompt": prompt, "negative": neg,
                              "params": params, "view": "front"})
     mark_queued(db, sid, stage=stage, task_id=tid_front)
     
@@ -372,7 +374,10 @@ def _q_normalize(char, major, minor, w, h, src_stage, src_ver):
             url = src_url
         else:
             img    = img.resize((tw, th), PILImage.LANCZOS)
-            s3_key = f"manual_gen/{sid}/normalize_{tw}x{th}.png"
+            _char_slug = char.replace(" ", "_").lower()
+            _ver_minor = new_n if new_n is not None else int(minor)
+            _maj       = int(major)
+            s3_key = f"chars/{_char_slug}/v{_maj}.{_ver_minor}/{_char_slug}_{_maj}_{_ver_minor}_normalize.png"
             buf    = BytesIO()
             img.save(buf, "PNG")
             buf.seek(0)
@@ -419,8 +424,10 @@ def _q_sd(char, major, minor, stage, prompt, neg, params, src_stage, src_url):
 
     db = _db()
     save_run_params(db, sid, prompt, neg, params, stage=stage)
+    _ver_minor = new_n if new_n is not None else int(minor)
     tid = _push_task({"type": "sd_stage", "session_id": sid, "stage": stage,
-                      "char_label": char, "prompt": prompt, "negative": neg,
+                      "char_name": char, "major": int(major), "minor": _ver_minor,
+                      "prompt": prompt, "negative": neg,
                       "params": params, "input_stage": src_stage, "input_url": src_url})
     mark_queued(db, sid, stage=stage, task_id=tid)
     ver  = f"{major}.{new_n}" if new_n is not None else f"{major}.{minor}"
@@ -467,8 +474,10 @@ def _q_trellis(char, major, minor, char_type, src_stage, src_ver):
         return sid, minor_upd, gr.update(), err
 
     save_run_params(db, sid, "", "", params, stage=stage)
+    _ver_minor = new_n if new_n is not None else int(minor)
     tid = _push_task({"type": "trellis", "session_id": sid, "stage": stage,
-                      "char_label": char, "char_type": char_type or "humanoid",
+                      "char_name": char, "major": int(major), "minor": _ver_minor,
+                      "char_type": char_type or "humanoid",
                       "input_front": front_url,
                       "input_side": side_url, "input_back": back_url,
                       "params": params})
@@ -493,8 +502,10 @@ def _q_rig(char, major, minor, char_type, trellis_src_ver):
         return sid, minor_upd, gr.update(), err
 
     save_run_params(db, sid, "", "", {"char_type": char_type or "humanoid"}, stage=stage)
+    _ver_minor = new_n if new_n is not None else int(minor)
     tid = _push_task({"type": "rig", "session_id": sid, "stage": stage,
-                      "char_label": char, "char_type": char_type or "humanoid",
+                      "char_name": char, "major": int(major), "minor": _ver_minor,
+                      "char_type": char_type or "humanoid",
                       "input_glb_url": glb_url},
                      queue="rig_tasks")
     mark_queued(db, sid, stage=stage, task_id=tid)
