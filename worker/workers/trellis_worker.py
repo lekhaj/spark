@@ -164,20 +164,12 @@ class TRELLISWorker(BaseWorker):
         """
         import o_voxel
 
-        # TRELLIS.2 expects RGB PIL at 512×512 (white-composite transparent areas)
-        bg = Image.new("RGB", image_rgba.size, (255, 255, 255))
-        if image_rgba.mode == "RGBA":
-            bg.paste(image_rgba, mask=image_rgba.split()[3])
-        else:
-            bg.paste(image_rgba)
-        image_rgb = bg.resize((512, 512))
-
         logger.info(f"Running TRELLIS.2 inference (texture={TRELLIS_TEXTURE_SZ}, "
                     f"decimation={TRELLIS_DECIMATION}, remesh={TRELLIS_REMESH})...")
 
         with torch.no_grad():
             # TRELLIS.2 run() returns a list — take the first (and only) mesh
-            mesh = self.pipeline.run(image_rgb)[0]
+            mesh = self.pipeline.run(image_rgba)[0]
 
         # Export to PBR GLB using o_voxel postprocessor
         glb = o_voxel.postprocess.to_glb(
@@ -202,71 +194,166 @@ class TRELLISWorker(BaseWorker):
 
     # ── Task Processing ───────────────────────────────────────────────────────
 
+    def _process_job_task(self, task: dict, r, db) -> None:
+        """Handle tasks from image_worker ({job_id, image_s3_url, biome_id, update_key})
+        and the Gradio UI ({job_id, image_path}).
+        Both share the same inference + upload + MongoDB flow.
+        """
+        import requests, io as _io
+
+        job_id     = task.get("job_id", str(uuid.uuid4()))
+        biome_id   = task.get("biome_id", job_id)
+        update_key = task.get("update_key", "3d_generation_details.model_url")
+
+        # ── Step 1: Resolve image URL / S3 key ───────────────────────────────
+        image_url = task.get("image_s3_url") or task.get("image_path", "")
+        logger.info(f"[job={job_id[:8]}] Fetching image from: {image_url}")
+
+        with tempfile.TemporaryDirectory() as img_tmp:
+            img_local = os.path.join(img_tmp, "input.png")
+            if image_url.startswith("http"):
+                resp = requests.get(image_url, timeout=60)
+                resp.raise_for_status()
+                with open(img_local, "wb") as f:
+                    f.write(resp.content)
+            else:
+                # treat as an S3 key
+                self.download_file(image_url, img_local)
+
+            image = Image.open(img_local).convert("RGBA")
+
+            # ── Step 2: Remove background ─────────────────────────────────────
+            if REMOVE_BG:
+                image = self._remove_background(image)
+                logger.info(f"[job={job_id[:8]}] Background removed.")
+
+        # ── Step 3: Update status → model_generating ─────────────────────────
+        try:
+            if db is not None:
+                db["biomes"].update_one(
+                    {"_id": biome_id},
+                    {"$set": {
+                        "status": "model_generating",
+                        "generation_stage": "trellis2_3d",
+                        "trellis_model": TRELLIS_MODEL_ID,
+                    }},
+                    upsert=True,
+                )
+        except Exception as e:
+            logger.warning(f"[job={job_id[:8]}] MongoDB update skipped: {e}")
+
+        # ── Step 4: TRELLIS.2 3D generation ──────────────────────────────────
+        logger.info(f"[job={job_id[:8]}] Running TRELLIS.2 ({TRELLIS_MODEL_ID})...")
+        t0 = time.time()
+        glb_path, glb_tmp = self._run_trellis(image)
+        elapsed = time.time() - t0
+        logger.info(f"[job={job_id[:8]}] TRELLIS.2 done in {elapsed:.1f}s → {glb_path}")
+
+        # ── Step 5: Upload GLB to S3 ──────────────────────────────────────────
+        glb_key = task.get("output_key") or f"models/{biome_id}/{job_id}.glb"
+        self.upload_file(glb_path, glb_key, "model/gltf-binary")
+        logger.info(f"[job={job_id[:8]}] Uploaded → s3://{self.cfg.S3_BUCKET}/{glb_key}")
+        shutil.rmtree(glb_tmp, ignore_errors=True)
+
+        glb_url = f"https://{self.cfg.S3_BUCKET}.s3.{self.cfg.S3_REGION}.amazonaws.com/{glb_key}"
+
+        # ── Step 6: Update MongoDB → model_complete ───────────────────────────
+        try:
+            if db is not None:
+                db["biomes"].update_one(
+                    {"_id": biome_id},
+                    {"$set": {
+                        "status": "model_complete",
+                        "generation_stage": "done",
+                        update_key: glb_url,
+                        "model_path": glb_key,
+                        "model_url": glb_url,
+                        "trellis_model": TRELLIS_MODEL_ID,
+                        "trellis_elapsed_s": round(elapsed, 1),
+                    }},
+                    upsert=True,
+                )
+                logger.info(f"[job={job_id[:8]}] MongoDB updated: {update_key} → {glb_url}")
+        except Exception as e:
+            logger.warning(f"[job={job_id[:8]}] MongoDB final update skipped: {e}")
+
+        # ── Step 7: Push to rig queue ─────────────────────────────────────────
+        self.push_task(OUTPUT_QUEUE, {
+            "task_id":    str(uuid.uuid4()),
+            "job_id":     job_id,
+            "biome_id":   biome_id,
+            "model_path": glb_key,
+            "model_url":  glb_url,
+            "timestamp":  time.time(),
+        })
+        logger.info(f"[job={job_id[:8]}] Pushed to {OUTPUT_QUEUE} for rigging.")
+
+        torch.cuda.empty_cache()
+
     def process_task(self, task: dict, r, db) -> None:
-        # ── Route by pipeline type ────────────────────────────────────────────
-        # New manual-gen pipeline: task has session_id, no biome_id
+        """Route incoming tasks to the correct handler based on task schema.
+
+        Schema 1 — manual_gen:   {session_id, stage, front_url, output_key}
+        Schema 2 — image_worker: {job_id, image_s3_url, biome_id, update_key, output_key}
+        Schema 3 — Gradio UI:    {job_id, image_path}
+        """
+        # Manual-gen pipeline (session-based, Redis result channel)
         if "session_id" in task and "biome_id" not in task:
             self._process_manual_gen(task, r)
             return
 
-        # Legacy biome pipeline: task has biome_id + character_name
-        biome_id  = task["biome_id"]
-        char_name = task["character_name"]
-        char_type = task.get("character_type", "humanoid")
-        image_key = task["image_path"]        # S3 key from SD1.5 worker
+        # Legacy biome pipeline with character_name (old SD1.5 → TRELLIS V1)
+        if "character_name" in task and "biome_id" in task:
+            biome_id  = task["biome_id"]
+            char_name = task["character_name"]
+            char_type = task.get("character_type", "humanoid")
+            image_key = task["image_path"]
 
-        self.mongo_update(biome_id, char_name, {
-            "status":           "model_generating",
-            "generation_stage": "trellis2_3d",
-            "trellis_model":    TRELLIS_MODEL_ID,
-        })
+            self.mongo_update(biome_id, char_name, {
+                "status":           "model_generating",
+                "generation_stage": "trellis2_3d",
+                "trellis_model":    TRELLIS_MODEL_ID,
+            })
 
-        with tempfile.TemporaryDirectory() as img_tmp:
-            # ── Step 1: Download refined image from S3 ───────────────────────
-            img_local = os.path.join(img_tmp, "input.png")
-            self.download_file(image_key, img_local)
-            image = Image.open(img_local).convert("RGBA")
-            logger.info(f"[{char_name}] Downloaded: {image_key}")
+            with tempfile.TemporaryDirectory() as img_tmp:
+                img_local = os.path.join(img_tmp, "input.png")
+                self.download_file(image_key, img_local)
+                image = Image.open(img_local).convert("RGBA")
+                if REMOVE_BG:
+                    image = self._remove_background(image)
 
-            # ── Step 2: Remove background ────────────────────────────────────
-            if REMOVE_BG:
-                image = self._remove_background(image)
-                logger.info(f"[{char_name}] Background removed.")
+            t0 = time.time()
+            glb_path, glb_tmp = self._run_trellis(image)
+            elapsed = time.time() - t0
 
-        # ── Step 3: TRELLIS.2 3D generation ─────────────────────────────────
-        logger.info(f"[{char_name}] Running TRELLIS.2 ({TRELLIS_MODEL_ID})...")
-        t0 = time.time()
-        glb_path, glb_tmp = self._run_trellis(image)
-        elapsed = time.time() - t0
-        logger.info(f"[{char_name}] TRELLIS.2 done in {elapsed:.1f}s → {glb_path}")
+            glb_key = f"models/{biome_id}/{char_name}.glb"
+            self.upload_file(glb_path, glb_key, "model/gltf-binary")
+            shutil.rmtree(glb_tmp, ignore_errors=True)
 
-        # ── Step 4: Upload GLB to S3 ─────────────────────────────────────────
-        glb_key = f"models/{biome_id}/{char_name}.glb"
-        self.upload_file(glb_path, glb_key, "model/gltf-binary")
-        logger.info(f"[{char_name}] Uploaded → s3://{self.cfg.S3_BUCKET}/{glb_key}")
+            glb_url = f"https://{self.cfg.S3_BUCKET}.s3.{self.cfg.S3_REGION}.amazonaws.com/{glb_key}"
+            self.mongo_update(biome_id, char_name, {
+                "status":            "model_complete",
+                "generation_stage":  "rig_pending",
+                "model_path":        glb_key,
+                "model_url":         glb_url,
+                "trellis_model":     TRELLIS_MODEL_ID,
+                "trellis_elapsed_s": round(elapsed, 1),
+            })
+            self.push_task(OUTPUT_QUEUE, {
+                "task_id":        str(uuid.uuid4()),
+                "biome_id":       biome_id,
+                "character_name": char_name,
+                "character_type": char_type,
+                "model_path":     glb_key,
+                "timestamp":      time.time(),
+            })
+            logger.info(f"[{char_name}] Pushed to {OUTPUT_QUEUE} for rigging.")
+            torch.cuda.empty_cache()
+            return
 
-        shutil.rmtree(glb_tmp, ignore_errors=True)
+        # image_worker schema ({job_id, image_s3_url}) OR Gradio schema ({job_id, image_path})
+        if "job_id" in task:
+            self._process_job_task(task, r, db)
+            return
 
-        # ── Step 5: Update MongoDB ────────────────────────────────────────────
-        glb_url = f"https://{self.cfg.S3_BUCKET}.s3.{self.cfg.S3_REGION}.amazonaws.com/{glb_key}"
-        self.mongo_update(biome_id, char_name, {
-            "status":           "model_complete",
-            "generation_stage": "rig_pending",
-            "model_path":       glb_key,
-            "model_url":        glb_url,
-            "trellis_model":    TRELLIS_MODEL_ID,
-            "trellis_elapsed_s": round(elapsed, 1),
-        })
-
-        # ── Step 6: Push to rig queue ─────────────────────────────────────────
-        self.push_task(OUTPUT_QUEUE, {
-            "task_id":        str(uuid.uuid4()),
-            "biome_id":       biome_id,
-            "character_name": char_name,
-            "character_type": char_type,
-            "model_path":     glb_key,
-            "timestamp":      time.time(),
-        })
-        logger.info(f"[{char_name}] Pushed to {OUTPUT_QUEUE} for rigging.")
-
-        torch.cuda.empty_cache()
+        logger.error(f"Unrecognised task schema — dropping: {list(task.keys())}")
