@@ -49,6 +49,26 @@ print(f"[ARP] Output: {OUTPUT_GLB}")
 print(f"[ARP] Type:   {CHARACTER_TYPE}")
 
 
+def _quit(exit_code=0):
+    """Quit Blender — required when running without --background, else hangs."""
+    import sys as _sys
+    bpy.ops.wm.quit_blender()
+    _sys.exit(exit_code)   # fallback if quit_blender() doesn't fire immediately
+
+
+import atexit as _atexit
+import traceback as _traceback
+
+def _atexit_quit():
+    """Always quit Blender on exit — needed when running without --background."""
+    try:
+        bpy.ops.wm.quit_blender()
+    except Exception:
+        pass
+
+_atexit.register(_atexit_quit)
+
+
 # ── 0. Disable ARP if already active (from saved user prefs) ─────────────────
 # ARP was previously saved to user prefs (default_set=True) so Blender
 # auto-enables it at startup.  Its depsgraph_update_post handlers then fire
@@ -362,8 +382,10 @@ bpy.ops.export_scene.gltf(
 )
 
 if not os.path.exists(OUTPUT_GLB):
-    raise RuntimeError(f"Export failed — output not found: {OUTPUT_GLB}")
+    print(f"[ARP] ERROR: Export failed — output not found: {OUTPUT_GLB}")
+    _quit(1)
 
 size_mb = os.path.getsize(OUTPUT_GLB) / 1e6
 print(f"[ARP] Export OK: {OUTPUT_GLB} ({size_mb:.2f} MB)")
 print(f"[ARP] RIGGING_COMPLETE: {OUTPUT_GLB}")
+_quit(0)

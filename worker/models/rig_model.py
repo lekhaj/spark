@@ -99,9 +99,12 @@ def run_rig(
         f"timeout={BLENDER_TIMEOUT_SEC}s"
     )
 
+    # Run WITHOUT --background so Blender creates a real VIEW_3D area.
+    # ARP heavily uses view3d.* operators that fail in --background mode.
+    # xvfb-run provides a virtual X display so no physical screen is needed.
     cmd = [
         "xvfb-run", "-a", "-s", "-screen 0 1280x720x24",
-        BLENDER_PATH, "--background",
+        BLENDER_PATH,
         "--python", ARP_SCRIPT_PATH,
         "--",
         "--input",          input_glb_path,
