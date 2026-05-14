@@ -1,6 +1,6 @@
 """
-rig_model.py — Auto-Rig Pro rigging via Blender headless subprocess
-====================================================================
+rig_model.py — Auto-Rig Pro rigging via Blender virtual-desktop subprocess
+===========================================================================
 
 Public API
 ----------
@@ -8,6 +8,18 @@ Public API
 
 No GPU required — this is a pure CPU subprocess call to Blender with the
 Auto-Rig Pro add-on.  The caller passes absolute paths for input + output GLBs.
+
+Startup model (Option B)
+------------------------
+Blender is launched inside a throwaway virtual X desktop:
+
+    blender_desktop_run.sh  →  Xvfb + fluxbox WM  →  blender --python ...
+
+The shell wrapper starts Xvfb (virtual framebuffer) and fluxbox (window
+manager) before Blender opens.  With a real WM managing the window, Blender's
+default workspace loads fully — VIEW_3D area, regions, space_data — so ARP's
+view3d operators work without any context hacks.  The wrapper kills Xvfb and
+fluxbox when Blender exits (or crashes).
 
 Param defaults
 --------------
@@ -22,6 +34,7 @@ Notes
 - Reads BLENDER_PATH and ARP_SCRIPT_PATH from env at import time.
 - Raises RuntimeError if Blender exits non-zero or output file not created.
 - BLENDER_TIMEOUT_SEC defaults to 600 (10 minutes).
+- Requires: xvfb (Xvfb binary), fluxbox — installed once via apt.
 """
 
 from __future__ import annotations
@@ -35,13 +48,18 @@ logger = logging.getLogger("models.rig")
 # ── Config (from env) ─────────────────────────────────────────────────────────
 
 BLENDER_PATH        = os.getenv("BLENDER_PATH", os.path.expanduser("~/blender/blender"))
-_THIS_DIR           = os.path.dirname(os.path.abspath(__file__))
+_THIS_DIR            = os.path.dirname(os.path.abspath(__file__))
+_SCRIPTS_DIR         = os.path.join(os.path.dirname(_THIS_DIR), "blender_scripts")
 # blender_scripts/ lives one level above models/
-ARP_SCRIPT_PATH     = os.getenv(
+ARP_SCRIPT_PATH      = os.getenv(
     "ARP_SCRIPT_PATH",
-    os.path.join(os.path.dirname(_THIS_DIR), "blender_scripts", "auto_rig_smart.py"),
+    os.path.join(_SCRIPTS_DIR, "auto_rig_smart.py"),
 )
-BLENDER_TIMEOUT_SEC = int(os.getenv("BLENDER_TIMEOUT_SEC", str(10 * 60)))
+DESKTOP_WRAPPER_PATH = os.getenv(
+    "DESKTOP_WRAPPER_PATH",
+    os.path.join(_SCRIPTS_DIR, "blender_desktop_run.sh"),
+)
+BLENDER_TIMEOUT_SEC  = int(os.getenv("BLENDER_TIMEOUT_SEC", str(10 * 60)))
 
 # ── Char-type normalisation ───────────────────────────────────────────────────
 
@@ -92,6 +110,10 @@ def run_rig(
             f"Blender binary not found at {BLENDER_PATH!r}. "
             "Set BLENDER_PATH env var or install Blender."
         )
+    if not os.path.isfile(DESKTOP_WRAPPER_PATH):
+        raise FileNotFoundError(
+            f"Desktop wrapper script not found at {DESKTOP_WRAPPER_PATH!r}."
+        )
 
     logger.info(
         f"[rig] run  char_type={char_type}  "
@@ -99,11 +121,12 @@ def run_rig(
         f"timeout={BLENDER_TIMEOUT_SEC}s"
     )
 
-    # Run WITHOUT --background so Blender creates a real VIEW_3D area.
-    # ARP heavily uses view3d.* operators that fail in --background mode.
-    # xvfb-run provides a virtual X display so no physical screen is needed.
+    # Launch Blender inside a throwaway virtual desktop (Xvfb + fluxbox).
+    # The wrapper script handles: start Xvfb → start fluxbox WM → run Blender
+    # → kill both on exit.  With a real WM, Blender's VIEW_3D area is fully
+    # initialised so ARP's view3d.* operators poll correctly without hacks.
     cmd = [
-        "xvfb-run", "-a", "-s", "-screen 0 1280x720x24",
+        "bash", DESKTOP_WRAPPER_PATH,
         BLENDER_PATH,
         "--python", ARP_SCRIPT_PATH,
         "--",

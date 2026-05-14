@@ -1,419 +1,372 @@
 """
-Auto-Rig Pro Smart Rigging — Blender headless script
-=====================================================
-Called by rig_cpu_worker.py via subprocess:
-  blender --background --python worker/blender_scripts/auto_rig_smart.py -- \
-          --input /tmp/char.glb \
-          --output /tmp/char_rigged.glb \
-          --character_type humanoid
+Auto-Rig Pro Smart Rigging — Blender desktop script
+====================================================
+Called by rig_model.py via blender_desktop_run.sh:
 
-Uses Auto-Rig Pro 3.76+ Smart detection with programmatically placed markers.
-Markers are placed at mesh extremities (outside the mesh surface) so ARP's
-BVHTree raycasting can find the mesh boundaries from each marker position.
+    bash blender_desktop_run.sh blender --python auto_rig_smart.py -- \\
+         --input  /tmp/char.glb \\
+         --output /tmp/char_rigged.glb \\
+         --character_type humanoid
 
-Note: ARP addon files must be patched for headless mode (bpy.context.space_data
-and bpy.context.area guard-patched). See deploy_and_run.sh for patch commands.
+Architecture
+------------
+Blender is launched inside a virtual desktop (Xvfb + fluxbox WM) by the
+wrapper script.  This means Blender's default workspace fully initialises
+before our code runs — a real VIEW_3D area exists and is managed by the WM.
+
+Our pipeline code is registered as a bpy.app.timers callback (1 second delay).
+By the time the timer fires:
+  - Blender's startup is complete
+  - The default Layout workspace is loaded
+  - VIEW_3D area is the active area with all regions ready
+  - ARP's view3d.* operators poll correctly
+
+Blender calls bpy.ops.wm.quit_blender() at the end (or on error), which lets
+the wrapper script tear down Xvfb + fluxbox cleanly.
+
+Pipeline steps
+--------------
+  0. (at import time) Disable ARP startup handlers → prevents depsgraph SIGSEGV
+  1. Register 1-second timer → return, let Blender finish startup
+  --- timer fires ---
+  2. Clear scene
+  3. Import GLB
+  4. Merge meshes → single "Character" object
+  5. Normalise scale (auto-scale to 2m height) + apply transforms
+  6. Enable ARP addon
+  7. Set ARP scene params (BODY type, symmetry, AI fingers)
+  8. id.get_selected_objects  → creates body_temp (ARP's working copy)
+  9. arp.guess_markers         → AI screenshots + inference → place markers
+  10. id.go_detect             → build armature from markers
+  11. arp.bind_to_rig          → voxel skinning (best quality)
+  12. Export GLB
+  13. bpy.ops.wm.quit_blender()
 """
+
+from __future__ import annotations
 
 import sys
 import os
 import argparse
+import atexit
 
 import bpy
 import addon_utils
 import mathutils
-import bmesh
 
-# ── Parse args ────────────────────────────────────────────────────────────────
-argv = sys.argv
-if "--" in argv:
-    argv = argv[argv.index("--") + 1:]
-else:
-    argv = []
+# ── Parse CLI args (must happen at module level before timer) ─────────────────
+_argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
+_parser = argparse.ArgumentParser()
+_parser.add_argument("--input",          required=True)
+_parser.add_argument("--output",         required=True)
+_parser.add_argument("--character_type", default="humanoid",
+                     choices=["humanoid", "quadruped", "bird", "fish", "other"])
+_parser.add_argument("--scale",          type=float, default=1.0)
+_args = _parser.parse_args(_argv)
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--input",          required=True)
-parser.add_argument("--output",         required=True)
-parser.add_argument("--character_type", default="humanoid",
-                    choices=["humanoid", "quadruped", "bird", "fish", "other"])
-parser.add_argument("--scale",          type=float, default=1.0)
-args = parser.parse_args(argv)
+INPUT_GLB      = _args.input
+OUTPUT_GLB     = _args.output
+CHARACTER_TYPE = _args.character_type
+CHAR_SCALE     = _args.scale
 
-INPUT_GLB      = args.input
-OUTPUT_GLB     = args.output
-CHARACTER_TYPE = args.character_type
-CHAR_SCALE     = args.scale
+ARP_ADDON_NAME = os.getenv("ARP_ADDON_NAME", "auto_rig_pro-master")
 
 print(f"[ARP] Input:  {INPUT_GLB}")
 print(f"[ARP] Output: {OUTPUT_GLB}")
 print(f"[ARP] Type:   {CHARACTER_TYPE}")
 
 
-def _quit(exit_code=0):
-    """Quit Blender — required when running without --background, else hangs."""
-    import sys as _sys
-    bpy.ops.wm.quit_blender()
-    _sys.exit(exit_code)   # fallback if quit_blender() doesn't fire immediately
+# ── Quit helper ───────────────────────────────────────────────────────────────
+_exit_code = [0]   # mutable box so atexit can read the final code
+
+def _quit(code: int = 0) -> None:
+    """Exit Blender cleanly. Without --background Blender would hang otherwise."""
+    _exit_code[0] = code
+    try:
+        bpy.ops.wm.quit_blender()
+    except Exception:
+        pass
+    sys.exit(code)   # fallback
 
 
-import atexit as _atexit
-import traceback as _traceback
-
-def _atexit_quit():
-    """Always quit Blender on exit — needed when running without --background."""
+def _atexit_quit() -> None:
+    """Guarantee Blender quits even if an unhandled exception escapes the timer."""
     try:
         bpy.ops.wm.quit_blender()
     except Exception:
         pass
 
-_atexit.register(_atexit_quit)
+
+atexit.register(_atexit_quit)
 
 
-# ── 0. Disable ARP if already active (from saved user prefs) ─────────────────
-# ARP was previously saved to user prefs (default_set=True) so Blender
-# auto-enables it at startup.  Its depsgraph_update_post handlers then fire
-# during GLB import, try bpy.context.space_data (None headless) → SIGSEGV.
-# Disable it now so its handlers are gone before we import; the prefs entry
-# it created at startup still exists so re-enabling later will succeed.
-print("[ARP] Disabling ARP handlers (if active from startup prefs)...")
+# ── Step 0: Disable ARP startup handlers (runs at import time, before UI) ────
+# ARP saves itself to user prefs (default_set=True) so Blender auto-enables it.
+# Its depsgraph_update_post handlers fire during GLB import and try to access
+# bpy.context.space_data — which is None while the UI is still starting up —
+# causing a SIGSEGV.  Disable the addon NOW (before we touch the scene) so the
+# handlers are removed.  We re-enable it after the timer fires.
+print("[ARP] Disabling ARP startup handlers ...")
 for _key in list(bpy.context.preferences.addons.keys()):
     if "auto_rig_pro" in _key:
         try:
             addon_utils.disable(_key, default_set=False)
-            print(f"[ARP]   disabled addon: {_key}")
+            print(f"[ARP]   disabled: {_key}")
         except Exception as _e:
             print(f"[ARP]   disable warning: {_e}")
 
 
-# ── 1. Clean scene ────────────────────────────────────────────────────────────
-print("[ARP] Clearing scene...")
-bpy.ops.object.select_all(action="SELECT")
-bpy.ops.object.delete(use_global=True)
-for block in bpy.data.meshes:
-    bpy.data.meshes.remove(block)
+# ── VIEW_3D context helper ────────────────────────────────────────────────────
+def _view3d_ctx() -> dict:
+    """
+    Return a dict suitable for bpy.context.temp_override(…) that points at the
+    VIEW_3D area + WINDOW region.  Belt-and-suspenders alongside the fluxbox WM:
+    even though the desktop session means ARP's operators usually have correct
+    context, we keep this wrapper to handle any edge cases in Blender 4.4 where
+    timer callbacks still have a null area.
+    """
+    wm     = bpy.context.window_manager
+    window = wm.windows[0]
 
-
-# ── 2. Import GLB ─────────────────────────────────────────────────────────────
-print(f"[ARP] Importing: {INPUT_GLB}")
-bpy.ops.import_scene.gltf(filepath=INPUT_GLB)
-
-mesh_objs = [o for o in bpy.context.scene.objects if o.type == "MESH"]
-if not mesh_objs:
-    raise RuntimeError(f"No mesh objects after importing {INPUT_GLB}")
-print(f"[ARP] Imported {len(mesh_objs)} mesh object(s): {[o.name for o in mesh_objs]}")
-
-
-# ── 3. Merge meshes ───────────────────────────────────────────────────────────
-bpy.ops.object.select_all(action="DESELECT")
-for obj in mesh_objs:
-    obj.select_set(True)
-bpy.context.view_layer.objects.active = mesh_objs[0]
-if len(mesh_objs) > 1:
-    bpy.ops.object.join()
-char_mesh = bpy.context.active_object
-char_mesh.name = "Character"
-
-
-# ── 4. Normalize scale + origin ───────────────────────────────────────────────
-bpy.ops.object.select_all(action="DESELECT")
-char_mesh.select_set(True)
-bpy.context.view_layer.objects.active = char_mesh
-bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
-
-bbox   = [char_mesh.matrix_world @ mathutils.Vector(v) for v in char_mesh.bound_box]
-height = max(v.z for v in bbox) - min(v.z for v in bbox)
-if height > 0.01 and CHAR_SCALE == 1.0:
-    sf = 2.0 / height
-    char_mesh.scale = (sf, sf, sf)
-    bpy.ops.object.transform_apply(scale=True)
-    print(f"[ARP] Auto-scaled: {height:.3f} → 2.0 (factor {sf:.3f})")
-elif CHAR_SCALE != 1.0:
-    char_mesh.scale = (CHAR_SCALE, CHAR_SCALE, CHAR_SCALE)
-    bpy.ops.object.transform_apply(scale=True)
-
-bbox  = [char_mesh.matrix_world @ mathutils.Vector(v) for v in char_mesh.bound_box]
-min_z = min(v.z for v in bbox)
-char_mesh.location.z -= min_z
-bpy.ops.object.transform_apply(location=True)
-
-
-# ── 5. Analyse mesh vertices to find extremity positions ─────────────────────
-print("[ARP] Analysing mesh to find body landmarks...")
-
-verts = [char_mesh.matrix_world @ v.co for v in char_mesh.data.vertices]
-
-H      = max(v.z for v in verts)
-min_z  = min(v.z for v in verts)
-max_x  = max(v.x for v in verts)
-min_x  = min(v.x for v in verts)
-max_y  = max(v.y for v in verts)
-min_y  = min(v.y for v in verts)
-cx     = (max_x + min_x) / 2
-cy     = (max_y + min_y) / 2
-W      = max_x - min_x
-print(f"[ARP] Bounds: H={H:.3f}  W={W:.3f}  X=[{min_x:.3f},{max_x:.3f}]  cy={cy:.3f}")
-
-# ── Find arm tip positions ────────────────────────────────────────────────
-# ARP fires Y-axis rays from the marker's (X, Z) position to find mesh depth.
-# So the marker must be at an (X, Z) where mesh geometry actually exists.
-# Strategy: find verts near the X extreme (within 15% of W from the tip),
-# excluding the head zone (Z > 82% of H) to avoid sphere head skewing Z.
-
-arm_zone_max_z = H * 0.82
-left_tip_verts  = [v for v in verts if v.x > max_x - W * 0.15 and v.z < arm_zone_max_z]
-right_tip_verts = [v for v in verts if v.x < min_x + W * 0.15 and v.z < arm_zone_max_z]
-
-if left_tip_verts:
-    # Use median Z of the cluster to avoid outliers
-    zs = sorted(v.z for v in left_tip_verts)
-    hand_l_z = zs[len(zs) // 2]
-    hand_l_x = max_x - W * 0.03   # slightly inside the surface
-else:
-    hand_l_z = H * 0.72
-    hand_l_x = max_x - W * 0.03
-
-if right_tip_verts:
-    zs = sorted(v.z for v in right_tip_verts)
-    hand_r_z = zs[len(zs) // 2]
-    hand_r_x = min_x + W * 0.03
-else:
-    hand_r_z = H * 0.72
-    hand_r_x = min_x + W * 0.03
-
-hand_z = (hand_l_z + hand_r_z) / 2
-print(f"[ARP] Arm tip: hand_z={hand_z:.3f}  left_x={hand_l_x:.3f}  right_x={hand_r_x:.3f}")
-
-# ── Find shoulder ──────────────────────────────────────────────────────────
-# Shoulder = upper body Z, at moderate X (where torso meets arm)
-upper_verts = [v for v in verts if v.z > H * 0.65 and v.z < arm_zone_max_z]
-if upper_verts:
-    # Find the widest X extent in upper body, placed slightly inward from max
-    shoulder_max_x = max(v.x for v in upper_verts)
-    shoulder_l_x   = cx + (shoulder_max_x - cx) * 0.70
-    # Z: centroid of upper-body wide verts
-    wide_up = [v for v in upper_verts if v.x > cx + (shoulder_max_x - cx) * 0.40]
-    shoulder_z = sum(v.z for v in wide_up) / len(wide_up) if wide_up else H * 0.78
-else:
-    shoulder_l_x = cx + W * 0.30
-    shoulder_z   = H * 0.78
-
-# ── Find feet ─────────────────────────────────────────────────────────────
-foot_verts = [v for v in verts if v.z < H * 0.18]
-if foot_verts:
-    foot_l_x = max((v.x for v in foot_verts if v.x > cx), default=cx + W * 0.08)
-    foot_r_x = min((v.x for v in foot_verts if v.x < cx), default=cx - W * 0.08)
-else:
-    foot_l_x =  cx + W * 0.08
-    foot_r_x =  cx - W * 0.08
-
-foot_z = H * 0.04
-
-# ── Root, neck, chin heights ──────────────────────────────────────────────
-root_z  = H * 0.52
-neck_z  = H * 0.84
-chin_z  = H * 0.88
-
-print(f"[ARP] Landmarks: shoulder=({shoulder_l_x:.3f},{shoulder_z:.3f}) "
-      f"hand=({hand_l_x:.3f},{hand_z:.3f}) foot_l={foot_l_x:.3f}")
-
-
-# ── 6. Enable ARP  (after mesh processed; prefs entry already exists from step 0) ──
-print("[ARP] Enabling Auto-Rig Pro...")
-ARP_ADDON_NAME = os.getenv("ARP_ADDON_NAME", "auto_rig_pro-master")
-addon_utils.enable(ARP_ADDON_NAME, default_set=False, persistent=False)
-bpy.context.view_layer.update()
-
-if not hasattr(bpy.ops, "arp"):
-    raise RuntimeError(f"ARP operators not found after enabling {ARP_ADDON_NAME!r}.")
-print("[ARP] ARP operators available.")
-
-
-# ── 6b. Use ARP's AI Guess Markers (replaces manual marker placement) ────────
-# This uses deep learning to detect landmarks on the character mesh.
-# xvfb-run provides the display for OpenGL screenshots + inference.
-print("[ARP] Calling ARP Guess Markers (AI-driven landmark detection)...")
-
-scn = bpy.context.scene
-scn.arp_smart_type     = "BODY"
-scn.arp_smart_sym      = True
-scn.arp_smart_fingers_engine = 'AI'
-scn.arp_fingers_to_detect = 0
-
-# Select Character mesh and make active
-bpy.ops.object.select_all(action="DESELECT")
-char_mesh.select_set(True)
-bpy.context.view_layer.objects.active = char_mesh
-
-# ── Helper: get VIEW_3D context override ────────────────────────────────────
-# ARP calls bpy.ops.view3d.* operators internally which require a VIEW_3D area
-# as the active context.  Even without --background, Python operator calls run
-# in the default (non-area) context.  We must use temp_override so that all
-# view3d operators called inside ARP can see context.space_data as SpaceView3D.
-def _get_view3d_override():
-    window = bpy.context.window_manager.windows[0]
     for area in window.screen.areas:
-        if area.type == 'VIEW_3D':
+        if area.type == "VIEW_3D":
             for region in area.regions:
-                if region.type == 'WINDOW':
+                if region.type == "WINDOW":
                     return {"window": window, "area": area, "region": region}
-    # Fallback: change first area to VIEW_3D temporarily
-    window = bpy.context.window_manager.windows[0]
+
+    # Fallback: convert the first available area to VIEW_3D temporarily.
+    # This should never happen when fluxbox is running, but is a safety net.
     area = window.screen.areas[0]
-    old_type = area.type
-    area.type = 'VIEW_3D'
-    region = next((r for r in area.regions if r.type == 'WINDOW'), area.regions[0])
-    print(f"[ARP] No VIEW_3D found — temporarily changed area[0] from {old_type} to VIEW_3D")
+    old_type  = area.type
+    area.type = "VIEW_3D"
+    region    = next((r for r in area.regions if r.type == "WINDOW"), area.regions[0])
+    print(f"[ARP] WARNING: no VIEW_3D found — converted area[0] from {old_type}")
     return {"window": window, "area": area, "region": region}
 
-_v3d_ctx = _get_view3d_override()
-print(f"[ARP] VIEW_3D override: area={_v3d_ctx['area'].type} region={_v3d_ctx['region'].type}")
 
-# ── 6b-i. get_selected_objects — duplicates mesh and renames to body_temp ────
-# This is the ARP "Smart" button in the UI. MUST be called before guess_markers
-# so that body_temp exists for _screenshot_char to render.
-# Wrapped in temp_override so ARP's internal view3d.view_axis calls have context.
-print("[ARP] Running get_selected_objects to prepare body_temp...")
-with bpy.context.temp_override(**_v3d_ctx):
-    result = bpy.ops.id.get_selected_objects("EXEC_DEFAULT")
-print(f"[ARP] get_selected_objects result: {result}")
-bpy.context.view_layer.update()
+# ── Main pipeline (runs inside the timer, after full Blender startup) ─────────
+def _run_pipeline() -> None:
+    """Full ARP rigging pipeline.  Called by the timer 1 second after startup."""
 
-# ── 6b-ii. Guess Markers via AI inference ────────────────────────────────────
-print("[ARP] Calling ARP Guess Markers (AI-driven landmark detection)...")
-# Re-set active to body_temp (get_selected_objects renames active to body_temp)
-body_temp = bpy.data.objects.get("body_temp")
-if body_temp:
+    print("[ARP] Timer fired — Blender startup complete, running pipeline ...")
+
+    try:
+        _pipeline()
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        print(f"[ARP] PIPELINE ERROR: {exc}")
+        _quit(1)
+
+    # Return None from the timer callback so it does NOT repeat
+    return None
+
+
+def _pipeline() -> None:
+
+    # ── 1. Clear default scene ────────────────────────────────────────────────
+    print("[ARP] Clearing scene ...")
+    bpy.ops.object.select_all(action="SELECT")
+    bpy.ops.object.delete(use_global=True)
+    for block in list(bpy.data.meshes):
+        bpy.data.meshes.remove(block)
+
+    # ── 2. Import GLB ─────────────────────────────────────────────────────────
+    print(f"[ARP] Importing: {INPUT_GLB}")
+    bpy.ops.import_scene.gltf(filepath=INPUT_GLB)
+
+    mesh_objs = [o for o in bpy.context.scene.objects if o.type == "MESH"]
+    if not mesh_objs:
+        raise RuntimeError(f"No mesh objects after importing {INPUT_GLB}")
+    print(f"[ARP] Imported {len(mesh_objs)} mesh(es): {[o.name for o in mesh_objs]}")
+
+    # ── 3. Merge into single mesh ─────────────────────────────────────────────
+    bpy.ops.object.select_all(action="DESELECT")
+    for obj in mesh_objs:
+        obj.select_set(True)
+    bpy.context.view_layer.objects.active = mesh_objs[0]
+    if len(mesh_objs) > 1:
+        bpy.ops.object.join()
+    char_mesh      = bpy.context.active_object
+    char_mesh.name = "Character"
+    print(f"[ARP] Character mesh: {char_mesh.name}  verts={len(char_mesh.data.vertices)}")
+
+    # ── 4. Normalise scale + apply all transforms ─────────────────────────────
+    bpy.ops.object.select_all(action="DESELECT")
+    char_mesh.select_set(True)
+    bpy.context.view_layer.objects.active = char_mesh
+    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+
+    bbox   = [char_mesh.matrix_world @ mathutils.Vector(v) for v in char_mesh.bound_box]
+    height = max(v.z for v in bbox) - min(v.z for v in bbox)
+
+    if height > 0.01 and CHAR_SCALE == 1.0:
+        sf = 2.0 / height
+        char_mesh.scale = (sf, sf, sf)
+        bpy.ops.object.transform_apply(scale=True)
+        print(f"[ARP] Auto-scaled: {height:.3f}m → 2.0m (×{sf:.3f})")
+    elif CHAR_SCALE != 1.0:
+        char_mesh.scale = (CHAR_SCALE,) * 3
+        bpy.ops.object.transform_apply(scale=True)
+
+    # Place origin at ground (min Z = 0)
+    bbox  = [char_mesh.matrix_world @ mathutils.Vector(v) for v in char_mesh.bound_box]
+    min_z = min(v.z for v in bbox)
+    char_mesh.location.z -= min_z
+    bpy.ops.object.transform_apply(location=True)
+
+    # ── 5. Enable ARP ─────────────────────────────────────────────────────────
+    print(f"[ARP] Enabling addon: {ARP_ADDON_NAME} ...")
+    addon_utils.enable(ARP_ADDON_NAME, default_set=False, persistent=False)
+    bpy.context.view_layer.update()
+
+    if not hasattr(bpy.ops, "arp"):
+        raise RuntimeError(f"ARP operators unavailable after enabling {ARP_ADDON_NAME!r}.")
+    print("[ARP] ARP operators ready.")
+
+    # ── 6. Configure ARP scene settings ───────────────────────────────────────
+    scn = bpy.context.scene
+    scn.arp_smart_type            = "BODY"
+    scn.arp_smart_sym             = True
+    scn.arp_smart_fingers_engine  = "AI"
+    scn.arp_fingers_to_detect     = 0      # auto-detect
+    print(f"[ARP] Scene: type=BODY  sym=True  fingers=AI")
+
+    # Select Character, make active
+    bpy.ops.object.select_all(action="DESELECT")
+    char_mesh.select_set(True)
+    bpy.context.view_layer.objects.active = char_mesh
+
+    # Get VIEW_3D context (belt-and-suspenders alongside fluxbox WM)
+    ctx = _view3d_ctx()
+    print(f"[ARP] VIEW_3D context: area={ctx['area'].type}  region={ctx['region'].type}")
+
+    # ── 7. id.get_selected_objects ────────────────────────────────────────────
+    # Creates body_temp (a duplicate of Character) which ARP uses as its working
+    # copy.  Must run before guess_markers.  Internally calls view3d.view_axis
+    # and view3d.view_selected — hence the temp_override.
+    print("[ARP] Running id.get_selected_objects ...")
+    with bpy.context.temp_override(**ctx):
+        result = bpy.ops.id.get_selected_objects("EXEC_DEFAULT")
+    print(f"[ARP] get_selected_objects → {result}")
+    bpy.context.view_layer.update()
+
+    body_temp = bpy.data.objects.get("body_temp")
+    if body_temp is None:
+        raise RuntimeError("body_temp not created by get_selected_objects — ARP failed")
+
     bpy.ops.object.select_all(action="DESELECT")
     body_temp.select_set(True)
     bpy.context.view_layer.objects.active = body_temp
-else:
-    raise RuntimeError("body_temp not found after get_selected_objects — ARP setup failed")
 
-try:
-    with bpy.context.temp_override(**_v3d_ctx):
+    # ── 8. arp.guess_markers (AI inference) ───────────────────────────────────
+    # Renders the mesh from front/side/top, runs ELF inference binaries, places
+    # landmark markers.  Needs VIEW_3D for render.opengl and camera view setup.
+    print("[ARP] Running arp.guess_markers (AI inference) ...")
+    with bpy.context.temp_override(**ctx):
         result = bpy.ops.arp.guess_markers()
-    print(f"[ARP] guess_markers result: {result}")
-except Exception as e:
-    print(f"[ARP] WARNING: guess_markers failed ({e})")
-    raise
+    print(f"[ARP] guess_markers → {result}")
+    bpy.context.view_layer.update()
 
-print("[ARP] Markers placed by AI inference.")
+    # ── 9. Patch display_popup_message before go_detect ───────────────────────
+    # go_detect calls display_popup_message to show a results dialog.
+    # Even with a real window this can cause issues in automated runs; patch it
+    # to a no-op (the armature is already built before the popup fires).
+    for mod_key in [f"{ARP_ADDON_NAME}.src.auto_rig",
+                    f"{ARP_ADDON_NAME}.src.auto_rig_smart"]:
+        mod = sys.modules.get(mod_key)
+        if mod and hasattr(mod, "display_popup_message"):
+            mod.display_popup_message = lambda *a, **kw: None
+            print(f"[ARP] Patched display_popup_message → no-op in {mod_key}")
+
+    # ── 10. id.go_detect ──────────────────────────────────────────────────────
+    # Reads the placed markers, generates the ARP armature.
+    body_temp = bpy.data.objects.get("body_temp") or char_mesh
+    bpy.ops.object.select_all(action="DESELECT")
+    body_temp.select_set(True)
+    bpy.context.view_layer.objects.active = body_temp
+    bpy.context.view_layer.update()
+
+    print("[ARP] Running id.go_detect ...")
+    with bpy.context.temp_override(**ctx):
+        result = bpy.ops.id.go_detect("EXEC_DEFAULT")
+    print(f"[ARP] go_detect → {result}")
+    bpy.context.view_layer.update()
+
+    # ── 11. Verify armature ───────────────────────────────────────────────────
+    armature_objs = [o for o in bpy.context.scene.objects if o.type == "ARMATURE"]
+    if not armature_objs:
+        raise RuntimeError(
+            "go_detect did not create an armature — detection failed. "
+            "Check Blender log for ARP warnings above."
+        )
+    armature = armature_objs[0]
+    print(f"[ARP] Armature created: {armature.name}")
+
+    # Return to OBJECT mode (go_detect can leave us in POSE mode)
+    try:
+        bpy.ops.object.mode_set(mode="OBJECT")
+    except Exception as e:
+        print(f"[ARP] mode_set warning (ignored): {e}")
+
+    # ── 12. Bind mesh to armature (voxel skinning) ────────────────────────────
+    # ARP's voxel binding is the highest-quality option and is stable headless.
+    # Falls back to ARMATURE_ENVELOPE if arp.bind_to_rig is unavailable.
+    bpy.ops.object.select_all(action="DESELECT")
+    char_mesh = bpy.data.objects.get("Character")
+    armature  = next((o for o in bpy.context.scene.objects if o.type == "ARMATURE"), None)
+
+    if char_mesh is None:
+        raise RuntimeError("Character mesh not found after go_detect")
+    if armature is None:
+        raise RuntimeError("No armature found after go_detect")
+
+    char_mesh.select_set(True)
+    armature.select_set(True)
+    bpy.context.view_layer.objects.active = armature
+
+    try:
+        scn.arp_voxelize = True
+        result = bpy.ops.arp.bind_to_rig()
+        print(f"[ARP] arp.bind_to_rig (voxel) → {result}")
+    except Exception as e:
+        print(f"[ARP] arp.bind_to_rig failed ({e}), falling back to ARMATURE_ENVELOPE")
+        bpy.ops.object.parent_set(type="ARMATURE_ENVELOPE")
+        print("[ARP] Bound via ARMATURE_ENVELOPE (fallback)")
+
+    print("[ARP] Mesh bound to armature OK.")
+
+    # ── 13. Export GLB ────────────────────────────────────────────────────────
+    out_dir = os.path.dirname(OUTPUT_GLB)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
+    print(f"[ARP] Exporting: {OUTPUT_GLB}")
+    bpy.ops.export_scene.gltf(
+        filepath        = OUTPUT_GLB,
+        export_format   = "GLB",
+        use_selection   = False,
+        export_apply    = True,
+        export_animations = True,
+        export_skins    = True,
+        export_morph    = True,
+        export_lights   = False,
+        export_cameras  = False,
+        export_yup      = True,
+    )
+
+    if not os.path.exists(OUTPUT_GLB):
+        raise RuntimeError(f"Export operator ran but GLB not found: {OUTPUT_GLB}")
+
+    size_mb = os.path.getsize(OUTPUT_GLB) / 1e6
+    print(f"[ARP] Export OK — {size_mb:.2f} MB")
+    print(f"[ARP] RIGGING_COMPLETE: {OUTPUT_GLB}")
+
+    _quit(0)
 
 
-# ── 8. Run ARP Smart detection ────────────────────────────────────────────────
-
-# HEADLESS PATCH: ARP calls display_popup_message() after go_detect to show a
-# success/warning dialog.  That function calls bpy.types.UILayout.popup_menu()
-# which needs bpy.context.window to be non-None (it's None in --background).
-# This causes SIGSEGV at the C level even though rigging itself succeeded.
-# Patching display_popup_message to a no-op before calling go_detect is safe:
-# the armature is already created by the time the popup fires.
-try:
-    import sys
-    _arp_auto_rig = sys.modules.get(f"{ARP_ADDON_NAME}.src.auto_rig")
-    if _arp_auto_rig:
-        _arp_auto_rig.display_popup_message = lambda *a, **kw: None
-        print(f"[ARP] Patched {ARP_ADDON_NAME}.src.auto_rig.display_popup_message → no-op")
-    else:
-        print(f"[ARP] {ARP_ADDON_NAME}.src.auto_rig not found in sys.modules")
-except Exception as _pe:
-    print(f"[ARP] Could not patch display_popup_message ({_pe}) — continuing anyway")
-
-# Also patch via the smart module path
-try:
-    _arp_smart_mod = sys.modules.get(f"{ARP_ADDON_NAME}.src.auto_rig_smart")
-    if _arp_smart_mod and hasattr(_arp_smart_mod, "display_popup_message"):
-        _arp_smart_mod.display_popup_message = lambda *a, **kw: None
-        print(f"[ARP] Patched {ARP_ADDON_NAME}.src.auto_rig_smart.display_popup_message → no-op")
-except Exception as _pe2:
-    pass  # not present in all ARP versions
-
-print("[ARP] Running ARP Smart detection (EXEC_DEFAULT)...")
-# After get_selected_objects, body_temp is the active object — use it
-body_temp = bpy.data.objects.get("body_temp") or char_mesh
-bpy.ops.object.select_all(action="DESELECT")
-body_temp.select_set(True)
-bpy.context.view_layer.objects.active = body_temp
-bpy.context.view_layer.update()
-
-with bpy.context.temp_override(**_v3d_ctx):
-    result = bpy.ops.id.go_detect("EXEC_DEFAULT")
-print(f"[ARP] go_detect result: {result}")
-bpy.context.view_layer.update()
-
-
-# ── 9. Verify armature ────────────────────────────────────────────────────────
-
-armature_objs = [o for o in bpy.context.scene.objects if o.type == "ARMATURE"]
-if not armature_objs:
-    raise RuntimeError("ARP Smart did not create an armature — detection failed. "
-                       "Check marker positions vs mesh geometry.")
-armature = armature_objs[0]
-print(f"[ARP] Armature: {armature.name}")
-
-
-# ── 10. Bind mesh to armature ─────────────────────────────────────────────────
-
-# ARMATURE_AUTO (bone-heat) segfaults on headless/cloud instances with complex
-# meshes.  Use ARMATURE_ENVELOPE (distance-based) which is stable everywhere.
-# ARP's own arp.bind operator is tried first when available.
-
-# go_detect leaves Blender in POSE mode — return to OBJECT mode
-try:
-    bpy.ops.object.mode_set(mode="OBJECT")
-except Exception as e:
-    print(f"[ARP] mode_set warning: {e}")
-
-bpy.ops.object.select_all(action="DESELECT")
-# Re-fetch objects in case references changed during ARP processing
-char_mesh = bpy.data.objects.get("Character")
-armature  = next((o for o in bpy.context.scene.objects if o.type == "ARMATURE"), None)
-
-if char_mesh is None:
-    raise RuntimeError("Character mesh not found after ARP detection")
-if armature is None:
-    raise RuntimeError("No armature found after ARP detection")
-
-char_mesh.select_set(True)
-armature.select_set(True)
-bpy.context.view_layer.objects.active = armature
-
-# Use ARP's voxel-based binding (best quality, stable in headless)
-try:
-    scn.arp_voxelize = True
-    result = bpy.ops.arp.bind_to_rig()
-    print(f"[ARP] arp.bind_to_rig result: {result}")
-except Exception as e:
-    print(f"[ARP] WARNING: arp.bind_to_rig failed ({e}), falling back to envelope")
-    bpy.ops.object.parent_set(type="ARMATURE_ENVELOPE")
-    print("[ARP] Bound with ARMATURE_ENVELOPE (fallback)")
-
-print("[ARP] Mesh bound OK.")
-
-
-# ── 11. Export GLB ────────────────────────────────────────────────────────────
-
-print(f"[ARP] Exporting to: {OUTPUT_GLB}")
-os.makedirs(os.path.dirname(OUTPUT_GLB) or ".", exist_ok=True)
-
-bpy.ops.export_scene.gltf(
-    filepath=OUTPUT_GLB,
-    export_format="GLB",
-    use_selection=False,
-    export_apply=True,
-    export_animations=True,
-    export_skins=True,
-    export_morph=True,
-    export_lights=False,
-    export_cameras=False,
-    export_yup=True,
-)
-
-if not os.path.exists(OUTPUT_GLB):
-    print(f"[ARP] ERROR: Export failed — output not found: {OUTPUT_GLB}")
-    _quit(1)
-
-size_mb = os.path.getsize(OUTPUT_GLB) / 1e6
-print(f"[ARP] Export OK: {OUTPUT_GLB} ({size_mb:.2f} MB)")
-print(f"[ARP] RIGGING_COMPLETE: {OUTPUT_GLB}")
-_quit(0)
+# ── Register timer — fires 1 second after Blender startup is complete ─────────
+# At this point Blender's default workspace is loaded, VIEW_3D area exists,
+# fluxbox has focused the window, and all regions are initialised.
+print("[ARP] Registering pipeline timer (1.0s) ...")
+bpy.app.timers.register(_run_pipeline, first_interval=1.0)
