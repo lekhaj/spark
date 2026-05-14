@@ -1,128 +1,88 @@
-#!/usr/bin/env python3
 """
-Flux Concept Generator (Sandbox)
-Generates the base 'human_ranger' concept using FLUX.1-schnell.
-Enforces pure white background and humanistic face from the source.
+flux_bhavesh_v1.py — SANDBOX EXPERIMENT COPY
+=============================================
+Original file : worker/flux_concept_generator.py
+Branch        : bhavesh-dev
+Purpose       : Generate a Flux concept image for a test "female_ranger"
+                character. Mirrors what the production flux_concept_generator
+                does, but with NO MongoDB, NO Redis — just generates and returns
+                the image so run_bhavesh_test.py can pass it to SD1.5.
+
+DO NOT MERGE THIS FILE TO MAIN.
 """
 
-import io
 import os
-import sys
-import time
-
-import boto3
-import pymongo
 import torch
-from diffusers import FluxPipeline
-from dotenv import load_dotenv
 from PIL import Image
 
+# Reduce VRAM fragmentation (same as production)
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-_ENV_PATH = os.path.join(os.path.dirname(__file__), "..", ".env")
-if os.path.exists(_ENV_PATH):
-    load_dotenv(_ENV_PATH)
 
-MONGO_URI   = os.getenv("MONGO_URI",   "mongodb://kartik:Kartikg421@18.207.13.85:27017")
-S3_BUCKET   = os.getenv("AWS_S3_BUCKET", "sparkassets-us")
-AWS_REGION  = os.getenv("AWS_REGION",  "us-east-1")
+FLUX_MODEL_ID = "black-forest-labs/FLUX.1-schnell"
 
-BIOME_ID    = "bhavesh_batch_001"
-MODEL_ID    = "black-forest-labs/FLUX.1-schnell"
-
-CHARACTERS = {
-    "human_ranger": {
-        "flux_prompt": (
-            "A female ranger standing in a perfect T-pose with both arms stretched out straight horizontally. "
-            "Full body shot, head to toe, completely showing feet. "
-            "She has a tight auburn bun and a photorealistic human face. "
-            "She is wearing a black zip jacket, combat pants, and simple black gloves. "
-            "The background is purely simple solid white. Nothing in the background, just fully simple white."
-        ),
-        "s3_key": f"images/{BIOME_ID}/human_ranger_flux_concept_v2.png",
-        "width": 768,
-        "height": 1024,
-        "num_inference_steps": 4,
-        "guidance_scale": 0.0,
-    }
+# ── Test character definition ─────────────────────────────────────────────────
+# Mirrors the structure in flux_concept_generator.py CHARACTERS dict.
+# Short, structural Flux prompt — same rules as production:
+#   Keep it SHORT + STRUCTURAL.
+#   Flux job = get DESIGN + ANATOMY right.
+#   SD1.5 + ControlNet will handle T-pose lock in Stage 1.
+CHARACTER = {
+    "name": "female_ranger",
+    "flux_prompt": (
+        "female ranger character, full body, front view, centered, "
+        "symmetrical, standing natural pose, "
+        "crimson red zip tactical jacket, black combat pants, dark boots, black gloves, "
+        "auburn hair, realistic human face, neutral expression, "
+        "game-ready character design, "
+        "white background, flat lighting, head to toe"
+    ),
+    "width":               512,
+    "height":              768,    # taller canvas for full body
+    "num_inference_steps": 4,      # Schnell optimized for 1-4 steps
+    "guidance_scale":      0.0,    # Schnell is distilled — always 0.0
 }
 
-def get_s3_client():
-    return boto3.client("s3", region_name=AWS_REGION)
 
-def upload_image_to_s3(image, s3_key, s3_client):
-    buf = io.BytesIO()
-    image.save(buf, format="PNG")
-    buf.seek(0)
-    s3_client.put_object(
-        Bucket=S3_BUCKET,
-        Key=s3_key,
-        Body=buf,
-        ContentType="image/png",
+def load_flux() -> object:
+    """
+    Load FLUX.1-schnell pipeline onto GPU using sequential CPU offload.
+    Same loading strategy as production flux_concept_generator.py.
+    Returns the loaded pipeline.
+    """
+    from diffusers import FluxPipeline
+
+    print(f"[Flux] Loading {FLUX_MODEL_ID} ...")
+    print("  Using enable_sequential_cpu_offload() — same as production.")
+    pipe = FluxPipeline.from_pretrained(
+        FLUX_MODEL_ID,
+        torch_dtype=torch.bfloat16,
     )
-    url = f"https://{S3_BUCKET}.s3.{AWS_REGION}.amazonaws.com/{s3_key}"
-    print(f"  [S3] Uploaded → {url}")
-    return url, s3_key
+    pipe.enable_sequential_cpu_offload()  # moves each sub-module to GPU one at a time
+    pipe.vae.enable_slicing()             # prevents VRAM spikes on large images
+    print("[Flux] Pipeline ready.\n")
+    return pipe
 
-def update_mongodb(db, char_name, s3_key, image_url, prompt):
-    now = time.time()
-    update_path = f"possible_structures.characters.{char_name}"
-    db.biomes.update_one(
-        {"_id": BIOME_ID},
-        {"$set": {
-            f"{update_path}.flux_concept.status":       "complete",
-            f"{update_path}.flux_concept.image_key":    s3_key,
-            f"{update_path}.flux_concept.image_url":    image_url,
-            f"{update_path}.flux_concept.prompt":       prompt,
-            f"{update_path}.flux_concept.generated_at": now,
-            f"{update_path}.images.flux_concept":       s3_key,
-        }},
-        upsert=True,
-    )
-    print(f"  [MongoDB] Updated {char_name}.flux_concept")
 
-def main():
-    print("=" * 70)
-    print(f"  Flux Concept Generator (Sandbox) — biome: {BIOME_ID}")
-    print("=" * 70)
+def generate_concept(pipe) -> Image.Image:
+    """
+    Run Flux inference for the test character.
+    Returns the generated PIL Image.
+    Mirrors the generation loop in production flux_concept_generator.main().
+    """
+    cfg = CHARACTER
+    print(f"[Flux] Generating concept for: {cfg['name']}")
+    print(f"  Size  : {cfg['width']} x {cfg['height']}")
+    print(f"  Steps : {cfg['num_inference_steps']}")
+    print(f"  Prompt: {cfg['flux_prompt'][:120]}...")
 
-    if not torch.cuda.is_available():
-        print("[ERROR] No CUDA GPU found.")
-        sys.exit(1)
-
-    print("[Models] Loading Flux.1-schnell in bfloat16 with STRICT VRAM management...")
-    pipe = FluxPipeline.from_pretrained(MODEL_ID, torch_dtype=torch.bfloat16)
-    pipe.enable_sequential_cpu_offload() # Extremely important to prevent OOM
-    pipe.vae.enable_slicing()
-
-    s3 = get_s3_client()
-    try:
-        db = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)["World_builder"]
-        db.command("ping")
-        print("[MongoDB] Connected ✓")
-    except Exception as e:
-        print(f"[MongoDB] WARNING: Cannot connect — {e}")
-        db = None
-
-    for char_name, char in CHARACTERS.items():
-        print(f"\n  Generating concept for: {char_name}")
-        prompt = char["flux_prompt"]
-        
-        t0 = time.time()
-        with torch.no_grad():
-            image = pipe(
-                prompt=prompt,
-                width=char["width"],
-                height=char["height"],
-                num_inference_steps=char["num_inference_steps"],
-                guidance_scale=char["guidance_scale"],
-            ).images[0]
-        print(f"  ✓ Generated in {time.time()-t0:.1f}s")
-        
-        url, key = upload_image_to_s3(image, char["s3_key"], s3)
-        if db:
-            update_mongodb(db, char_name, key, url, prompt)
-
-    print("\n  ✅ DONE. You can now run sd15_bhavesh_v1.py")
-
-if __name__ == "__main__":
-    main()
+    with torch.inference_mode():
+        out = pipe(
+            prompt=cfg["flux_prompt"],
+            width=cfg["width"],
+            height=cfg["height"],
+            num_inference_steps=cfg["num_inference_steps"],
+            guidance_scale=cfg["guidance_scale"],
+        )
+    image = out.images[0]
+    print(f"[Flux] Concept image generated. Size: {image.size}\n")
+    return image
