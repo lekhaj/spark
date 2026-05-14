@@ -100,6 +100,7 @@ def run_rig(
     )
 
     cmd = [
+        "xvfb-run", "-a", "-s", "-screen 0 1280x720x24",
         BLENDER_PATH, "--background",
         "--python", ARP_SCRIPT_PATH,
         "--",

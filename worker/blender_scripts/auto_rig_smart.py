@@ -208,45 +208,30 @@ if not hasattr(bpy.ops, "arp"):
 print("[ARP] ARP operators available.")
 
 
-# ── 7. Place ARP Smart body markers (OUTSIDE mesh surface) ────────────────
-# Markers must be outside the mesh so ARP's raycast can hit the surface.
-# We place them just beyond the extremity points found above.
-print("[ARP] Placing Smart markers...")
+# ── 6b. Use ARP's AI Guess Markers (replaces manual marker placement) ────────
+# This uses deep learning to detect landmarks on the character mesh.
+# xvfb-run provides the display for OpenGL screenshots + inference.
+print("[ARP] Calling ARP Guess Markers (AI-driven landmark detection)...")
 
 scn = bpy.context.scene
 scn.arp_body_name      = "Character"
 scn.arp_smart_type     = "BODY"
-scn.arp_smart_sym      = True    # mirror: only need left-side markers
-scn.arp_fingers_enable = False   # skip AI finger detection (needs viewport)
+scn.arp_smart_sym      = True
+scn.arp_smart_fingers_engine = 'AI'
 scn.arp_fingers_to_detect = 0
 
-def make_marker(name, x, y, z):
-    bpy.ops.object.empty_add(type="PLAIN_AXES", radius=0.04, location=(x, y, z))
-    obj = bpy.context.active_object
-    obj.name = name
-    obj.show_in_front = True
-    container = bpy.data.objects.get("arp_markers")
-    if container:
-        obj.parent = container
-    return obj
+char_mesh.select_set(True)
+bpy.context.view_layer.objects.active = char_mesh
 
-# Create arp_markers parent container
-bpy.ops.object.empty_add(type="PLAIN_AXES", radius=0.01, location=(0, 0, 0))
-arp_markers = bpy.context.active_object
-arp_markers.name = "arp_markers"
+try:
+    result = bpy.ops.arp.guess_markers()
+    print(f"[ARP] guess_markers result: {result}")
+except Exception as e:
+    print(f"[ARP] WARNING: guess_markers failed ({e})")
+    print(f"[ARP] This may indicate AI inference files are missing or unsupported mesh")
+    raise
 
-# Markers at mesh-internal positions (ARP fires Y-rays from marker X,Z to find depth)
-make_marker("root_loc",      cx,           cy,  root_z)
-make_marker("neck_loc",      cx,           cy,  neck_z)
-make_marker("chin_loc",      cx,           cy,  chin_z)
-make_marker("shoulder_loc",  shoulder_l_x, cy,  shoulder_z)
-make_marker("hand_loc",      hand_l_x,     cy,  hand_z)
-make_marker("foot_loc",      foot_l_x,     cy,  foot_z)
-
-print("[ARP] Markers placed.")
-for obj in bpy.data.objects:
-    if obj.name.endswith("_loc") and not obj.name.endswith("_sym"):
-        print(f"  {obj.name}: {obj.location.x:.3f}, {obj.location.z:.3f}")
+print("[ARP] Markers placed by AI inference.")
 
 
 # ── 8. Run ARP Smart detection ────────────────────────────────────────────────
@@ -323,20 +308,15 @@ char_mesh.select_set(True)
 armature.select_set(True)
 bpy.context.view_layer.objects.active = armature
 
-# Try ARP's native bind first (preserves IK/FK setup); fall back to envelope
-bound = False
-if hasattr(bpy.ops, "arp") and hasattr(bpy.ops.arp, "bind"):
-    try:
-        result = bpy.ops.arp.bind("EXEC_DEFAULT")
-        print(f"[ARP] arp.bind result: {result}")
-        bound = True
-    except Exception as e:
-        print(f"[ARP] arp.bind failed ({e}), falling back to envelope")
-
-if not bound:
-    # ARMATURE_ENVELOPE: stable on headless, no bone-heat graph traversal
+# Use ARP's voxel-based binding (best quality, stable in headless)
+try:
+    scn.arp_voxelize = True
+    result = bpy.ops.arp.bind_to_rig()
+    print(f"[ARP] arp.bind_to_rig result: {result}")
+except Exception as e:
+    print(f"[ARP] WARNING: arp.bind_to_rig failed ({e}), falling back to envelope")
     bpy.ops.object.parent_set(type="ARMATURE_ENVELOPE")
-    print("[ARP] Bound with ARMATURE_ENVELOPE (headless-safe fallback)")
+    print("[ARP] Bound with ARMATURE_ENVELOPE (fallback)")
 
 print("[ARP] Mesh bound OK.")
 
