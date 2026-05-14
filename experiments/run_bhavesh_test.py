@@ -35,13 +35,11 @@ def main():
     pipes = load_sd("Lykon/DreamShaper")
     print("Models loaded!\n")
 
-    # WHITE init image keeps background white during generation
-    # ip_image = None because we have no real Flux character in this test.
-    # If we pass the white square as IP-Adapter reference, the model treats
-    # "white" as the character's identity → generates white clothes on white bg.
-    print("[2/4] Creating WHITE init image (no IP-Adapter in test mode)...")
-    init_img = Image.new("RGB", (512, 512), (255, 255, 255))  # white bg
-    ip_image = None  # ← KEY FIX: disables IP-Adapter (no real Flux image in test)
+    print("[2/4] Creating WHITE init image and dummy IP-Adapter image...")
+    init_img = Image.new("RGB", (512, 512), (255, 255, 255))  # white bg for img2img base
+    # IP-Adapter requires an image or it crashes. In production this is the Flux image.
+    # We use a neutral grey mock image here just to satisfy the pipeline.
+    ip_image = Image.new("RGB", (512, 512), (128, 128, 128))
 
     prompt = (
         "full body female ranger, T-pose, arms extended horizontally, "
