@@ -35,11 +35,13 @@ def main():
     pipes = load_sd("Lykon/DreamShaper")
     print("Models loaded!\n")
 
-    # 2. WHITE init image — key fix for grey background and full body
-    # Grey was bleeding through at denoise=0.82, causing grey bg and cropped body
-    print("[2/4] Creating WHITE init image...")
-    init_img = Image.new("RGB", (512, 512), (255, 255, 255))  # ← WHITE not grey
-    ip_image  = init_img.copy()
+    # WHITE init image keeps background white during generation
+    # ip_image = None because we have no real Flux character in this test.
+    # If we pass the white square as IP-Adapter reference, the model treats
+    # "white" as the character's identity → generates white clothes on white bg.
+    print("[2/4] Creating WHITE init image (no IP-Adapter in test mode)...")
+    init_img = Image.new("RGB", (512, 512), (255, 255, 255))  # white bg
+    ip_image = None  # ← KEY FIX: disables IP-Adapter (no real Flux image in test)
 
     prompt = (
         "full body female ranger, T-pose, arms extended horizontally, "

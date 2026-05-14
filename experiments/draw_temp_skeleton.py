@@ -74,15 +74,15 @@ TPOSE_KPS = {
      6: (414, 124),   # LElbow    ← same Y=124
      7: (487, 124),   # LWrist    ← pulled inward (was X=508 at edge → cylinder hands)
 
-    # RIGHT LEG
-     8: (228, 309),   # RHip
-     9: (221, 403),   # RKnee
-    10: (206, 472),   # RAnkle
+    # RIGHT LEG — all X=225 → perfectly straight down
+     8: (225, 309),   # RHip
+     9: (225, 403),   # RKnee   ← same X as hip
+    10: (225, 472),   # RAnkle  ← same X as hip
 
-    # LEFT LEG
-    11: (278, 309),   # LHip
-    12: (281, 403),   # LKnee
-    13: (300, 472),   # LAnkle
+    # LEFT LEG — all X=280 → perfectly straight down
+    11: (280, 309),   # LHip
+    12: (280, 403),   # LKnee   ← same X as hip
+    13: (280, 472),   # LAnkle  ← same X as hip
 }
 
 img  = Image.new("RGB", (IMG_SIZE, IMG_SIZE), (0, 0, 0))
