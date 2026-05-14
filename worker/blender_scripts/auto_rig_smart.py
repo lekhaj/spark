@@ -391,6 +391,7 @@ def _pipeline() -> None:
         export_lights   = False,
         export_cameras  = False,
         export_yup      = True,
+        export_def_bones = True,
     )
 
     if not os.path.exists(OUTPUT_GLB):
