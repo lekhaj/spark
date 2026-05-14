@@ -65,9 +65,11 @@ def load_flux_production():
         "black-forest-labs/FLUX.1-schnell",
         torch_dtype=torch.bfloat16,
     )
-    # CHANGED: Sequential is for 8GB GPUs and takes 15 mins.
-    # L4 has 24GB VRAM, so model_cpu_offload is much faster (~15 secs) and won't hang.
-    pipe.enable_model_cpu_offload()
+    # Flux is ~24GB in bfloat16, L4 GPU only has 22GB VRAM.
+    # sequential_cpu_offload is the ONLY option — it moves one layer at a time.
+    # This is slow (~15 min) but it is correct and will not OOM.
+    # model_cpu_offload was tried and caused CUDA OOM crash.
+    pipe.enable_sequential_cpu_offload()
     pipe.vae.enable_slicing()
     return pipe
 
