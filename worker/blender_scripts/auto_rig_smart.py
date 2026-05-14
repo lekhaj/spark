@@ -214,21 +214,40 @@ print("[ARP] ARP operators available.")
 print("[ARP] Calling ARP Guess Markers (AI-driven landmark detection)...")
 
 scn = bpy.context.scene
-scn.arp_body_name      = "Character"
 scn.arp_smart_type     = "BODY"
 scn.arp_smart_sym      = True
 scn.arp_smart_fingers_engine = 'AI'
 scn.arp_fingers_to_detect = 0
 
+# Select Character mesh and make active
+bpy.ops.object.select_all(action="DESELECT")
 char_mesh.select_set(True)
 bpy.context.view_layer.objects.active = char_mesh
+
+# ── 6b-i. get_selected_objects — duplicates mesh and renames to body_temp ────
+# This is the ARP "Smart" button in the UI. MUST be called before guess_markers
+# so that body_temp exists for _screenshot_char to render.
+print("[ARP] Running get_selected_objects to prepare body_temp...")
+result = bpy.ops.id.get_selected_objects("EXEC_DEFAULT")
+print(f"[ARP] get_selected_objects result: {result}")
+bpy.context.view_layer.update()
+
+# ── 6b-ii. Guess Markers via AI inference ────────────────────────────────────
+print("[ARP] Calling ARP Guess Markers (AI-driven landmark detection)...")
+# Re-set active to body_temp (get_selected_objects renames active to body_temp)
+body_temp = bpy.data.objects.get("body_temp")
+if body_temp:
+    bpy.ops.object.select_all(action="DESELECT")
+    body_temp.select_set(True)
+    bpy.context.view_layer.objects.active = body_temp
+else:
+    raise RuntimeError("body_temp not found after get_selected_objects — ARP setup failed")
 
 try:
     result = bpy.ops.arp.guess_markers()
     print(f"[ARP] guess_markers result: {result}")
 except Exception as e:
     print(f"[ARP] WARNING: guess_markers failed ({e})")
-    print(f"[ARP] This may indicate AI inference files are missing or unsupported mesh")
     raise
 
 print("[ARP] Markers placed by AI inference.")
@@ -263,8 +282,11 @@ except Exception as _pe2:
     pass  # not present in all ARP versions
 
 print("[ARP] Running ARP Smart detection (EXEC_DEFAULT)...")
-bpy.context.view_layer.objects.active = char_mesh
-char_mesh.select_set(True)
+# After get_selected_objects, body_temp is the active object — use it
+body_temp = bpy.data.objects.get("body_temp") or char_mesh
+bpy.ops.object.select_all(action="DESELECT")
+body_temp.select_set(True)
+bpy.context.view_layer.objects.active = body_temp
 bpy.context.view_layer.update()
 
 result = bpy.ops.id.go_detect("EXEC_DEFAULT")
