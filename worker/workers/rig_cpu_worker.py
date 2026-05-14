@@ -109,7 +109,10 @@ class RigCPUWorker(BaseWorker):
             )
             run_rig(input_glb, output_glb, params)
 
-            s3_key = f"manual_gen/{session_id}/rig_{char_type}.glb"
+            char_slug = (task.get("char_name") or "unknown").replace(" ", "_").lower()
+            major     = task.get("major", 1)
+            minor     = task.get("minor", 0)
+            s3_key    = f"chars/{char_slug}/v{major}.{minor}/{char_slug}_{major}_{minor}_rigged.glb"
             self.upload_file(output_glb, s3_key, "model/gltf-binary")
             url = self.s3_public_url(s3_key)
 

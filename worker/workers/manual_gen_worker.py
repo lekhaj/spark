@@ -70,6 +70,17 @@ logger = logging.getLogger("ManualGenWorker")
 # Nothing else in this file needs to change.
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _char_s3_key(task: dict, stage: str, ext: str) -> str:
+    """Build a unique, human-readable S3 key.
+    Path:  chars/{char}/v{major}.{minor}/{char}_{major}_{minor}_{stage}.{ext}
+    """
+    char = (task.get("char_name") or "unknown").replace(" ", "_").lower()
+    major = task.get("major", 1)
+    minor = task.get("minor", 0)
+    filename = f"{char}_{major}_{minor}_{stage}.{ext}"
+    return f"chars/{char}/v{major}.{minor}/{filename}"
+
+
 STAGE_REGISTRY: dict[str, tuple[str | None, str]] = {
     # stage name          model family   handler method name
     "flux":               ("flux",       "_handle_flux"),
@@ -241,7 +252,7 @@ class ManualGenWorker(BaseWorker):
         params     = task.get("params") or {}
 
         img    = run_flux(self._mgr.get("flux"), prompt, params)
-        s3_key = f"manual_gen/{session_id}/{stage}.png"
+        s3_key = _char_s3_key(task, stage, "png")
         url    = self._upload_image(img, s3_key)
         push_done(r, session_id, stage, url, s3_key)
         logger.info(f"[flux] → {url}")
@@ -257,7 +268,7 @@ class ManualGenWorker(BaseWorker):
 
         init_img = self._download_image(input_image_url)
         img      = run_stage1(self._mgr.get("sd"), init_img, prompt, negative, params)
-        s3_key   = f"manual_gen/{session_id}/{stage}.png"
+        s3_key   = _char_s3_key(task, stage, "png")
         url      = self._upload_image(img, s3_key)
         push_done(r, session_id, stage, url, s3_key)
         logger.info(f"[sd_stage1] → {url}")
@@ -273,7 +284,7 @@ class ManualGenWorker(BaseWorker):
 
         init_img = self._download_image(input_image_url)
         img      = run_stage2(self._mgr.get("sd"), init_img, prompt, negative, params)
-        s3_key   = f"manual_gen/{session_id}/{stage}.png"
+        s3_key   = _char_s3_key(task, stage, "png")
         url      = self._upload_image(img, s3_key)
         push_done(r, session_id, stage, url, s3_key)
         logger.info(f"[sd_stage2] → {url}")
@@ -289,7 +300,7 @@ class ManualGenWorker(BaseWorker):
 
         init_img = self._download_image(input_image_url)
         img      = run_multiview(self._mgr.get("sd"), init_img, prompt, negative, params)
-        s3_key   = f"manual_gen/{session_id}/{stage}.png"
+        s3_key   = _char_s3_key(task, stage, "png")
         url      = self._upload_image(img, s3_key)
         push_done(r, session_id, stage, url, s3_key)
         logger.info(f"[{stage}] → {url}")
@@ -328,7 +339,7 @@ class ManualGenWorker(BaseWorker):
             self._mgr.get("trellis"), front_img, params,
             side_image=side_img, back_image=back_img,
         )
-        s3_key = f"manual_gen/{session_id}/trellis.glb"
+        s3_key = _char_s3_key(task, "trellis", "glb")
         url    = self._upload_bytes(glb_bytes, s3_key, "model/gltf-binary")
         push_glb_done(r, session_id, stage, url, s3_key)
         logger.info(f"[trellis] → {url}")
