@@ -349,14 +349,24 @@ def _pipeline() -> None:
     armature.select_set(True)
     bpy.context.view_layer.objects.active = armature
 
+    # Use ARP's built-in PSEUDO_VOXELS engine: volume-based skinning that needs
+    # no external addons and is more consistent than Heat Maps on complex meshes.
+    # Call with EXEC_DEFAULT to skip the interactive dialog/warnings popup.
+    scn.arp_bind_engine = "PSEUDO_VOXELS"
     try:
-        scn.arp_voxelize = True
-        result = bpy.ops.arp.bind_to_rig()
-        print(f"[ARP] arp.bind_to_rig (voxel) → {result}")
+        result = bpy.ops.arp.bind_to_rig("EXEC_DEFAULT")
+        print(f"[ARP] arp.bind_to_rig PSEUDO_VOXELS → {result}")
     except Exception as e:
-        print(f"[ARP] arp.bind_to_rig failed ({e}), falling back to ARMATURE_ENVELOPE")
-        bpy.ops.object.parent_set(type="ARMATURE_ENVELOPE")
-        print("[ARP] Bound via ARMATURE_ENVELOPE (fallback)")
+        print(f"[ARP] arp.bind_to_rig PSEUDO_VOXELS failed ({e}), trying HEAT_MAP ...")
+        try:
+            scn.arp_bind_engine = "HEAT_MAP"
+            result = bpy.ops.arp.bind_to_rig("EXEC_DEFAULT")
+            print(f"[ARP] arp.bind_to_rig HEAT_MAP → {result}")
+        except Exception as e2:
+            print(f"[ARP] arp.bind_to_rig HEAT_MAP also failed ({e2}), "
+                  f"falling back to basic ARMATURE_ENVELOPE")
+            bpy.ops.object.parent_set(type="ARMATURE_ENVELOPE")
+            print("[ARP] Bound via ARMATURE_ENVELOPE (last-resort fallback)")
 
     print("[ARP] Mesh bound to armature OK.")
 
