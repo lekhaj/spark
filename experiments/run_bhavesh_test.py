@@ -73,21 +73,15 @@ S3_KEY_STAGE2 = f"images/bhavesh_experiments/{CHARACTER_NAME}_stage2_tpose.png"
 # ── SD1.5 prompts ─────────────────────────────────────────────────────────────
 # POSE + BACKGROUND only — character identity comes from IP-Adapter (the Flux image)
 SD_PROMPT = (
-    "full body character, T-pose, arms extended horizontally, "
-    "legs straight and together, head to toe, feet fully visible, "
-    "pure white background, flat lighting, no shadows"
+    "full body, T-pose, arms extended horizontally, legs straight, "
+    "feet fully visible, white background, flat lighting"
 )
 
-# Negatives — includes explicit ghost-hand terms from previous fix
+# Negatives — simplified to stay well under 77 tokens, prioritizing ghost hands
 SD_NEGATIVE = (
-    "extra hands, multiple hands, ghost hands, floating hands, "
-    "hands on chest, hands on torso, arms in front of body, "
-    "four arms, overlapping arms, duplicate hands, extra arms, "
-    "cropped body, cut off, missing feet, missing legs, "
-    "bent arms, raised arms, dynamic pose, "
-    "background pattern, mandala, geometric pattern, watermark, "
-    "grey background, dark background, shadows, gradient, floor, "
-    "anime, cartoon, deformed limbs, extra limbs, mutated hands"
+    "extra hands, ghost hands, four arms, overlapping arms, duplicate hands, "
+    "cropped, missing feet, bent arms, dynamic pose, "
+    "pattern, shadows, floor, cartoon, deformed limbs, mutated hands"
 )
 
 

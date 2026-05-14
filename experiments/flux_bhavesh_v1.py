@@ -28,15 +28,11 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 CHARACTERS = {
 
     # Original test character — gray hanfu, WIDE sleeves
-    # This is what was causing the ghost hand issue
     "cultivation_youth": {
         "flux_prompt": (
-            "young male cultivator, T-pose, arms extended horizontally, legs straight, "
-            "orthographic front view, symmetrical, centered, "
+            "young male cultivator, T-pose, orthographic front view, "
             "plain gray hanfu robe, rope belt, lean build, topknot hair, "
-            "simple clothing, clean silhouette, minimal detail, "
-            "game-ready character design, "
-            "white background, flat lighting, full body, head to toe"
+            "white background, flat lighting, full body"
         ),
         "width":               768,
         "height":              1024,
@@ -45,16 +41,11 @@ CHARACTERS = {
     },
 
     # NEW test character — fitted plate armor, NO wide sleeves
-    # Purpose: Test if ghost-hand/identity-loss is hanfu-specific or general SD1.5 issue
     "iron_soldier": {
         "flux_prompt": (
-            "young male soldier, T-pose, arms extended horizontally, legs straight, "
-            "orthographic front view, symmetrical, centered, "
-            "fitted dark iron plate armor, pauldrons, chest plate, gauntlets, "
-            "dark red short cape, sturdy boots, short dark hair, determined expression, "
-            "tight-fitting armor with no loose fabric, clean silhouette, "
-            "game-ready character design, "
-            "white background, flat lighting, full body, head to toe"
+            "young male soldier, T-pose, orthographic front view, "
+            "fitted dark iron plate armor, pauldrons, gauntlets, dark red short cape, "
+            "sturdy boots, short dark hair, white background, flat lighting, full body"
         ),
         "width":               768,
         "height":              1024,
