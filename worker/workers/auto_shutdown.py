@@ -125,6 +125,27 @@ class AutoShutdown:
         except Exception as e:
             logger.error(f"Failed to stop instance: {e}")
 
+    def _is_enabled(self, r) -> bool:
+        """Check Redis flag — returns True if autoshutdown is enabled (default: True)."""
+        try:
+            val = r.get("autoshutdown:enabled")
+            if val is None:
+                return True   # no flag set → default on
+            return val.decode() == "1" if isinstance(val, bytes) else str(val) == "1"
+        except Exception:
+            return True   # fail-safe: default on if Redis error
+
+    def _get_idle_threshold(self, r) -> int:
+        """Read idle threshold from Redis, falling back to env var default."""
+        try:
+            val = r.get("autoshutdown:idle_minutes")
+            if val is not None:
+                v = val.decode() if isinstance(val, bytes) else str(val)
+                return int(v)
+        except Exception:
+            pass
+        return IDLE_THRESHOLD_MIN
+
     def _monitor_loop(self):
         idle_since: float | None = None
 
@@ -136,9 +157,17 @@ class AutoShutdown:
                 idle_since = None   # can't determine — reset timer
                 continue
 
+            if not self._is_enabled(r):
+                if idle_since is not None:
+                    logger.info("AutoShutdown disabled via Redis flag — idle timer cleared")
+                idle_since = None
+                continue
+
             if self._active:
                 idle_since = None
                 continue
+
+            threshold = self._get_idle_threshold(r)
 
             if self._all_queues_empty(r):
                 if idle_since is None:
@@ -148,9 +177,9 @@ class AutoShutdown:
                     idle_seconds = time.time() - idle_since
                     idle_minutes = idle_seconds / 60
                     logger.info(
-                        f"Queues still empty — idle {idle_minutes:.1f}/{IDLE_THRESHOLD_MIN} min"
+                        f"Queues still empty — idle {idle_minutes:.1f}/{threshold} min"
                     )
-                    if idle_minutes >= IDLE_THRESHOLD_MIN:
+                    if idle_minutes >= threshold:
                         self._stop_instance()
                         break   # instance is stopping; exit thread
             else:

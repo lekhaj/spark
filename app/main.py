@@ -388,3 +388,25 @@ async def stop_orchestrator_endpoint():
     except Exception as e:
         logger.error(f"Error stopping orchestrator: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to stop orchestrator: {e}")
+
+
+@app.get("/orchestrate/autoshutdown")
+async def get_autoshutdown():
+    """Get current autoshutdown state (enabled + idle_minutes)."""
+    from app.services.orchestrator_service import orchestrator
+    try:
+        return orchestrator.get_autoshutdown_state()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/orchestrate/autoshutdown")
+async def set_autoshutdown(enabled: bool, idle_minutes: Optional[int] = None):
+    """Toggle GPU autoshutdown. When enabling, idle_minutes sets the idle threshold."""
+    from app.services.orchestrator_service import orchestrator
+    try:
+        orchestrator.set_autoshutdown(enabled, idle_minutes)
+        state = orchestrator.get_autoshutdown_state()
+        return {"status": "success", **state}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

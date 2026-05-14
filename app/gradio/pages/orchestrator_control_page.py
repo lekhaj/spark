@@ -6,8 +6,8 @@ import time
 
 API_BASE_URL = "http://localhost:8000"
 
+
 def get_orchestrator_status():
-    """Get orchestrator status from /orchestrate/status"""
     try:
         response = requests.get(f"{API_BASE_URL}/orchestrate/status", timeout=5)
         if response.status_code == 200:
@@ -16,13 +16,13 @@ def get_orchestrator_status():
     except Exception as e:
         return {"auto_mode": False, "error": str(e)}
 
+
 def set_orchestrator_mode(auto_mode: bool):
-    """Set orchestrator mode via /orchestrate/mode"""
     try:
         response = requests.post(
             f"{API_BASE_URL}/orchestrate/mode",
             params={"auto_mode": auto_mode},
-            timeout=5
+            timeout=5,
         )
         if response.status_code == 200:
             return response.json()
@@ -30,42 +30,86 @@ def set_orchestrator_mode(auto_mode: bool):
     except Exception as e:
         return {"error": str(e)}
 
-def create_orchestrator_ui():
-    """Create a minimal orchestrator control UI"""
-    with gr.Blocks() as control_panel:
-        gr.Markdown("# ⚙️ Orchestrator Control")
 
-        # Status Display
+def get_autoshutdown_state():
+    try:
+        response = requests.get(f"{API_BASE_URL}/orchestrate/autoshutdown", timeout=5)
+        if response.status_code == 200:
+            return response.json()
+        return {"enabled": True, "idle_minutes": 60, "error": f"HTTP {response.status_code}"}
+    except Exception as e:
+        return {"enabled": True, "idle_minutes": 60, "error": str(e)}
+
+
+def set_autoshutdown(enabled: bool, idle_minutes: int):
+    try:
+        response = requests.post(
+            f"{API_BASE_URL}/orchestrate/autoshutdown",
+            params={"enabled": enabled, "idle_minutes": int(idle_minutes)},
+            timeout=5,
+        )
+        if response.status_code == 200:
+            return response.json()
+        return {"error": f"HTTP {response.status_code}"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def create_orchestrator_ui():
+    with gr.Blocks() as control_panel:
+        gr.Markdown("# Orchestrator Control")
+
+        # ── Status ────────────────────────────────────────────────────────────
         with gr.Group():
             gr.Markdown("### Status")
             status_display = gr.Markdown("Loading...")
 
-        # Mode Control
+        # ── Auto Scaling ──────────────────────────────────────────────────────
         with gr.Group():
             gr.Markdown("### Auto Scaling Mode")
-
             auto_mode_check = gr.Checkbox(
                 label="Enable Auto Scaling",
                 value=False,
-                info="Automatically manage GPU instances based on queue"
+                info="Automatically manage GPU instances based on queue",
             )
+            mode_status = gr.Textbox(label="Status", value="", interactive=False)
 
-            mode_status = gr.Textbox(
-                label="Status",
-                value="",
-                interactive=False
+        # ── GPU AutoShutdown ──────────────────────────────────────────────────
+        with gr.Group():
+            gr.Markdown("### GPU AutoShutdown")
+            gr.Markdown(
+                "Controls both the CPU orchestrator and the GPU-side shutdown watcher. "
+                "When disabled, the GPU will not be stopped automatically regardless of idle time."
             )
+            with gr.Row():
+                autoshutdown_toggle = gr.Checkbox(
+                    label="Enable AutoShutdown",
+                    value=True,
+                    info="Toggle GPU idle-shutdown on both CPU orchestrator and GPU worker",
+                )
+                idle_minutes_input = gr.Number(
+                    label="Idle Timeout (minutes)",
+                    value=15,
+                    minimum=1,
+                    maximum=480,
+                    step=1,
+                    interactive=True,
+                    info="GPU shuts down after this many idle minutes",
+                )
+            apply_shutdown_btn = gr.Button("Apply AutoShutdown Settings", variant="primary")
+            shutdown_status = gr.Textbox(label="AutoShutdown Status", value="", interactive=False)
 
-        # Refresh Button
-        refresh_btn = gr.Button("🔄 Refresh", variant="secondary")
+        # ── Refresh ───────────────────────────────────────────────────────────
+        refresh_btn = gr.Button("Refresh", variant="secondary")
 
-        # Update function
+        # ── Callbacks ─────────────────────────────────────────────────────────
+
         def update_display():
-            """Update the status display"""
             status = get_orchestrator_status()
+            sd_state = get_autoshutdown_state()
 
             if "error" in status:
-                status_text = f"### ❌ Error\n{status['error']}"
+                status_text = f"### Error\n{status['error']}"
                 auto_mode = False
                 mode_msg = "Failed to get status"
             else:
@@ -73,74 +117,88 @@ def create_orchestrator_ui():
                 mode_icon = "✅" if auto_mode else "⏸️"
                 mode_text = "ENABLED" if auto_mode else "DISABLED"
 
-                # Create status display
-                status_text = f"### 🎛️ Orchestrator Status\n\n"
+                status_text = f"### Orchestrator Status\n\n"
                 status_text += f"**Auto Scaling:** {mode_icon} **{mode_text}**\n\n"
 
-                # Add GPU status if available
-                if "gpu_t4" in status:
-                    gpu_t4 = status["gpu_t4"]
-                    if isinstance(gpu_t4, dict):
-                        state = gpu_t4.get("state", "unknown")
-                        icon = "🟢" if state == "running" else "🔴" if state in ["stopped", "terminated"] else "🟡"
-                        status_text += f"**T4 GPU:** {icon} {state.capitalize()}\n"
+                if "gpu_instance" in status:
+                    gpu = status["gpu_instance"]
+                    state = gpu.get("state", "unknown")
+                    icon = "🟢" if state == "running" else "🔴" if state in ["stopped", "terminated"] else "🟡"
+                    status_text += f"**GPU:** {icon} {state.capitalize()} ({gpu.get('public_ip', '?')})\n"
 
-                if "gpu_a10" in status:
-                    gpu_a10 = status["gpu_a10"]
-                    if isinstance(gpu_a10, dict):
-                        state = gpu_a10.get("state", "unknown")
-                        icon = "🟢" if state == "running" else "🔴" if state in ["stopped", "terminated"] else "🟡"
-                        status_text += f"**A10 GPU:** {icon} {state.capitalize()}\n"
-
-                # Add queue status if available
                 if "queues" in status:
                     queues = status["queues"]
                     if isinstance(queues, dict):
-                        status_text += f"\n**Queues:** Images: {queues.get('image_tasks', 0)} | 3D: {queues.get('model_tasks', 0)}\n"
+                        parts = " | ".join(f"{k}: {v}" for k, v in queues.items())
+                        status_text += f"\n**Queues:** {parts}\n"
+
+                # autoshutdown from status or separate call
+                as_info = status.get("autoshutdown", sd_state)
+                as_on = as_info.get("enabled", True)
+                as_min = as_info.get("idle_minutes", 15)
+                as_icon = "✅" if as_on else "🔴"
+                status_text += f"\n**AutoShutdown:** {as_icon} {'ON' if as_on else 'OFF'} — idle threshold: {as_min} min\n"
+
+                if status.get("idle_seconds") is not None:
+                    idle_sec = status["idle_seconds"]
+                    status_text += f"**Current Idle:** {idle_sec // 60}m {idle_sec % 60}s\n"
 
                 status_text += f"\n**Updated:** {time.strftime('%H:%M:%S')}"
                 mode_msg = f"Auto mode is {mode_text.lower()}"
 
-            return status_text, auto_mode, mode_msg
+            # populate autoshutdown controls
+            as_on = sd_state.get("enabled", True)
+            as_min = sd_state.get("idle_minutes", 15)
 
-        # Toggle callback
+            return status_text, auto_mode, mode_msg, as_on, as_min
+
         def handle_mode_toggle(auto_mode: bool):
-            """Handle auto mode toggle"""
             result = set_orchestrator_mode(auto_mode)
-
             if "error" in result:
-                status_text, current_mode, _ = update_display()
-                mode_msg = f"❌ Failed to update mode: {result['error']}"
-                # Revert checkbox
-                auto_mode = not auto_mode
+                status_text, current_mode, _, as_on, as_min = update_display()
+                return status_text, not auto_mode, f"Failed: {result['error']}", as_on, as_min
+            status_text, current_mode, _, as_on, as_min = update_display()
+            return status_text, current_mode, result.get("message", ""), as_on, as_min
+
+        def handle_apply_autoshutdown(enabled: bool, idle_minutes: float):
+            result = set_autoshutdown(enabled, int(idle_minutes))
+            if "error" in result:
+                msg = f"Failed: {result['error']}"
             else:
-                status_text, current_mode, _ = update_display()
-                mode_msg = result.get("message", f"Auto mode {'enabled' if auto_mode else 'disabled'}")
+                state_word = "enabled" if result.get("enabled") else "disabled"
+                msg = f"AutoShutdown {state_word} — idle threshold: {result.get('idle_minutes')} min"
+            status_text, auto_mode, mode_msg, as_on, as_min = update_display()
+            return status_text, auto_mode, mode_msg, as_on, as_min, msg
 
-            return status_text, auto_mode, mode_msg
-
-        # Refresh callback
         def handle_refresh():
-            """Handle refresh"""
-            status_text, auto_mode, mode_msg = update_display()
-            return status_text, auto_mode, mode_msg
+            status_text, auto_mode, mode_msg, as_on, as_min = update_display()
+            return status_text, auto_mode, mode_msg, as_on, as_min, ""
 
-        # Connect callbacks
+        all_outputs = [
+            status_display, auto_mode_check, mode_status,
+            autoshutdown_toggle, idle_minutes_input,
+        ]
+
         auto_mode_check.change(
             fn=handle_mode_toggle,
             inputs=[auto_mode_check],
-            outputs=[status_display, auto_mode_check, mode_status]
+            outputs=all_outputs,
+        )
+
+        apply_shutdown_btn.click(
+            fn=handle_apply_autoshutdown,
+            inputs=[autoshutdown_toggle, idle_minutes_input],
+            outputs=all_outputs + [shutdown_status],
         )
 
         refresh_btn.click(
             fn=handle_refresh,
-            outputs=[status_display, auto_mode_check, mode_status]
+            outputs=all_outputs + [shutdown_status],
         )
 
-        # Initial load
         control_panel.load(
             fn=handle_refresh,
-            outputs=[status_display, auto_mode_check, mode_status]
+            outputs=all_outputs + [shutdown_status],
         )
 
     return control_panel

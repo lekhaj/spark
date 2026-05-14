@@ -27,6 +27,11 @@ POLL_INTERVAL_SECONDS = infra.POLL_INTERVAL_SECONDS
 GPU_QUEUES            = infra.GPU_QUEUES
 
 
+# Redis keys shared with GPU-side auto_shutdown.py
+_REDIS_AUTOSHUTDOWN_ENABLED = "autoshutdown:enabled"
+_REDIS_AUTOSHUTDOWN_MINUTES = "autoshutdown:idle_minutes"
+
+
 class GPUOrchestrator:
     def __init__(self):
         self.poll_interval  = POLL_INTERVAL_SECONDS
@@ -35,6 +40,35 @@ class GPUOrchestrator:
         self.idle_since     = None
         self.auto_mode      = True
         self._gpu_alias     = "gpu_a10"
+
+    # ── AutoShutdown control ──────────────────────────────────────────────────
+
+    def set_autoshutdown(self, enabled: bool, idle_minutes: int | None = None):
+        """Toggle autoshutdown on/off and optionally update idle threshold."""
+        r.set(_REDIS_AUTOSHUTDOWN_ENABLED, "1" if enabled else "0")
+        if idle_minutes is not None and idle_minutes > 0:
+            r.set(_REDIS_AUTOSHUTDOWN_MINUTES, str(idle_minutes))
+            self.idle_shutdown = idle_minutes * 60
+        logger.info(
+            f"[AutoShutdown] {'enabled' if enabled else 'disabled'}"
+            + (f", threshold={idle_minutes}min" if idle_minutes else "")
+        )
+
+    def get_autoshutdown_state(self) -> dict:
+        enabled_raw = r.get(_REDIS_AUTOSHUTDOWN_ENABLED)
+        minutes_raw = r.get(_REDIS_AUTOSHUTDOWN_MINUTES)
+        enabled = True if enabled_raw is None else (enabled_raw == "1")
+        minutes = self.idle_shutdown // 60
+        if minutes_raw is not None:
+            try:
+                minutes = int(minutes_raw)
+            except ValueError:
+                pass
+        return {"enabled": enabled, "idle_minutes": minutes}
+
+    def _autoshutdown_enabled(self) -> bool:
+        val = r.get(_REDIS_AUTOSHUTDOWN_ENABLED)
+        return True if val is None else (val == "1")
 
     # ── Queue helpers ─────────────────────────────────────────────────────────
 
@@ -161,12 +195,16 @@ class GPUOrchestrator:
                         f"(threshold={self.idle_shutdown // 60} min)"
                     )
                     if idle_elapsed >= self.idle_shutdown:
-                        logger.warning(
-                            f"[GPU] Idle threshold reached ({self.idle_shutdown // 60} min) "
-                            f"— stopping instance {infra.GPU_INSTANCE_ID}"
-                        )
-                        aws_service.stop_instance(self._gpu_alias)
-                        self.idle_since = None
+                        if not self._autoshutdown_enabled():
+                            logger.info("[GPU] Idle threshold reached but autoshutdown is disabled — skipping stop")
+                            self.idle_since = None
+                        else:
+                            logger.warning(
+                                f"[GPU] Idle threshold reached ({self.idle_shutdown // 60} min) "
+                                f"— stopping instance {infra.GPU_INSTANCE_ID}"
+                            )
+                            aws_service.stop_instance(self._gpu_alias)
+                            self.idle_since = None
 
     # ── Status ────────────────────────────────────────────────────────────────
 
@@ -182,6 +220,7 @@ class GPUOrchestrator:
             "auto_mode":             self.auto_mode,
             "task_ttl_minutes":      self.task_ttl // 60,
             "idle_shutdown_minutes": self.idle_shutdown // 60,
+            "autoshutdown":          self.get_autoshutdown_state(),
             "gpu_instance": {
                 "instance_id": infra.GPU_INSTANCE_ID,
                 "public_ip":   infra.GPU_PUBLIC_IP,
