@@ -1,41 +1,23 @@
+#!/usr/bin/env python3
 """
-flux_bhavesh_v1.py — SANDBOX EXPERIMENT COPY
-=============================================
-Original file : worker/flux_concept_generator.py
-Branch        : bhavesh-dev
+flux_bhavesh_v1.py — EXACT PRODUCTION FLUX CONCEPT GENERATOR
+=============================================================
+Branch  : bhavesh-dev
 
-PURPOSE: Stage 0 concept generation — IDENTICAL to production.
-  - Same model        : black-forest-labs/FLUX.1-schnell
-  - Same loading      : enable_sequential_cpu_offload + vae.enable_slicing
-  - Same character    : cultivation_youth (exact prompt + parameters from production)
-  - Same image size   : 768 x 1024
-  - Same dtype        : torch.bfloat16
+This is an exact extraction of the Flux generation logic from
+`worker/flux_concept_generator.py`. 
 
-ONLY difference from production:
-  - No MongoDB write   (no update_mongodb call)
-  - No S3 upload       (run_bhavesh_test.py handles that)
-  - Exposes load_flux() + generate_concept() as importable functions
-
-DO NOT MERGE TO MAIN.
+It generates at 768 x 1024 (NO 512 cap) just like the real server.
 """
 
 import os
 import torch
 from PIL import Image
 
-# Same as production flux_concept_generator.py
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
-FLUX_MODEL_ID = "black-forest-labs/FLUX.1-schnell"
-
-# ── Exact production character definition (from flux_concept_generator.py) ────
-# Copied verbatim — NO changes to prompt or parameters.
-CHARACTER = {
-    "name": "cultivation_youth",
-    "character_type":    "humanoid",
-    "creature_category": "bipedal",
-
-    # Exact prompt from production flux_concept_generator.py
+# Exact character dict from worker/flux_concept_generator.py
+CHAR_CULTIVATION_YOUTH = {
     "flux_prompt": (
         "young male cultivator, T-pose, arms extended horizontally, legs straight, "
         "orthographic front view, symmetrical, centered, "
@@ -44,62 +26,34 @@ CHARACTER = {
         "game-ready character design, "
         "white background, flat lighting, full body, head to toe"
     ),
-
-    # Exact parameters from production
     "width":               768,
     "height":              1024,
-    "num_inference_steps": 4,    # Schnell optimized for 1-4 steps
-    "guidance_scale":      0.0,  # Schnell is distilled — always 0
+    "num_inference_steps": 4,
+    "guidance_scale":      0.0,
 }
 
-
-def load_flux():
-    """
-    Load FLUX.1-schnell onto GPU.
-    Identical to the loading block in production flux_concept_generator.main().
-    """
+def load_flux_production():
+    """Exact loading block from worker/flux_concept_generator.py"""
     from diffusers import FluxPipeline
-
-    print(f"[Flux] Loading {FLUX_MODEL_ID} ...")
-    print("  torch_dtype          : bfloat16")
-    print("  enable_sequential_cpu_offload : ON  (same as production)")
-    print("  vae.enable_slicing            : ON  (same as production)")
-
+    print("[Flux] Loading black-forest-labs/FLUX.1-schnell ...")
     pipe = FluxPipeline.from_pretrained(
-        FLUX_MODEL_ID,
+        "black-forest-labs/FLUX.1-schnell",
         torch_dtype=torch.bfloat16,
     )
-    # Sequential offload: moves each sub-module to GPU one at a time.
-    # Same strategy as production — fits any VRAM.
     pipe.enable_sequential_cpu_offload()
-    # Sliced VAE decode prevents VRAM spikes on large (768×1024) images.
     pipe.vae.enable_slicing()
-
-    print("[Flux] Pipeline ready.\n")
     return pipe
 
-
-def generate_concept(pipe) -> Image.Image:
-    """
-    Run Flux inference.
-    Identical to the generation block inside production flux_concept_generator.main().
-    Returns the PIL Image (caller handles upload/delete).
-    """
-    cfg = CHARACTER
-    print(f"[Flux] Generating: {cfg['name']}")
-    print(f"  Size  : {cfg['width']} x {cfg['height']}")
-    print(f"  Steps : {cfg['num_inference_steps']}")
-    print(f"  Prompt: {cfg['flux_prompt'][:120]}...")
-
+def run_flux_production(pipe) -> Image.Image:
+    """Exact inference block from worker/flux_concept_generator.py"""
+    c = CHAR_CULTIVATION_YOUTH
+    print(f"[Flux] Generating size {c['width']}x{c['height']}...")
     with torch.inference_mode():
         out = pipe(
-            prompt=cfg["flux_prompt"],
-            width=cfg["width"],
-            height=cfg["height"],
-            num_inference_steps=cfg["num_inference_steps"],
-            guidance_scale=cfg["guidance_scale"],
+            prompt=c["flux_prompt"],
+            width=c["width"],
+            height=c["height"],
+            num_inference_steps=c["num_inference_steps"],
+            guidance_scale=c["guidance_scale"],
         )
-
-    image = out.images[0]
-    print(f"[Flux] Done. Image size: {image.size}\n")
-    return image
+    return out.images[0]

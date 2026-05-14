@@ -4,34 +4,21 @@ run_bhavesh_test.py — SANDBOX PIPELINE TEST
 ============================================
 Branch : bhavesh-dev  |  GPU : spark_l4
 
-Mirrors the PRODUCTION pipeline exactly, with ONE improvement in Stage 1:
+Mirrors the PRODUCTION pipeline exactly as requested, in 3 stages:
 
-  Stage 0  Flux concept generation
-           ─────────────────────────────────────────────────────────────────
-           Model   : black-forest-labs/FLUX.1-schnell
-           Loader  : flux_model_bhavesh_v1.py  ← EXACT copy of models/flux_model.py
-           Prompt  : cultivation_youth from flux_concept_generator.py (verbatim)
-           Size    : 512 × 512  (production MAX_SIZE cap)
-           Params  : steps=4, guidance=0.0  (same as production)
+  [STAGE 0] Flux Concept Generation
+            Runs exact same 768x1024 generation as server's flux_concept_generator.py
 
-  Stage 1  SD1.5 T-pose conversion
-           ─────────────────────────────────────────────────────────────────
-           Model   : Lykon/DreamShaper
-           Loader  : sd_model_bhavesh_v1.py  ← sandbox copy of models/sd_model.py
-           Changes vs production:
-             ip_adapter_weight : 0.45 → 0.25  (less A-pose bleed)
-             canny_weight      : 0.20 → 0.0   (disabled — fabric edges fight T-pose)
-           OUR IMPROVEMENT:
-             ip_adapter_image = flux_image     ← production passes None here
-             This passes the Flux concept image to IP-Adapter for identity lock.
+  [STAGE 1] Normalize to 512
+            Takes the 768x1024 image, resizes/normalizes it to 512x512
+            exactly as the server does before passing to SD1.5.
 
-Uploads to fixed S3 keys (always overwrite — no space waste):
-  flux_concept.png     → Stage 0 output  (Flux, natural pose)
-  tpose_result_v3.png  → Stage 1 output  (SD1.5, T-pose)
-
-Compare both URLs to verify:
-  - Outfit / face consistent between the two  (IP-Adapter identity lock)
-  - Pose changes from Flux's natural pose → clean T-pose
+  [STAGE 2] SD1.5 T-Pose Conversion (OUR IMPROVEMENTS HERE)
+            This is the T-pose conversion stage. 
+            We apply our sandbox fixes here:
+              - ip_adapter_weight: 0.45 -> 0.25
+              - canny_weight: 0.20 -> 0.0
+              - passing Flux image to IP-Adapter to preserve identity.
 
 DO NOT RUN WITH PRODUCTION FILES — sandbox experiments only.
 """
@@ -41,6 +28,7 @@ import logging
 import os
 import sys
 import torch
+from PIL import Image
 
 # ── Path setup ────────────────────────────────────────────────────────────────
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -48,13 +36,13 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+    format="%(asctime)s [%(levelname)s] %(message)s",
 )
 logger = logging.getLogger("BhaveshTest")
 
 # ── Sandbox model imports ─────────────────────────────────────────────────────
-from experiments.flux_model_bhavesh_v1 import load_flux, run_flux   # exact production copy
-from experiments.sd_model_bhavesh_v1 import load_sd, run_stage1     # sandbox improvements
+from experiments.flux_bhavesh_v1 import load_flux_production, run_flux_production
+from experiments.sd_model_bhavesh_v1 import load_sd, run_stage1
 
 # ── Environment ───────────────────────────────────────────────────────────────
 from dotenv import load_dotenv
@@ -69,23 +57,11 @@ for _p in [
 S3_BUCKET  = os.getenv("AWS_S3_BUCKET", "sparkassets-us")
 AWS_REGION = os.getenv("AWS_REGION",    "us-east-1")
 
-# Fixed S3 keys — always overwrite same files (no space waste)
-S3_KEY_FLUX = "images/bhavesh_experiments/flux_concept.png"
-S3_KEY_SD   = "images/bhavesh_experiments/tpose_result_v3.png"
-
-# ── Character prompt ──────────────────────────────────────────────────────────
-# Copied VERBATIM from flux_concept_generator.py → cultivation_youth → flux_prompt
-FLUX_PROMPT = (
-    "young male cultivator, T-pose, arms extended horizontally, legs straight, "
-    "orthographic front view, symmetrical, centered, "
-    "plain gray hanfu robe, rope belt, lean build, topknot hair, "
-    "simple clothing, clean silhouette, minimal detail, "
-    "game-ready character design, "
-    "white background, flat lighting, full body, head to toe"
-)
+S3_KEY_STAGE0 = "images/bhavesh_experiments/stage0_flux_768x1024.png"
+S3_KEY_STAGE1 = "images/bhavesh_experiments/stage1_normalized_512.png"
+S3_KEY_STAGE2 = "images/bhavesh_experiments/stage2_tpose_result.png"
 
 # SD1.5 prompt — describe POSE + BACKGROUND only.
-# Outfit/identity comes from the Flux image passed via ip_adapter_image.
 SD_PROMPT = (
     "full body character, T-pose, arms extended horizontally, "
     "legs straight and together, head to toe, feet fully visible, "
@@ -98,14 +74,6 @@ SD_NEGATIVE = (
     "grey background, dark background, shadows, gradient, floor, "
     "anime, cartoon, deformed limbs, extra limbs, mutated hands"
 )
-
-# Flux generation params — same as production (512×512 MAX_SIZE cap)
-FLUX_PARAMS = {
-    "width":          512,
-    "height":         512,
-    "steps":          4,
-    "guidance_scale": 0.0,
-}
 
 
 # ── S3 upload helper ──────────────────────────────────────────────────────────
@@ -129,7 +97,7 @@ def upload_to_s3(img, s3_key: str) -> str:
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main() -> None:
     print("=" * 70)
-    print("BHAVESH TEST  |  Flux (production) → SD1.5 T-Pose (sandbox fix)")
+    print("BHAVESH PIPELINE TEST  |  Stage 0 -> Stage 1 -> Stage 2")
     print("=" * 70)
 
     # GPU check
@@ -140,69 +108,75 @@ def main() -> None:
     print(f"[GPU] {torch.cuda.get_device_name(0)}  |  VRAM: {vram_gb:.1f} GB\n")
 
     # ──────────────────────────────────────────────────────────────────────────
-    # STAGE 0 — Flux Concept Generation (identical to production)
+    # STAGE 0 — Flux Concept Generation
     # ──────────────────────────────────────────────────────────────────────────
     print("─" * 70)
-    print("STAGE 0 — Flux  [IDENTICAL to production models/flux_model.py]")
+    print("STAGE 0 — Flux Concept Generation (Exact Server Match)")
     print("─" * 70)
     print(f"  Model  : black-forest-labs/FLUX.1-schnell")
-    print(f"  Size   : {FLUX_PARAMS['width']} x {FLUX_PARAMS['height']}  (production 512 cap)")
-    print(f"  Steps  : {FLUX_PARAMS['steps']}")
-    print(f"  Prompt : {FLUX_PROMPT[:80]}...\n")
+    print(f"  Size   : 768 x 1024")
+    
+    flux_pipe  = load_flux_production()
+    stage0_img = run_flux_production(flux_pipe)
 
-    flux_pipe  = load_flux("black-forest-labs/FLUX.1-schnell")
-    flux_image = run_flux(flux_pipe, FLUX_PROMPT, FLUX_PARAMS)
+    print("\n[Stage 0] Uploading Flux concept to S3...")
+    stage0_url = upload_to_s3(stage0_img, S3_KEY_STAGE0)
+    print(f"  → {stage0_url}\n")
 
-    print("[Stage 0] Uploading Flux concept to S3...")
-    flux_url = upload_to_s3(flux_image, S3_KEY_FLUX)
-    print(f"  → {flux_url}\n")
-
-    # Unload Flux completely — L4 cannot hold both Flux + SD1.5 in VRAM
     print("[VRAM] Unloading Flux...")
     del flux_pipe
     torch.cuda.empty_cache()
     print("[VRAM] Freed.\n")
 
     # ──────────────────────────────────────────────────────────────────────────
-    # STAGE 1 — SD1.5 T-Pose Conversion (sandbox improvements)
+    # STAGE 1 — Normalize to 512
     # ──────────────────────────────────────────────────────────────────────────
     print("─" * 70)
-    print("STAGE 1 — SD1.5  [SANDBOX — 2 param changes + IP-Adapter improvement]")
+    print("STAGE 1 — Normalize to 512 (Exact Server Match)")
     print("─" * 70)
-    print("  Sandbox changes vs production:")
-    print("    ip_adapter_weight : 0.45 → 0.25  (less A-pose bleed)")
-    print("    canny_weight      : 0.20 → 0.0   (disabled — fights T-pose)")
-    print("  Our experiment:")
-    print("    ip_adapter_image  : None → flux_image  (identity lock improvement)")
-    print("    (Production _handle_sd_stage1 does not pass ip_adapter_image)\n")
+    print(f"  Action : Resizing 768x1024 image to 512x512 for SD1.5")
+    
+    # Resize with high quality LANCZOS filter
+    stage1_img = stage0_img.resize((512, 512), Image.LANCZOS).convert("RGB")
+    
+    print("\n[Stage 1] Uploading Normalized image to S3...")
+    stage1_url = upload_to_s3(stage1_img, S3_KEY_STAGE1)
+    print(f"  → {stage1_url}\n")
 
-    sd_pipes    = load_sd("Lykon/DreamShaper")
-    tpose_image = run_stage1(
+    # ──────────────────────────────────────────────────────────────────────────
+    # STAGE 2 — SD1.5 T-Pose Conversion
+    # ──────────────────────────────────────────────────────────────────────────
+    print("─" * 70)
+    print("STAGE 2 — SD1.5 T-Pose Conversion (OUR IMPROVEMENTS HERE)")
+    print("─" * 70)
+    print("  Our experiment fixes to make T-pose better:")
+    print("    1. ip_adapter_weight : 0.45 → 0.25  (less A-pose bleed)")
+    print("    2. canny_weight      : 0.20 → 0.0   (disabled — fights T-pose)")
+    print("    3. ip_adapter_image  : now uses Stage 1 image for identity lock\n")
+
+    sd_pipes   = load_sd("Lykon/DreamShaper")
+    stage2_img = run_stage1(
         pipes=sd_pipes,
-        init_img=flux_image,           # same as production: Flux image as the base
+        init_img=stage1_img,           # Stage 1 image as base
         prompt=SD_PROMPT,
         negative=SD_NEGATIVE,
-        ip_adapter_image=flux_image,   # OUR IMPROVEMENT: also pass as IP-Adapter ref
+        ip_adapter_image=stage1_img,   # Stage 1 image as IP-Adapter ref
     )
 
-    print("\n[Stage 1] Uploading T-pose result to S3...")
-    sd_url = upload_to_s3(tpose_image, S3_KEY_SD)
-    print(f"  → {sd_url}")
+    print("\n[Stage 2] Uploading T-pose result to S3...")
+    stage2_url = upload_to_s3(stage2_img, S3_KEY_STAGE2)
+    print(f"  → {stage2_url}")
 
     # ── Results ───────────────────────────────────────────────────────────────
     print("\n" + "=" * 70)
-    print("COMPLETE")
+    print("ALL 3 STAGES COMPLETE")
     print("=" * 70)
-    print(f"\n  Stage 0  Flux concept (natural pose):")
-    print(f"    {flux_url}")
-    print(f"\n  Stage 1  T-pose result:")
-    print(f"    {sd_url}")
-    print()
-    print("  What to check:")
-    print("    1. Does Stage 1 preserve the outfit + face from Stage 0? (IP-Adapter)")
-    print("    2. Are the arms perfectly horizontal? (OpenPose skeleton)")
-    print("    3. Is the background clean white?")
-    print("    4. Is the full body visible head to toe?")
+    print(f"\n  [STAGE 0] Flux concept (768x1024):")
+    print(f"    {stage0_url}")
+    print(f"\n  [STAGE 1] Normalized (512x512):")
+    print(f"    {stage1_url}")
+    print(f"\n  [STAGE 2] T-pose result (512x512):")
+    print(f"    {stage2_url}")
     print()
 
 
