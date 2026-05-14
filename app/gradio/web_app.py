@@ -293,10 +293,28 @@ def _start_3d_task(database_name, collection_name, biome_action_type, new_biome_
     if input_2d_image is None:
         return (gr.State(None), "Please upload a 2D image.", "")
 
-    # This is the task payload for the worker
+    # ── Upload image to S3 so GPU worker can fetch it ────────────────────────
+    import boto3 as _boto3, uuid as _uuid
+    S3_BUCKET = os.getenv("BUCKET_NAME", "sparkassets")
+    S3_REGION = os.getenv("S3_REGION", "ap-south-1")
+    s3_key    = f"manual_gen_inputs/{doc_id}_{_uuid.uuid4().hex[:8]}.png"
+    image_s3_url = ""
+    try:
+        s3 = _boto3.client("s3", region_name=S3_REGION)
+        s3.upload_file(input_2d_image.name, S3_BUCKET, s3_key)
+        image_s3_url = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com/{s3_key}"
+        print(f"Uploaded input image → {image_s3_url}")
+    except Exception as _e:
+        print(f"S3 upload failed: {_e}")
+        image_s3_url = input_2d_image.name
+
     task_payload = {
-        'job_id': str(doc_id),
-        'image_path': input_2d_image.name
+        "job_id":       str(doc_id),
+        "biome_id":     str(doc_id),
+        "image_s3_url": image_s3_url,
+        "update_key":   "3d_generation_details.model_url",
+        "output_key":   f"models/{doc_id}/output.glb",
+        "timestamp":    time.time()
     }
     
     # Send task to Redis queue
