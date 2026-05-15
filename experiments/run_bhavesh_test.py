@@ -61,7 +61,7 @@ AWS_REGION = os.getenv("AWS_REGION",    "us-east-1")
 # ═════════════════════════════════════════════════════════════════════════════
 
 CHARACTER_NAME   = "lion_mount"     # ← "cultivation_youth", "iron_soldier", or "lion_mount"
-SKIP_FLUX_STAGES = False            # ← False for first run of new character
+SKIP_FLUX_STAGES = True             # ← True to load the already generated image from S3
 
 # ═════════════════════════════════════════════════════════════════════════════
 
