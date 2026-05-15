@@ -488,6 +488,44 @@ def _q_trellis(char, major, minor, char_type, src_stage, src_ver):
     return sid, minor_upd, info, f"queued ✓  v{ver}  [{views_info}]  task={tid[:8]}…"
 
 
+def _q_pixal3d(char, major, minor, char_type, src_stage, src_ver):
+    """
+    Queue Pixal3D 3D task.
+    Single-image input (no multi-view); reads front-view URL from source stage/version.
+    """
+    stage = "pixal3d"
+    db    = _db()
+
+    if src_ver:
+        view_urls = _get_view_urls_for_ver(char, src_stage, src_ver)
+    else:
+        latest = get_latest_done_run(db, char, src_stage)
+        view_urls = {"front": (latest or {}).get("image_url") or ""}
+
+    front_url = view_urls.get("front") or ""
+    if not front_url:
+        return None, gr.update(), gr.update(), \
+            f"No front-view image in '{src_stage}' v{src_ver or 'latest'}. Run that stage first."
+
+    params = {"char_type": char_type or "humanoid"}
+    sid, new_n, minor_upd, info_upd, err = _prepare_run(
+        char, stage, major, minor, "", "", params)
+    if err:
+        return sid, minor_upd, gr.update(), err
+
+    save_run_params(db, sid, "", "", params, stage=stage)
+    _ver_minor = new_n if new_n is not None else int(minor)
+    tid = _push_task({"type": "pixal3d", "session_id": sid, "stage": stage,
+                      "char_name": char, "major": int(major), "minor": _ver_minor,
+                      "char_type": char_type or "humanoid",
+                      "input_front": front_url,
+                      "params": params})
+    mark_queued(db, sid, stage=stage, task_id=tid)
+    ver  = f"{major}.{new_n}" if new_n is not None else f"{major}.{minor}"
+    info = f"{sid[:8]}…  v{ver}  [queued]"
+    return sid, minor_upd, info, f"queued ✓  v{ver}  task={tid[:8]}…"
+
+
 def _q_rig(char, major, minor, char_type, trellis_src_ver):
     stage = "rig"
     db    = _db()
@@ -762,6 +800,25 @@ def generation_studio_ui():
             tr_3d_btn = gr.HTML(value="")
 
         # ══════════════════════════════════════════════════════════════════════
+        #  STAGE 3b: PIXAL3D 3D  (alternative to TRELLIS — TencentARC/Pixal3D)
+        # ══════════════════════════════════════════════════════════════════════
+        with gr.Accordion("Stage 3b — Pixal3D 3D Mesh", open=False):
+            px_char, px_major, px_minor, px_new_maj, px_sid, px_info = _make_picker(_chars)
+            gr.Markdown("---")
+            px_char_type = gr.Dropdown(
+                choices=["humanoid", "quadruped", "bird", "fish"],
+                value="humanoid", label="Character type")
+            gr.Markdown("**Select source stage + version (single front-view image):**")
+            px_src_stage, px_src_ver, px_src_url_st, px_src_info = _make_src_picker(
+                ["sd_tpose", "flux", "normalize"], "sd_tpose")
+            with gr.Row():
+                px_q_btn = gr.Button("Queue Pixal3D", variant="primary")
+                px_status= gr.Textbox(label="Status", value="idle", interactive=False, scale=2)
+                px_r_btn = gr.Button("Refresh", size="sm")
+            px_url = gr.Textbox(label="GLB URL (when done)", interactive=False)
+            px_3d_btn = gr.HTML(value="")
+
+        # ══════════════════════════════════════════════════════════════════════
         #  STAGE 4: RIG
         # ══════════════════════════════════════════════════════════════════════
         with gr.Accordion("Stage 4 — Auto-Rig Pro (CPU)", open=False):
@@ -796,25 +853,25 @@ def generation_studio_ui():
         def _do_refresh():
             chars = _list_chars()
             upd   = gr.update(choices=chars, value=(chars[0] if chars else None))
-            return [upd] * 6
+            return [upd] * 7
 
         g_refresh_btn.click(_do_refresh, [],
-                            [g_char, fx_char, nm_char, s1_char, tr_char, rg_char])
+                            [g_char, fx_char, nm_char, s1_char, tr_char, px_char, rg_char])
 
         # ── Global: Create New Character ──────────────────────────────────────
         def _do_create(label):
             label = (label or "").strip()
             if not label:
-                return [gr.update()] * 6 + ["Enter a character label first."]
+                return [gr.update()] * 7 + ["Enter a character label first."]
             ok    = create_character(_db(), label)
             if not ok:
-                return [gr.update()] * 6 + [f"❌ Failed to save '{label}' — check MongoDB connection."]
+                return [gr.update()] * 7 + [f"❌ Failed to save '{label}' — check MongoDB connection."]
             chars = _list_chars()
             upd   = gr.update(choices=chars, value=label)
-            return [upd] * 6 + [f"✓ Created '{label}'. Select it in any stage below and click ⬇ Prefill All Stages."]
+            return [upd] * 7 + [f"✓ Created '{label}'. Select it in any stage below and click ⬇ Prefill All Stages."]
 
         g_create_btn.click(_do_create, [g_new_char_input],
-                           [g_char, fx_char, nm_char, s1_char, tr_char, rg_char, g_create_info])
+                           [g_char, fx_char, nm_char, s1_char, tr_char, px_char, rg_char, g_create_info])
 
         # ── Global: Prefill All Stages ────────────────────────────────────────
         # In Gradio 5, gr.update(value=X) does NOT trigger .change handlers,
@@ -842,6 +899,7 @@ def generation_studio_ui():
             nm_src = _refresh_src_picker(char, "flux")     if char else (gr.update(), "", "")
             s1_src = _refresh_src_picker(char, "flux")     if char else (gr.update(), "", "")
             tr_src = _refresh_src_picker(char, "sd_tpose") if char else (gr.update(), "", "")
+            px_src = _refresh_src_picker(char, "sd_tpose") if char else (gr.update(), "", "")
             # Trellis view availability info
             if char:
                 tr_ver_val = tr_src[0].get("value") if hasattr(tr_src[0], "get") else None
@@ -850,8 +908,8 @@ def generation_studio_ui():
                 tr_vinfo = ""
 
             return list((
-                # 5 char dropdowns
-                char_upd, char_upd, char_upd, char_upd, char_upd,
+                # 6 char dropdowns
+                char_upd, char_upd, char_upd, char_upd, char_upd, char_upd,
                 # flux (major, minor, sid, info + 15 data fields = 19)
                 *_load("flux", _ex_flux),
                 # normalize (4+4=8) + source picker (3) = 11
@@ -863,13 +921,16 @@ def generation_studio_ui():
                 # trellis (4+3=7) + source picker (3) + view_info (1) = 11
                 *_load("trellis", _ex_trellis),
                 *tr_src, tr_vinfo,
+                # pixal3d (4+3=7) + source picker (3) = 10
+                *_load("pixal3d", _ex_pixal3d),
+                *px_src,
                 # rig (4+3=7) = 7
                 *_load("rig", _ex_rig),
             ))
 
         g_prefill_btn.click(_do_prefill, [g_char], [
-            # char dropdowns (5)
-            fx_char, nm_char, s1_char, tr_char, rg_char,
+            # char dropdowns (6)
+            fx_char, nm_char, s1_char, tr_char, px_char, rg_char,
             # flux (4 picker + 15 data = 19)
             fx_major, fx_minor, fx_sid, fx_info,
             fx_prompt, fx_negative, fx_w, fx_h, fx_steps, fx_guid,
@@ -887,6 +948,10 @@ def generation_studio_ui():
             tr_major, tr_minor, tr_sid, tr_info,
             tr_char_type, tr_status, tr_url,
             tr_src_ver, tr_src_url_st, tr_src_info, tr_view_info,
+            # pixal3d (4+3=7) + source picker (3) = 10
+            px_major, px_minor, px_sid, px_info,
+            px_char_type, px_status, px_url,
+            px_src_ver, px_src_url_st, px_src_info,
             # rig (4+3=7) = 7
             rg_major, rg_minor, rg_sid, rg_info, rg_type, rg_status, rg_url,
         ])
@@ -933,6 +998,12 @@ def generation_studio_ui():
                     run.get("status", "idle"),
                     run.get("image_url", "") or ""]
 
+        def _ex_pixal3d(run):
+            p = run.get("params") or {}
+            return [p.get("char_type", "humanoid"),
+                    run.get("status", "idle"),
+                    run.get("image_url", "") or ""]
+
         def _ex_rig(run):
             p = run.get("params") or {}
             return [p.get("char_type", "humanoid"),
@@ -959,6 +1030,10 @@ def generation_studio_ui():
         _wire_picker("trellis", tr_char, tr_major, tr_minor, tr_new_maj, tr_sid, tr_info,
                      [tr_char_type, tr_status, tr_url],
                      _ex_trellis)
+
+        _wire_picker("pixal3d", px_char, px_major, px_minor, px_new_maj, px_sid, px_info,
+                     [px_char_type, px_status, px_url],
+                     _ex_pixal3d)
 
         _wire_picker("rig", rg_char, rg_major, rg_minor, rg_new_maj, rg_sid, rg_info,
                      [rg_type, rg_status, rg_url],
@@ -988,6 +1063,7 @@ def generation_studio_ui():
         _make_src_wiring(nm_char, nm_src_stage, nm_src_ver, nm_src_url_st, nm_src_info)
         _make_src_wiring(s1_char, s1_src_stage, s1_src_ver, s1_src_url_st, s1_src_info)
         _make_src_wiring(tr_char, tr_src_stage,  tr_src_ver,  tr_src_url_st,  tr_src_info)
+        _make_src_wiring(px_char, px_src_stage,  px_src_ver,  px_src_url_st,  px_src_info)
 
         # Trellis: also update view availability info when ver or stage changes
         def _tr_update_view_info(char, src_stage, ver):
@@ -1104,6 +1180,19 @@ def generation_studio_ui():
             [tr_sid], [tr_status, tr_url]
         )
 
+        # Pixal3D
+        (px_q_btn.click(
+            _q_pixal3d,
+            [px_char, px_major, px_minor,
+             px_char_type, px_src_stage, px_src_ver],
+            [px_sid, px_minor, px_info, px_status],
+        ).then(lambda: gr.Timer(active=True), outputs=[stage_timer]))
+
+        px_r_btn.click(
+            lambda sid: _refresh_run(sid),
+            [px_sid], [px_status, px_url]
+        )
+
         # Rig
         (rg_q_btn.click(
             _q_rig,
@@ -1135,12 +1224,13 @@ def generation_studio_ui():
             )
 
         tr_url.change(_viewer_btn, [tr_url], [tr_3d_btn])
+        px_url.change(_viewer_btn, [px_url], [px_3d_btn])
         rg_url.change(_viewer_btn, [rg_url], [rg_3d_btn])
 
         # ── Auto-refresh timer ────────────────────────────────────────────────
         _ACTIVE = {"queued", "running"}
 
-        def _tick(fx_s, s1_s, tr_s, rg_s):
+        def _tick(fx_s, s1_s, tr_s, px_s, rg_s):
             def _r(sid): return _refresh_run(sid)
 
             # Flux: get all 3 view URLs from doc
@@ -1154,9 +1244,10 @@ def generation_studio_ui():
 
             s1_st, s1_u = _r(s1_s)
             tr_st, tr_u = _r(tr_s)
+            px_st, px_u = _r(px_s)
             rg_st, rg_u = _r(rg_s)
 
-            still = any(s in _ACTIVE for s in [fx_st, s1_st, tr_st, rg_st])
+            still = any(s in _ACTIVE for s in [fx_st, s1_st, tr_st, px_st, rg_st])
 
             return (
                 fx_st, fx_u, _url_to_img(fx_u),
@@ -1164,17 +1255,19 @@ def generation_studio_ui():
                 fx_back_u, _url_to_img(fx_back_u),
                 s1_st, s1_u, _url_to_img(s1_u, 350),
                 tr_st, tr_u, _viewer_btn(tr_u),
+                px_st, px_u, _viewer_btn(px_u),
                 rg_st, rg_u, _viewer_btn(rg_u),
                 gr.Timer(active=still),
             )
 
         stage_timer.tick(
             _tick,
-            [fx_sid, s1_sid, tr_sid, rg_sid],
+            [fx_sid, s1_sid, tr_sid, px_sid, rg_sid],
             [fx_status, fx_url, fx_img,
              fx_side_url, fx_side_img, fx_back_url, fx_back_img,
              s1_status, s1_url, s1_img,
              tr_status, tr_url, tr_3d_btn,
+             px_status, px_url, px_3d_btn,
              rg_status, rg_url, rg_3d_btn,
              stage_timer],
         )

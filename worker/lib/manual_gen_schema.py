@@ -54,6 +54,7 @@ STAGE_NAMES = (
     # "multiview_side", # future — multi-view generation (not yet active)
     # "multiview_back", # future — multi-view generation (not yet active)
     "trellis",
+    "pixal3d",          # TencentARC/Pixal3D — alternative image→3D (isolated conda env)
     "rig",
 )
 

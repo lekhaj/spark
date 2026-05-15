@@ -89,6 +89,7 @@ STAGE_REGISTRY: dict[str, tuple[str | None, str]] = {
     "multiview_side":     ("sd",         "_handle_multiview"),
     "multiview_back":     ("sd",         "_handle_multiview"),
     "trellis":            ("trellis",    "_handle_trellis"),
+    "pixal3d":            (None,         "_handle_pixal3d"),  # subprocess — isolated conda env
     # "rig" tasks go directly to rig_tasks queue from the frontend — not routed here
     # ── Add new experiments here ────────────────────────────────────────────
     # "controlnet_pre":  ("sd",         "_handle_controlnet_pre"),
@@ -344,6 +345,38 @@ class ManualGenWorker(BaseWorker):
         push_glb_done(r, session_id, stage, url, s3_key)
         logger.info(f"[trellis] → {url}")
 
+    def _handle_pixal3d(self, task: dict, r) -> None:
+        """
+        Pixal3D image→3D via subprocess in isolated conda env.
+
+        Evicts ALL in-process VRAM models first (pixal3d subprocess needs
+        most of the 23GB on L4 even with low_vram=True).
+        """
+        from models.pixal3d_runner import run_pixal3d
+
+        session_id = task["session_id"]
+        stage      = task.get("stage", "pixal3d")
+        params     = task.get("params") or {}
+
+        front_url = task.get("input_front") or params.get("front_url", "")
+        if not front_url:
+            raise ValueError("pixal3d task missing input_front URL")
+
+        front_img = self._download_image(front_url)
+
+        # Free VRAM for the subprocess
+        for fam in ("flux", "sd", "trellis"):
+            try:
+                self._mgr.evict(fam)
+            except Exception:
+                pass
+        logger.info(f"[pixal3d] pre-subprocess  {self._mgr.vram_summary()}")
+
+        glb_bytes = run_pixal3d(front_img, params)
+        s3_key    = _char_s3_key(task, "pixal3d", "glb")
+        url       = self._upload_bytes(glb_bytes, s3_key, "model/gltf-binary")
+        push_glb_done(r, session_id, stage, url, s3_key)
+        logger.info(f"[pixal3d] → {url}")
 
 
     # ─────────────────────────────────────────────────────────────────────────
