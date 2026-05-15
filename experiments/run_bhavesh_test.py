@@ -95,10 +95,14 @@ if CHARACTER_NAME == "lion_mount":
     SD_PROMPT   = ANIMAL_PROMPT
     SD_NEGATIVE = ANIMAL_NEGATIVE
     SD_CATEGORY = "quadruped"
+    SD_CANNY_WEIGHT = 1.0   # Quadrupeds need full Canny strength to hold their shape
+    SD_IP_ADAPTER = 0.6     # Normal IP-Adapter strength for animals
 else:
     SD_PROMPT   = HUMANOID_PROMPT
     SD_NEGATIVE = HUMANOID_NEGATIVE
     SD_CATEGORY = "humanoid"
+    SD_CANNY_WEIGHT = 0.05  # Lowered specifically to fix ghost hands
+    SD_IP_ADAPTER = 0.10    # Lowered specifically to stop sleeve bleed
 
 
 # ── S3 helpers ────────────────────────────────────────────────────────────────
@@ -190,7 +194,11 @@ def main() -> None:
         prompt=SD_PROMPT,
         negative=SD_NEGATIVE,
         ip_adapter_image=stage1_img,
-        params={"category": SD_CATEGORY}
+        params={
+            "category": SD_CATEGORY,
+            "canny_weight": SD_CANNY_WEIGHT,
+            "ip_adapter_weight": SD_IP_ADAPTER
+        }
     )
 
     print("\n[Stage 2] Uploading to S3...")
