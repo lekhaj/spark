@@ -31,7 +31,11 @@ import torch
 from PIL import Image
 
 # ── Path setup ────────────────────────────────────────────────────────────────
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+# Add both the project root AND the experiments folder to sys.path
+# This ensures imports work whether you run from spark/ or spark/experiments/
+_here = os.path.abspath(os.path.dirname(__file__))
+sys.path.insert(0, _here)                                  # spark/experiments/
+sys.path.insert(0, os.path.abspath(os.path.join(_here, "..")))  # spark/
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
