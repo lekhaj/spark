@@ -60,7 +60,7 @@ AWS_REGION = os.getenv("AWS_REGION",    "us-east-1")
 # ⚙️  CHANGE THESE TWO FLAGS TO CONTROL THE RUN
 # ═════════════════════════════════════════════════════════════════════════════
 
-CHARACTER_NAME   = "iron_soldier"   # ← "cultivation_youth" or "iron_soldier"
+CHARACTER_NAME   = "lion_mount"     # ← "cultivation_youth", "iron_soldier", or "lion_mount"
 SKIP_FLUX_STAGES = False            # ← False for first run of new character
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -71,18 +71,34 @@ S3_KEY_STAGE1 = f"images/bhavesh_experiments/{CHARACTER_NAME}_stage1_norm512.png
 S3_KEY_STAGE2 = f"images/bhavesh_experiments/{CHARACTER_NAME}_stage2_tpose.png"
 
 # ── SD1.5 prompts ─────────────────────────────────────────────────────────────
-# POSE + BACKGROUND only — character identity comes from IP-Adapter (the Flux image)
-SD_PROMPT = (
+# We now dynamically select prompts based on character type
+HUMANOID_PROMPT = (
     "full body, T-pose, arms extended horizontally, legs straight, "
     "feet fully visible, white background, flat lighting"
 )
-
-# Negatives — simplified to stay well under 77 tokens, prioritizing ghost hands
-SD_NEGATIVE = (
+HUMANOID_NEGATIVE = (
     "extra hands, ghost hands, four arms, overlapping arms, duplicate hands, "
     "cropped, missing feet, bent arms, dynamic pose, "
     "pattern, shadows, floor, cartoon, deformed limbs, mutated hands"
 )
+
+ANIMAL_PROMPT = (
+    "strict side profile, orthographic side view, neutral standing pose, "
+    "all four legs visible on ground, white background, flat lighting"
+)
+ANIMAL_NEGATIVE = (
+    "front view, 3/4 view, dynamic pose, missing legs, deformed legs, "
+    "sitting, lying down, overlapping legs, shadows, floor, pattern"
+)
+
+if CHARACTER_NAME == "lion_mount":
+    SD_PROMPT   = ANIMAL_PROMPT
+    SD_NEGATIVE = ANIMAL_NEGATIVE
+    SD_CATEGORY = "quadruped"
+else:
+    SD_PROMPT   = HUMANOID_PROMPT
+    SD_NEGATIVE = HUMANOID_NEGATIVE
+    SD_CATEGORY = "humanoid"
 
 
 # ── S3 helpers ────────────────────────────────────────────────────────────────
@@ -174,6 +190,7 @@ def main() -> None:
         prompt=SD_PROMPT,
         negative=SD_NEGATIVE,
         ip_adapter_image=stage1_img,
+        params={"category": SD_CATEGORY}
     )
 
     print("\n[Stage 2] Uploading to S3...")

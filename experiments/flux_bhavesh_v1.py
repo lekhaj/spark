@@ -54,6 +54,19 @@ CHARACTERS = {
         "guidance_scale":      0.0,
     },
 
+    # NEW test character — quadruped animal for Trellis
+    "lion_mount": {
+        "flux_prompt": (
+            "majestic lion, strict side profile, orthographic side view, "
+            "neutral standing pose, all four legs visible on ground, "
+            "white background, flat lighting, full body"
+        ),
+        "width":               768,
+        "height":              512,  # Wider than tall for quadruped side profile
+        "num_inference_steps": 4,
+        "guidance_scale":      0.0,
+    },
+
 }
 
 # ── Model functions ───────────────────────────────────────────────────────────
