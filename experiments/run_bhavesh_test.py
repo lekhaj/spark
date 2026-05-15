@@ -83,11 +83,11 @@ HUMANOID_NEGATIVE = (
 )
 
 ANIMAL_PROMPT = (
-    "3/4 front view, standing pose, all four legs visible and spread, "
+    "3/4 side view, standing, all four legs visible, "
     "white background, flat lighting, full body"
 )
 ANIMAL_NEGATIVE = (
-    "side view, dynamic pose, missing legs, deformed legs, "
+    "front view, missing legs, deformed legs, "
     "sitting, lying down, overlapping legs, shadows, floor"
 )
 
