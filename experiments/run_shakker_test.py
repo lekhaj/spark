@@ -146,7 +146,7 @@ def main() -> None:
     print("─" * 70)
     print("Loading Shakker Labs Flux ControlNet pipeline...")
     print("─" * 70)
-    from experiments.shakker_model_bhavesh import load_shakker, run_shakker
+    from shakker_model_bhavesh import load_shakker, run_shakker
     pipes = load_shakker()
 
     # ── Run Shakker stage 2 ────────────────────────────────────────────────────

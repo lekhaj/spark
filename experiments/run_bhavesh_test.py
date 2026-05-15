@@ -41,7 +41,7 @@ logging.basicConfig(
 logger = logging.getLogger("BhaveshTest")
 
 # ── Sandbox model imports ─────────────────────────────────────────────────────
-from experiments.sd_model_bhavesh_v1 import load_sd, run_stage1
+from sd_model_bhavesh_v1 import load_sd, run_stage1
 
 # ── Environment ───────────────────────────────────────────────────────────────
 from dotenv import load_dotenv
