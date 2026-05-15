@@ -83,12 +83,12 @@ HUMANOID_NEGATIVE = (
 )
 
 ANIMAL_PROMPT = (
-    "3/4 side view, standing, all four legs visible, "
+    "3/4 side view, neutral standing pose, all four paws on ground, "
     "white background, flat lighting, full body"
 )
 ANIMAL_NEGATIVE = (
-    "front view, missing legs, deformed legs, "
-    "sitting, lying down, overlapping legs, shadows, floor"
+    "walking, trotting, running, leg raised, floating leg, "
+    "front view, missing legs, deformed legs, sitting, lying down"
 )
 
 if CHARACTER_NAME == "lion_mount":

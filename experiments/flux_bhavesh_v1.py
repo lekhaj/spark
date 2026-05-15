@@ -57,9 +57,9 @@ CHARACTERS = {
     # NEW test character — quadruped animal for Trellis
     "lion_mount": {
         "flux_prompt": (
-            "majestic lion, 3/4 side view, standing, "
-            "body sideways, head slightly turned toward camera, "
-            "all four legs visible, white background, flat lighting, full body"
+            "majestic lion, 3/4 side view, neutral standing pose, "
+            "all four paws flat on ground, head slightly toward camera, "
+            "white background, flat lighting, full body"
         ),
         "width":               512,
         "height":              512,
