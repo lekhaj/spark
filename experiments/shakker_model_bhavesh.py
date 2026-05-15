@@ -1,42 +1,43 @@
 #!/usr/bin/env python3
 """
-shakker_model_bhavesh.py — SHAKKER LABS FLUX CONTROLNET PIPELINE
-=================================================================
+shakker_model_bhavesh.py — SHAKKER LABS FLUX CONTROLNET ENGINE
+===============================================================
 Branch : bhavesh-dev  |  GPU : spark_l4
 
-Replaces the old SD1.5 (DreamShaper) T-pose stage with a native
-Flux ControlNet pipeline using Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro.
+Supports BOTH Strategy A and Strategy B via the control_mode parameter.
 
-WHY THIS IS BETTER THAN SD1.5:
-  - SD1.5 is 2022 architecture trying to re-draw a 2024 Flux image.
-    The quality mismatch causes ghost hands, wrong anatomy, and floating legs.
-  - Shakker Labs is built natively FOR Flux. The same AI that designed
-    the character is now posing it. Zero quality loss.
+STRATEGY A (mode=4, POSE):
+  Input:  OpenPose skeleton image (programmatically generated T-pose)
+  Flow:   Text Prompt + Skeleton → Shakker → T-pose character (one step)
+  Use:    Production path. Best quality. No SD1.5 needed.
+
+STRATEGY B (mode=0, CANNY):
+  Input:  Concept image from Flux Stage 0
+  Flow:   Stage0 → Canny edges → Shakker → posed character
+  Use:    When you need to preserve a specific concept image's identity.
 
 MODEL ARCHITECTURE:
-  Base     : black-forest-labs/FLUX.1-dev  (12B param diffusion transformer)
+  Base      : black-forest-labs/FLUX.1-dev  (12B param transformer)
   ControlNet: Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro
-             Supports 7 control modes. We use mode 0 = Canny edges.
 
-MEMORY STRATEGY (L4 24GB GPU):
-  Both the base model and the ControlNet together exceed 24GB of VRAM.
-  We use enable_sequential_cpu_offload() to keep them in system RAM
-  and stream layers to the GPU one at a time. This is slower but safe
-  and eliminates all OOM (Out of Memory) crashes.
-
-CONTROL MODES (for reference):
-  0 = Canny   ← we use this (edge/structure control)
+CONTROL MODES (ControlNet-Union-Pro):
+  0 = Canny   ← Strategy B
   1 = Tile
   2 = Depth
   3 = Blur
-  4 = Pose
+  4 = Pose    ← Strategy A  ★ ACTIVE
   5 = Gray
   6 = Low Quality
+
+MEMORY STRATEGY (L4 24GB GPU):
+  Base + ControlNet together ≈ 27GB (exceeds L4 24GB).
+  enable_sequential_cpu_offload() streams layers from system RAM
+  to GPU one at a time. Safe. No OOM crashes. Slightly slower.
 """
 
 import logging
-import torch
 import numpy as np
+import torch
 from dataclasses import dataclass
 from PIL import Image
 
@@ -46,55 +47,55 @@ logger = logging.getLogger("shakker_model")
 SHAKKER_REPO  = "Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro"
 FLUX_DEV_REPO = "black-forest-labs/FLUX.1-dev"
 
-# ── ControlNet Union Pro control mode ─────────────────────────────────────────
-CANNY_MODE = 0   # 0 = Canny edge detection mode
+# ── Control modes ─────────────────────────────────────────────────────────────
+CANNY_MODE = 0   # Strategy B — edge/structure control from concept image
+POSE_MODE  = 4   # Strategy A — OpenPose skeleton control (ACTIVE)
 
 # ── Default inference parameters (tuned for L4 GPU) ──────────────────────────
-DEFAULT_STEPS     = 20       # 20 steps = good quality. SD1.5 used 30.
-DEFAULT_CFG       = 3.5      # Flux guidance scale (lower is better here)
-DEFAULT_CANNY_LO  = 50       # Canny low threshold — lower = more edges
-DEFAULT_CANNY_HI  = 150      # Canny high threshold
-DEFAULT_CTRL_SCALE = 0.7     # How strongly to follow Canny. 1.0 = rigid. 0.5 = loose.
+DEFAULT_STEPS      = 28      # 28 = excellent quality with Flux dev
+DEFAULT_CFG        = 3.5     # Flux optimal guidance scale
+DEFAULT_CTRL_SCALE = 0.65    # Pose conditioning: 0.65 gives creativity WITH structure
+
+# Canny defaults (Strategy B only)
+DEFAULT_CANNY_LO   = 50
+DEFAULT_CANNY_HI   = 150
 
 
 @dataclass
 class ShakkerPipes:
-    """Container for all loaded Shakker pipeline objects."""
+    """Container for the loaded Shakker pipeline."""
     pipe: object   # FluxControlNetPipeline
 
 
-# ── Canny edge extractor ──────────────────────────────────────────────────────
+# ── Canny extractor (Strategy B only) ─────────────────────────────────────────
 def _extract_canny(img: Image.Image, low: int = DEFAULT_CANNY_LO, high: int = DEFAULT_CANNY_HI) -> Image.Image:
     """
-    Convert a PIL image into a black-and-white Canny edge map.
-    This is the structural reference we feed to the ControlNet.
+    Convert a PIL image to a black-and-white Canny edge map.
+    Used only in Strategy B (CANNY_MODE).
     """
     try:
         import cv2
     except ImportError:
-        raise ImportError("OpenCV not found. Run: pip install opencv-python-headless")
+        raise ImportError("OpenCV required for Canny. Run: pip install opencv-python-headless")
 
-    arr  = np.array(img.convert("RGB"))
-    gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
+    arr   = np.array(img.convert("RGB"))
+    gray  = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
     edges = cv2.Canny(gray, low, high)
-    # ControlNet expects a 3-channel (RGB) image, not grayscale
-    edges_rgb = np.stack([edges] * 3, axis=-1)
-    return Image.fromarray(edges_rgb)
+    return Image.fromarray(np.stack([edges] * 3, axis=-1))
 
 
 # ── Model loader ──────────────────────────────────────────────────────────────
 def load_shakker() -> ShakkerPipes:
     """
-    Load the Shakker Labs ControlNet and FLUX.1-dev base pipeline.
+    Load Shakker Labs ControlNet + FLUX.1-dev.
 
-    Memory usage:
-      - FLUX.1-dev alone  ≈ 24 GB in bfloat16
-      - ControlNet        ≈  3 GB in bfloat16
-      - Total            ≈ 27 GB  (exceeds L4 24GB VRAM)
-      → We MUST use sequential_cpu_offload to handle this safely.
+    Memory breakdown:
+      FLUX.1-dev alone  ≈ 24 GB  (bfloat16)
+      ControlNet        ≈  3 GB  (bfloat16)
+      Total             ≈ 27 GB  → must use sequential_cpu_offload
 
     Returns:
-        ShakkerPipes with a ready-to-use pipeline.
+        ShakkerPipes ready for inference.
     """
     from diffusers import FluxControlNetModel, FluxControlNetPipeline
 
@@ -112,9 +113,9 @@ def load_shakker() -> ShakkerPipes:
         torch_dtype=torch.bfloat16,
     )
 
-    logger.info("[shakker] Enabling sequential_cpu_offload (required for L4 24GB)...")
+    logger.info("[shakker] Enabling sequential_cpu_offload for L4 24GB GPU...")
     pipe.enable_sequential_cpu_offload()
-    logger.info("[shakker] All Shakker models loaded and offloaded safely.")
+    logger.info("[shakker] All models loaded safely.")
 
     return ShakkerPipes(pipe=pipe)
 
@@ -122,8 +123,9 @@ def load_shakker() -> ShakkerPipes:
 # ── Inference ─────────────────────────────────────────────────────────────────
 def run_shakker(
     pipes:               ShakkerPipes,
-    concept_img:         Image.Image,
+    control_image:       Image.Image,
     prompt:              str,
+    control_mode:        int   = POSE_MODE,        # ★ Default is now POSE (Strategy A)
     controlnet_scale:    float = DEFAULT_CTRL_SCALE,
     num_inference_steps: int   = DEFAULT_STEPS,
     guidance_scale:      float = DEFAULT_CFG,
@@ -134,42 +136,49 @@ def run_shakker(
     """
     Generate a posed character image using Shakker Labs Flux ControlNet.
 
-    NOTE: FLUX.1-dev does NOT support negative prompts.
-          Do NOT pass a negative_prompt parameter. The negative in our
-          old SD1.5 pipeline was a workaround for SD1.5's weaknesses.
-          Shakker doesn't need it — the model is smart enough.
+    Strategy A (recommended):
+        control_image = generate_tpose_skeleton(512, 512)  # from openpose_humanoid.py
+        control_mode  = POSE_MODE  (4)
+
+    Strategy B (legacy concept transfer):
+        control_image = concept_img_from_flux_stage0
+        control_mode  = CANNY_MODE (0)
+        NOTE: run_shakker will auto-extract Canny edges from the concept image.
 
     Args:
-        pipes              : Loaded ShakkerPipes object.
-        concept_img        : The character concept image from Flux Stage 0.
-        prompt             : Text describing the desired pose.
-                             Keep UNDER 77 tokens (SD1.5 limit no longer applies
-                             to Flux, but keep it clean and simple).
-        controlnet_scale   : 0.7 is the sweet spot. Increase to 1.0 if
-                             anatomy drifts too far from the Canny reference.
-        num_inference_steps: 20 gives good quality. 28 gives excellent.
-        guidance_scale     : 3.5 is Flux optimal. Do not increase above 7.0.
-        width / height     : Output image size.
-        seed               : Fixed seed for reproducibility.
+        pipes           : Loaded ShakkerPipes.
+        control_image   : For Strategy A → OpenPose skeleton PIL image.
+                          For Strategy B → Flux concept PIL image (Canny extracted auto).
+        prompt          : Text prompt. FLUX does NOT use negative prompts.
+        control_mode    : 4=Pose (Strategy A), 0=Canny (Strategy B).
+        controlnet_scale: Pose adherence strength. 0.65 gives anatomy + style freedom.
+                          Increase to 0.9 if the pose drifts too much.
+        num_inference_steps: 28 = excellent. 20 = faster but slightly lower quality.
+        guidance_scale  : 3.5 is Flux optimal. Do not raise above 7.0.
+        width / height  : Output size. 512x512 recommended for Trellis input.
+        seed            : Fixed seed for reproducibility.
 
     Returns:
         PIL Image of the posed character.
     """
-    logger.info("[shakker] Extracting Canny edges from concept image...")
-    canny_img = _extract_canny(concept_img)
+    # Strategy B: auto-extract canny if using CANNY_MODE
+    if control_mode == CANNY_MODE:
+        logger.info("[shakker] Strategy B — extracting Canny edges from concept image...")
+        control_image = _extract_canny(control_image)
+    else:
+        logger.info(f"[shakker] Strategy A — using provided skeleton (mode={control_mode})")
 
     logger.info(
-        f"[shakker] Running inference | "
-        f"steps={num_inference_steps} cfg={guidance_scale} "
-        f"canny_scale={controlnet_scale} size={width}x{height}"
+        f"[shakker] Inference | mode={control_mode} steps={num_inference_steps} "
+        f"cfg={guidance_scale} ctrl_scale={controlnet_scale} size={width}x{height}"
     )
 
     generator = torch.Generator().manual_seed(seed)
 
     result = pipes.pipe(
         prompt=prompt,
-        control_image=canny_img,
-        control_mode=CANNY_MODE,
+        control_image=control_image,
+        control_mode=control_mode,
         width=width,
         height=height,
         controlnet_conditioning_scale=controlnet_scale,
