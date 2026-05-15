@@ -61,7 +61,7 @@ AWS_REGION = os.getenv("AWS_REGION",    "us-east-1")
 # ═════════════════════════════════════════════════════════════════════════════
 
 CHARACTER_NAME   = "lion_mount"     # ← "cultivation_youth", "iron_soldier", or "lion_mount"
-SKIP_FLUX_STAGES = True             # ← True to load the already generated image from S3
+SKIP_FLUX_STAGES = False            # ← False to regenerate Flux with new 3/4 pose prompt
 
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -83,12 +83,12 @@ HUMANOID_NEGATIVE = (
 )
 
 ANIMAL_PROMPT = (
-    "strict side profile, orthographic side view, neutral standing pose, "
-    "all four legs visible on ground, white background, flat lighting"
+    "3/4 front view, standing pose, all four legs visible and spread, "
+    "white background, flat lighting, full body"
 )
 ANIMAL_NEGATIVE = (
-    "front view, 3/4 view, dynamic pose, missing legs, deformed legs, "
-    "sitting, lying down, overlapping legs, shadows, floor, pattern"
+    "side view, dynamic pose, missing legs, deformed legs, "
+    "sitting, lying down, overlapping legs, shadows, floor"
 )
 
 if CHARACTER_NAME == "lion_mount":
