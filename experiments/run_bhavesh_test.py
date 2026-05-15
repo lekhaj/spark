@@ -31,11 +31,14 @@ import torch
 from PIL import Image
 
 # ── Path setup ────────────────────────────────────────────────────────────────
-# Add both the project root AND the experiments folder to sys.path
-# This ensures imports work whether you run from spark/ or spark/experiments/
+# Force the experiments/ directory into sys.path so Python always finds modules
+# regardless of which directory you run the script from.
 _here = os.path.abspath(os.path.dirname(__file__))
-sys.path.insert(0, _here)                                  # spark/experiments/
-sys.path.insert(0, os.path.abspath(os.path.join(_here, "..")))  # spark/
+if _here not in sys.path:
+    sys.path.insert(0, _here)                              # spark/experiments/
+_root = os.path.abspath(os.path.join(_here, ".."))
+if _root not in sys.path:
+    sys.path.insert(0, _root)                              # spark/
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -45,6 +48,7 @@ logging.basicConfig(
 logger = logging.getLogger("BhaveshTest")
 
 # ── Sandbox model imports ─────────────────────────────────────────────────────
+# Import directly — _here (experiments/) is guaranteed to be in sys.path above
 from sd_model_bhavesh_v1 import load_sd, run_stage1
 
 # ── Environment ───────────────────────────────────────────────────────────────
