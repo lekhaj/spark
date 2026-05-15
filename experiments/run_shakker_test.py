@@ -64,7 +64,7 @@ AWS_REGION = os.getenv("AWS_REGION",    "us-east-1")
 # ⚙️  CHANGE THESE FLAGS TO CONTROL THE RUN
 # ═════════════════════════════════════════════════════════════════════════════
 
-CHARACTER_NAME = "lion_mount"          # ← "cultivation_youth", "iron_soldier", or "lion_mount"
+CHARACTER_NAME = "cultivation_youth"   # ← "cultivation_youth", "iron_soldier", or "lion_mount"
 SHAKKER_STEPS  = 20                    # ← 20 = fast & good. 28 = excellent.
 
 # ═════════════════════════════════════════════════════════════════════════════

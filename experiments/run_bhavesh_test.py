@@ -60,7 +60,7 @@ AWS_REGION = os.getenv("AWS_REGION",    "us-east-1")
 # ⚙️  CHANGE THESE TWO FLAGS TO CONTROL THE RUN
 # ═════════════════════════════════════════════════════════════════════════════
 
-CHARACTER_NAME   = "lion_mount"     # ← "cultivation_youth", "iron_soldier", or "lion_mount"
+CHARACTER_NAME   = "cultivation_youth"     # ← "cultivation_youth", "iron_soldier", or "lion_mount"
 SKIP_FLUX_STAGES = False            # ← False to regenerate Flux with new 3/4 pose prompt
 
 # ═════════════════════════════════════════════════════════════════════════════
