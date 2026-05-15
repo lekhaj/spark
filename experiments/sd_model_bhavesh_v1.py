@@ -212,9 +212,15 @@ def load_sd(model_id: str, openpose_ref_path: str = "") -> SDPipes:
             subfolder="models",
             weight_name=IP_ADAPTER_WEIGHTS,
         )
+        pipe_quad.load_ip_adapter(
+            IP_ADAPTER_REPO,
+            subfolder="models",
+            weight_name=IP_ADAPTER_WEIGHTS,
+        )
         pipe_biped.set_ip_adapter_scale(0.0)   # off by default; run_stage1 sets it
+        pipe_quad.set_ip_adapter_scale(0.0)
         ip_ready = True
-        logger.info("[sd] IP-Adapter Plus loaded successfully.")
+        logger.info("[sd] IP-Adapter Plus loaded successfully on all pipelines.")
     except Exception as exc:
         logger.warning(
             f"[sd] IP-Adapter load failed — identity preservation disabled: {exc}"
