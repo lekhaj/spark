@@ -52,7 +52,7 @@ CANNY_MODE = 0   # Strategy B — edge/structure control from concept image
 POSE_MODE  = 4   # Strategy A — OpenPose skeleton control (ACTIVE)
 
 # ── Default inference parameters (tuned for L4 GPU) ──────────────────────────
-DEFAULT_STEPS      = 28      # 28 = excellent quality with Flux dev
+DEFAULT_STEPS      = 20      # 20 = ~15-20 min on L4. 28 = better quality but slower.
 DEFAULT_CFG        = 3.5     # Flux optimal guidance scale
 DEFAULT_CTRL_SCALE = 0.65    # Pose conditioning: 0.65 gives creativity WITH structure
 
@@ -113,8 +113,11 @@ def load_shakker() -> ShakkerPipes:
         torch_dtype=torch.bfloat16,
     )
 
-    logger.info("[shakker] Enabling sequential_cpu_offload for L4 24GB GPU...")
-    pipe.enable_sequential_cpu_offload()
+    logger.info("[shakker] Enabling model_cpu_offload for L4 24GB GPU...")
+    # model_cpu_offload swaps WHOLE pipeline stages (transformer, VAE, etc.)
+    # This is ~10x faster than sequential_cpu_offload which swaps every single layer.
+    # Expected inference time: ~15-20 min vs 2 hours with sequential.
+    pipe.enable_model_cpu_offload()
     logger.info("[shakker] All models loaded safely.")
 
     return ShakkerPipes(pipe=pipe)
