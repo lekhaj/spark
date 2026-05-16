@@ -45,17 +45,16 @@ logger = logging.getLogger("shakker_model")
 
 # ── Model identifiers ─────────────────────────────────────────────────────────
 SHAKKER_REPO  = "Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro"
-FLUX_DEV_REPO = "black-forest-labs/FLUX.1-dev"
+FLUX_DEV_REPO = "black-forest-labs/FLUX.1-schnell"  # Switched to Schnell for 4-step speed
 
 # ── Control modes ─────────────────────────────────────────────────────────────
 CANNY_MODE = 0   # Strategy B — edge/structure control from concept image
 POSE_MODE  = 4   # Strategy A — OpenPose skeleton control (ACTIVE)
 
-# ── Default inference parameters (tuned for L4 GPU) ──────────────────────────
-DEFAULT_STEPS      = 20      # 20 = good quality, ~15-20 min on L4 with model_cpu_offload
-                             # raise to 28 for higher quality (adds ~10 min)
-DEFAULT_CFG        = 3.5     # Flux optimal guidance scale
-DEFAULT_CTRL_SCALE = 0.65   # Pose conditioning: 0.65 gives creativity WITH structure
+# ── Default inference parameters (tuned for Schnell on L4 GPU) ───────────────
+DEFAULT_STEPS      = 4       # Schnell ONLY needs 4 steps! (4 steps * 4 min = 16 min total)
+DEFAULT_CFG        = 0.0     # Schnell MUST have 0.0 guidance scale!
+DEFAULT_CTRL_SCALE = 0.65    # Pose conditioning: 0.65 gives creativity WITH structure
 
 # Canny thresholds (Strategy B only — not used in Strategy A)
 DEFAULT_CANNY_LO   = 50     # lower = more edges detected
@@ -120,18 +119,15 @@ def load_shakker() -> ShakkerPipes:
         torch_dtype=torch.bfloat16,
     )
 
-    # ── Memory management: model_cpu_offload is 3-5x faster than sequential
-    # on a 24GB GPU like the L4. It moves whole submodels (text encoder, transformer,
-    # VAE) to CPU between phases instead of shuffling thousands of tiny layers.
-    # If this OOMs (transformer alone is ~24GB), it falls back to sequential.
-    logger.info("[shakker] Setting up memory offload strategy for L4 24GB GPU...")
-    try:
-        pipe.enable_model_cpu_offload()
-        logger.info("[shakker] ✅ model_cpu_offload ACTIVE — expected ~15-25 min generation")
-    except Exception as e:
-        logger.warning(f"[shakker] model_cpu_offload failed ({e}), falling back to sequential...")
-        pipe.enable_sequential_cpu_offload()
-        logger.info("[shakker] ⚠️ sequential_cpu_offload active — generation will be ~2 hours")
+    # ── Memory management:
+    # The L4 GPU has 22.04 GB of VRAM. The 12B transformer needs ~22.01 GB.
+    # We are literally 50 MB short, which causes OOM crashes during inference
+    # if we try to use model_cpu_offload.
+    # We MUST use sequential_cpu_offload. Because we are using FLUX-schnell (4 steps),
+    # the 4-minute-per-step penalty is fine (4 * 4 = 16 minutes total).
+    logger.info("[shakker] Setting up safe sequential offload for L4 24GB GPU...")
+    pipe.enable_sequential_cpu_offload()
+    logger.info("[shakker] ✅ sequential_cpu_offload active — expected ~16 min generation")
 
     logger.info("[shakker] All models loaded safely.")
 

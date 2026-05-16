@@ -73,8 +73,8 @@ AWS_REGION = os.getenv("AWS_REGION",    "us-east-1")
 # ⚙️  CHANGE THESE FLAGS TO CONTROL THE RUN
 # ═════════════════════════════════════════════════════════════════════════════
 
-CHARACTER_NAME = "cultivation_youth"   # ← "cultivation_youth", "iron_soldier", or "lion_mount"
-SHAKKER_STEPS  = 28                    # ← 20 = fast, 28 = excellent quality
+CHARACTER_NAME = "hooded_assassin"   # ← NEW character based on your reference
+SHAKKER_STEPS  = 4                   # ← 4 steps required for FLUX.1-schnell
 
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -86,6 +86,17 @@ S3_KEY_OUTPUT = f"images/bhavesh_experiments/{CHARACTER_NAME}_strategyA_tpose.pn
 # Strategy A does NOT use a concept image. It uses these text prompts directly.
 # Keep under 77 tokens. No negative prompts — Flux doesn't support them.
 CHARACTERS = {
+    "hooded_assassin": {
+        "prompt": (
+            "young male assassin, T-pose, arms extended horizontally, "
+            "wearing a simple dark hood, white and brown leather tunic armor, "
+            "gauntlets, tall brown boots, clean design, no complex headwear, "
+            "white background, flat studio lighting, full body, feet visible"
+        ),
+        "width":  512,
+        "height": 512,
+        "skeleton_size": (512, 512),
+    },
     "cultivation_youth": {
         "prompt": (
             "young male cultivator, T-pose, arms extended horizontally, "
