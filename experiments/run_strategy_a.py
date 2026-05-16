@@ -73,7 +73,7 @@ AWS_REGION = os.getenv("AWS_REGION",    "us-east-1")
 # ⚙️  CHANGE THESE FLAGS TO CONTROL THE RUN
 # ═════════════════════════════════════════════════════════════════════════════
 
-CHARACTER_NAME = "hooded_assassin"   # ← NEW character based on your reference
+CHARACTER_NAME = "lion_mount"        # ← Set to lion_mount for the quadruped test
 SHAKKER_STEPS  = 4                   # ← 4 steps required for FLUX.1-schnell
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -119,16 +119,14 @@ CHARACTERS = {
     },
     "lion_mount": {
         "prompt": (
-            "majestic lion, neutral standing pose, 3/4 side view, "
-            "all four paws flat on ground, white background, flat lighting, full body"
+            "majestic lion, neutral standing pose, orthographic 3/4 side profile, "
+            "all four paws flat on the ground, simple clean design, "
+            "white background, flat studio lighting, full body, paws visible"
         ),
         "width":  512,
         "height": 512,
-        # NOTE: For quadrupeds (lion_mount), we use Canny mode instead of Pose mode
-        # because OpenPose COCO-18 is a HUMANOID skeleton — it doesn't map to a lion.
-        # The runner handles this automatically below.
         "skeleton_size": (512, 512),
-        "use_canny_mode": True,        # ← override: use CANNY_MODE for quadrupeds
+        "is_animal": True,             # ← bypasses humanoid ControlNet
     },
 }
 
@@ -169,18 +167,29 @@ def main() -> None:
 
     # ── Build control image ───────────────────────────────────────────────────
     from shakker_model_bhavesh import (
-        load_shakker, run_shakker, POSE_MODE, CANNY_MODE
+        load_shakker, run_shakker, POSE_MODE, CANNY_MODE, DEFAULT_CTRL_SCALE
     )
 
+    is_animal = cfg.get("is_animal", False)
     use_canny = cfg.get("use_canny_mode", False)
+    
     control_mode = CANNY_MODE if use_canny else POSE_MODE
+    ctrl_scale   = DEFAULT_CTRL_SCALE
 
     print("─" * 70)
-    if use_canny:
-        # For quadrupeds: use a simple white silhouette — Canny mode needs a real image.
-        # You must have run run_bhavesh_test.py first to have a concept image on S3.
-        print("Quadruped detected — loading concept image from S3 for Canny mode...")
-        print("[NOTE] Make sure you ran run_bhavesh_test.py for this character first!")
+    if is_animal:
+        # Quadruped test: OpenPose is human-only, so we completely disable ControlNet
+        # by sending a blank image and setting the scale to 0.0.
+        # This lets pure Flux generate the perfect orthographic side profile from text alone.
+        print("Quadruped detected — Disabling ControlNet. Using pure text-to-image Flux!")
+        print("─" * 70)
+        control_img = Image.new("RGB", (cfg["width"], cfg["height"]), (0, 0, 0))
+        control_mode = POSE_MODE
+        ctrl_scale = 0.0
+        print(f"  ✓ Blank control image created  size={control_img.size}\n")
+    elif use_canny:
+        # Strategy B fallback
+        print("Strategy B detected — loading concept image from S3 for Canny mode...")
         print("─" * 70)
         import boto3
         s3_concept_key = f"images/bhavesh_experiments/{CHARACTER_NAME}_stage1_norm512.png"
@@ -220,6 +229,7 @@ def main() -> None:
         control_image=control_img,
         prompt=cfg["prompt"],
         control_mode=control_mode,
+        controlnet_scale=ctrl_scale,   # ← Passes 0.0 for animals, 0.65 for humans
         num_inference_steps=SHAKKER_STEPS,
         width=cfg["width"],
         height=cfg["height"],
