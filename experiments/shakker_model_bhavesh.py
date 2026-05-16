@@ -57,6 +57,10 @@ DEFAULT_STEPS      = 20      # 20 = good quality, ~15-20 min on L4 with model_cp
 DEFAULT_CFG        = 3.5     # Flux optimal guidance scale
 DEFAULT_CTRL_SCALE = 0.65   # Pose conditioning: 0.65 gives creativity WITH structure
 
+# Canny thresholds (Strategy B only — not used in Strategy A)
+DEFAULT_CANNY_LO   = 50     # lower = more edges detected
+DEFAULT_CANNY_HI   = 150    # higher = only strong edges detected
+
 # Offload strategy — auto-selected based on available VRAM
 # model_cpu_offload  : moves whole submodels GPU ↔ CPU between phases (~15-25 min)
 # sequential_cpu_offload: moves layer-by-layer (~2 hours — AVOID on 24GB GPU)
