@@ -102,13 +102,17 @@ def _parse_gpu_instance_map() -> dict[str, dict]:
             out[queue.strip()] = {"id": iid.strip(), "label": (label or iid).strip()}
         return out
     # Defaults — leave id="" for instances that should be resolved at runtime
-    # (the launcher will discover by tag Project=spark-gpu). The L4 entry is
-    # only useful if you set a real id via GPU_INSTANCE_MAP env override.
+    # (the launcher will discover by tag Project=spark-gpu).
+    # "prewarm" flag: True if the instance runs spark-prewarm.service and
+    # publishes prewarm:ready:<iid>. Legacy/manually-managed instances should
+    # set prewarm=False so the status panel doesn't show "Prewarming forever".
     return {
         "manual_gen_tasks":      {"id": "",
-                                  "label": "Default L4 (set GPU_INSTANCE_MAP to override)"},
+                                  "label": "Default L4 (set GPU_INSTANCE_MAP to override)",
+                                  "prewarm": False},
         "manual_gen_tasks_spot": {"id": os.getenv("AWS_GPU_INSTANCE_ID", "").strip(),
-                                  "label": "L40S g6e.2xlarge (spot — auto-resolved)"},
+                                  "label": "L40S g6e.2xlarge (spot — auto-resolved)",
+                                  "prewarm": True},
     }
 
 GPU_INSTANCE_MAP = _parse_gpu_instance_map()
@@ -901,7 +905,7 @@ def generation_studio_ui():
                     status_md = gr.Markdown("⏳ Loading…")
                 _status_rows.append((meta["id"], meta, status_md))
 
-            def _render_one(iid):
+            def _render_one(iid, prewarm_expected: bool):
                 if not iid:
                     return "❌ Not configured (set `AWS_GPU_INSTANCE_ID` or `GPU_INSTANCE_MAP`)"
                 try:
@@ -910,7 +914,12 @@ def generation_studio_ui():
                     r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT,
                                     password=REDIS_PASSWORD, db=0, decode_responses=True)
                     s = get_gpu_status(iid, r=r)
-                    bits = [s["phase_label"]]
+                    label = s["phase_label"]
+                    # Override "Prewarming" → "Ready" for instances that don't
+                    # publish prewarm:ready (legacy / non-orchestrated GPUs)
+                    if s["phase"] == "prewarming" and not prewarm_expected:
+                        label = "🟢 Ready (no prewarm — legacy)"
+                    bits = [label]
                     if s["instance_type"]:
                         bits.append(f"`{s['instance_type']}`")
                     if s["public_ip"]:
@@ -922,7 +931,8 @@ def generation_studio_ui():
                     return f"⚠ status error: {e}"
 
             def _render_all():
-                return [_render_one(iid) for iid, _m, _md in _status_rows]
+                return [_render_one(iid, meta.get("prewarm", True))
+                        for iid, meta, _md in _status_rows]
 
             status_refresh_btn = gr.Button("🔄 Refresh now", size="sm")
             status_refresh_btn.click(
