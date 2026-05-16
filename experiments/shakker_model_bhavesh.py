@@ -52,13 +52,14 @@ CANNY_MODE = 0   # Strategy B — edge/structure control from concept image
 POSE_MODE  = 4   # Strategy A — OpenPose skeleton control (ACTIVE)
 
 # ── Default inference parameters (tuned for L4 GPU) ──────────────────────────
-DEFAULT_STEPS      = 20      # 20 = ~15-20 min on L4. 28 = better quality but slower.
+DEFAULT_STEPS      = 20      # 20 = good quality, ~15-20 min on L4 with model_cpu_offload
+                             # raise to 28 for higher quality (adds ~10 min)
 DEFAULT_CFG        = 3.5     # Flux optimal guidance scale
-DEFAULT_CTRL_SCALE = 0.65    # Pose conditioning: 0.65 gives creativity WITH structure
+DEFAULT_CTRL_SCALE = 0.65   # Pose conditioning: 0.65 gives creativity WITH structure
 
-# Canny defaults (Strategy B only)
-DEFAULT_CANNY_LO   = 50
-DEFAULT_CANNY_HI   = 150
+# Offload strategy — auto-selected based on available VRAM
+# model_cpu_offload  : moves whole submodels GPU ↔ CPU between phases (~15-25 min)
+# sequential_cpu_offload: moves layer-by-layer (~2 hours — AVOID on 24GB GPU)
 
 
 @dataclass
@@ -92,7 +93,9 @@ def load_shakker() -> ShakkerPipes:
     Memory breakdown:
       FLUX.1-dev alone  ≈ 24 GB  (bfloat16)
       ControlNet        ≈  3 GB  (bfloat16)
-      Total             ≈ 27 GB  → must use sequential_cpu_offload
+      Total             ≈ 27 GB
+      → model_cpu_offload moves whole submodels GPU↔CPU (~15-20 min on L4)
+      → sequential_cpu_offload is the fallback (~2 hrs) — only if model_cpu_offload OOMs
 
     Returns:
         ShakkerPipes ready for inference.
@@ -113,11 +116,19 @@ def load_shakker() -> ShakkerPipes:
         torch_dtype=torch.bfloat16,
     )
 
-    logger.info("[shakker] Enabling model_cpu_offload for L4 24GB GPU...")
-    # model_cpu_offload swaps WHOLE pipeline stages (transformer, VAE, etc.)
-    # This is ~10x faster than sequential_cpu_offload which swaps every single layer.
-    # Expected inference time: ~15-20 min vs 2 hours with sequential.
-    pipe.enable_model_cpu_offload()
+    # ── Memory management: model_cpu_offload is 3-5x faster than sequential
+    # on a 24GB GPU like the L4. It moves whole submodels (text encoder, transformer,
+    # VAE) to CPU between phases instead of shuffling thousands of tiny layers.
+    # If this OOMs (transformer alone is ~24GB), it falls back to sequential.
+    logger.info("[shakker] Setting up memory offload strategy for L4 24GB GPU...")
+    try:
+        pipe.enable_model_cpu_offload()
+        logger.info("[shakker] ✅ model_cpu_offload ACTIVE — expected ~15-25 min generation")
+    except Exception as e:
+        logger.warning(f"[shakker] model_cpu_offload failed ({e}), falling back to sequential...")
+        pipe.enable_sequential_cpu_offload()
+        logger.info("[shakker] ⚠️ sequential_cpu_offload active — generation will be ~2 hours")
+
     logger.info("[shakker] All models loaded safely.")
 
     return ShakkerPipes(pipe=pipe)
