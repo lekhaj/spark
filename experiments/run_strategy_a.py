@@ -93,8 +93,8 @@ CHARACTERS = {
             "dark pants, clean design, white background, flat studio lighting, full body, feet visible"
         ),
         "width":  512,
-        "height": 512,
-        "skeleton_size": (512, 512),
+        "height": 768,
+        "skeleton_size": (512, 768),
     },
     "hooded_assassin": {
         "prompt": (
@@ -104,8 +104,8 @@ CHARACTERS = {
             "white background, flat studio lighting, full body, feet visible"
         ),
         "width":  512,
-        "height": 512,
-        "skeleton_size": (512, 512),
+        "height": 768,
+        "skeleton_size": (512, 768),
     },
     "cultivation_youth": {
         "prompt": (
@@ -114,8 +114,8 @@ CHARACTERS = {
             "white background, flat studio lighting, full body, feet visible"
         ),
         "width":  512,
-        "height": 512,
-        "skeleton_size": (512, 512),   # OpenPose skeleton size (must match output)
+        "height": 768,
+        "skeleton_size": (512, 768),   # OpenPose skeleton size (must match output)
     },
     "iron_soldier": {
         "prompt": (
@@ -124,8 +124,8 @@ CHARACTERS = {
             "white background, flat studio lighting, full body, feet visible"
         ),
         "width":  512,
-        "height": 512,
-        "skeleton_size": (512, 512),
+        "height": 768,
+        "skeleton_size": (512, 768),
     },
     "lion_mount": {
         "prompt": (
