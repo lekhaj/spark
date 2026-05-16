@@ -91,7 +91,11 @@ REDIS_QUEUE = os.getenv("MANUAL_GEN_QUEUE", "manual_gen_tasks")
 def _db():
     return get_db(MONGO_URI, MONGO_DB)
 
-def _push_task(payload: dict, queue: str = REDIS_QUEUE) -> str:
+def _push_task(payload: dict, queue: str = None) -> str:
+    # Resolve at call-time so the GPU-target dropdown can update REDIS_QUEUE
+    # at runtime without having to restart the gradio app.
+    if queue is None:
+        queue = REDIS_QUEUE
     import redis
     try:
         from lib.gpu_launcher import ensure_gpu_ready
@@ -665,6 +669,34 @@ def generation_studio_ui():
 
     with gr.Blocks() as tab:
         gr.Markdown("# 🎨 Generation Studio")
+
+        # GPU target selector — picks which Redis queue tasks are pushed to.
+        # Each queue is consumed by exactly one manual_gen_worker (running on
+        # a specific GPU instance). Defaults to whatever MANUAL_GEN_QUEUE is
+        # set to in the CPU env (.env). Changing here updates REDIS_QUEUE at
+        # process scope until the gradio app restarts.
+        _queue_choices = [
+            ("Default GPU (manual_gen_tasks)", "manual_gen_tasks"),
+            ("L40S Spot (manual_gen_tasks_spot)", "manual_gen_tasks_spot"),
+        ]
+        with gr.Row():
+            gpu_target = gr.Dropdown(
+                choices=_queue_choices,
+                value=REDIS_QUEUE,
+                label="🖥️ Target GPU queue",
+                scale=4,
+                info="Routes Queue clicks to the chosen GPU. Defaults from MANUAL_GEN_QUEUE env.",
+            )
+            gpu_target_info = gr.Textbox(
+                value=f"Active queue: {REDIS_QUEUE}",
+                label="", interactive=False, scale=2,
+            )
+
+        def _set_target_queue(q):
+            global REDIS_QUEUE
+            REDIS_QUEUE = q
+            return f"Active queue: {q}"
+        gpu_target.change(_set_target_queue, inputs=gpu_target, outputs=gpu_target_info)
 
         stage_timer = gr.Timer(value=4, active=False)
         _chars = _list_chars()
