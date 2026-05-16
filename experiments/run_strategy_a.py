@@ -254,7 +254,7 @@ def main() -> None:
         num_inference_steps=SHAKKER_STEPS,
         width=cfg["width"],
         height=cfg["height"],
-        seed=999,                      # ← changed seed so it draws a fresh layout
+        seed=404,                      # ← changed seed so it draws a fresh layout
     )
 
     # ── Upload to S3 ──────────────────────────────────────────────────────────

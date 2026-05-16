@@ -67,10 +67,15 @@ OPENPOSE_LIMBS = [
 
 
 def _scale_kps(kps: dict, src_w: int, src_h: int, dst_w: int, dst_h: int) -> dict:
-    """Scale keypoints from one resolution to another."""
-    sx = dst_w / src_w
-    sy = dst_h / src_h
-    return {k: (int(x * sx), int(y * sy)) for k, (x, y) in kps.items()}
+    """Scale keypoints uniformly and center them, leaving a 15% safety margin so feet aren't cropped."""
+    # Uniform scale factor (take the smallest dimension to ensure it fits)
+    scale = min(dst_w / src_w, dst_h / src_h) * 0.85  # 85% size leaves 15% empty space for head/feet
+    
+    # Calculate padding to center the skeleton in the new canvas
+    pad_x = (dst_w - (src_w * scale)) / 2
+    pad_y = (dst_h - (src_h * scale)) / 2
+    
+    return {k: (int(x * scale + pad_x), int(y * scale + pad_y)) for k, (x, y) in kps.items()}
 
 
 # ── Calibrated T-pose keypoints at 512x512 (base resolution) ─────────────────
