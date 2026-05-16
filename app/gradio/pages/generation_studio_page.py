@@ -1199,8 +1199,7 @@ def generation_studio_ui():
                 err   = run.get(f"lod_{p}_error", "") or ""
                 info  = (f"❌ {err[:80]}" if err else
                          (f"tris={tris} size={bts/1024:.0f}KB" if url else "—"))
-                viewer = (f'<a href="https://3dviewer.net/#model={url}" '
-                          f'target="_blank">Open in 3D viewer</a>') if url else ""
+                viewer = _viewer_btn(url) if url else ""
                 results.extend([url, info, viewer])
             return [st, *results]
 
@@ -1403,10 +1402,7 @@ def generation_studio_ui():
                 err   = doc.get(f"lod_{p}_error", "")
                 info  = (f"❌ {err[:80]}" if err else
                          (f"tris={tris} size={bts/1024:.0f}KB" if url else "—"))
-                viewer = ""
-                if url:
-                    viewer = (f'<a href="https://3dviewer.net/#model={url}" '
-                              f'target="_blank">Open in 3D viewer</a>')
+                viewer = _viewer_btn(url) if url else ""
                 results.extend([url, info, viewer])
             return (st, *results)
 
@@ -1433,26 +1429,61 @@ def generation_studio_ui():
         )
 
         # ── 3D viewer button helper ───────────────────────────────────────────
+        # Builds three buttons per GLB url: View (Babylon, in-app), Download
+        # (direct GLB), and a fallback to 3dviewer.net.
+        # The "View" path goes to /static/babylon_viewer.html on the same
+        # gradio origin so we don't need to know the public host name.
         def _viewer_btn(url: str) -> str:
             if not url:
                 return ""
-            link = f"https://3dviewer.net/#model={url}"
+            import urllib.parse as _up
+            from html import escape as _esc
+            viewer_url = "/static/babylon_viewer.html?model=" + _up.quote(url, safe="")
+            fallback   = "https://3dviewer.net/#model=" + url
+            u = _esc(url, quote=True)
             return (
-                f'<div style="display: flex; gap: 8px;">'
-                f'<a href="{link}" target="_blank" rel="noopener noreferrer" '
-                f'style="display:inline-block;padding:6px 14px;background:#2563eb;'
-                f'color:#fff;border-radius:6px;text-decoration:none;font-size:13px;">'
-                f'🧊 Open in 3dviewer.net</a>'
-                f'<a href="{url}" download target="_blank" rel="noopener noreferrer" '
-                f'style="display:inline-block;padding:6px 14px;background:#10b981;'
-                f'color:#fff;border-radius:6px;text-decoration:none;font-size:13px;">'
-                f'⬇️ Download GLB</a>'
-                f'</div>'
+                '<div style="display:flex; gap:8px; flex-wrap:wrap;">'
+                f'<a href="{_esc(viewer_url, quote=True)}" target="_blank" rel="noopener noreferrer" '
+                'style="display:inline-block;padding:6px 14px;background:#2563eb;'
+                'color:#fff;border-radius:6px;text-decoration:none;font-size:13px;">'
+                '🧊 View in Babylon</a>'
+                f'<a href="{u}" download target="_blank" rel="noopener noreferrer" '
+                'style="display:inline-block;padding:6px 14px;background:#10b981;'
+                'color:#fff;border-radius:6px;text-decoration:none;font-size:13px;">'
+                '⬇️ Download GLB</a>'
+                f'<a href="{_esc(fallback, quote=True)}" target="_blank" rel="noopener noreferrer" '
+                'style="display:inline-block;padding:6px 14px;background:#6b7280;'
+                'color:#fff;border-radius:6px;text-decoration:none;font-size:13px;">'
+                '🌐 3dviewer.net</a>'
+                '</div>'
+            )
+
+        # Multi-LOD viewer link — opens Babylon with all 4 LODs and a switcher
+        def _multi_lod_btn(lod_a: str, lod_b: str, lod_c: str, lod_d: str) -> str:
+            urls = {"a": lod_a, "b": lod_b, "c": lod_c, "d": lod_d}
+            urls = {k: v for k, v in urls.items() if v}
+            if not urls:
+                return ""
+            import urllib.parse as _up
+            from html import escape as _esc
+            qs = "&".join(f"lod_{k}=" + _up.quote(v, safe="") for k, v in urls.items())
+            viewer_url = "/static/babylon_viewer.html?" + qs
+            return (
+                f'<div style="margin-top:8px;">'
+                f'<a href="{_esc(viewer_url, quote=True)}" target="_blank" rel="noopener noreferrer" '
+                'style="display:inline-block;padding:8px 16px;background:#a855f7;'
+                'color:#fff;border-radius:6px;text-decoration:none;font-size:13px;font-weight:600;">'
+                '🎚️ Open all LODs in Babylon (compare)</a>'
+                '</div>'
             )
 
         tr_url.change(_viewer_btn, [tr_url], [tr_3d_btn])
         px_url.change(_viewer_btn, [px_url], [px_3d_btn])
         rg_url.change(_viewer_btn, [rg_url], [rg_3d_btn])
+        ml_a_url.change(_viewer_btn, [ml_a_url], [ml_a_3d])
+        ml_b_url.change(_viewer_btn, [ml_b_url], [ml_b_3d])
+        ml_c_url.change(_viewer_btn, [ml_c_url], [ml_c_3d])
+        ml_d_url.change(_viewer_btn, [ml_d_url], [ml_d_3d])
 
         # ── Auto-refresh timer ────────────────────────────────────────────────
         _ACTIVE = {"queued", "running"}

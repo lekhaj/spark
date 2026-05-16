@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Spark GLB Viewer</title>
+<meta name="viewport" content="width=device-width,initial-scale=1.0" />
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #1a1a1a; color: #eee; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; overflow: hidden; }
+  #renderCanvas { width: 100vw; height: 100vh; touch-action: none; outline: none; }
+  #ui {
+    position: fixed; top: 12px; left: 12px; z-index: 10;
+    background: rgba(0,0,0,0.65); padding: 10px 12px; border-radius: 8px;
+    font-size: 12px; max-width: 320px; backdrop-filter: blur(6px);
+  }
+  #ui h1 { margin: 0 0 8px; font-size: 14px; font-weight: 600; color: #fff; }
+  #ui .row { margin: 4px 0; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  #ui label { font-size: 11px; color: #aaa; min-width: 80px; }
+  #ui button {
+    background: #444; color: #eee; border: 1px solid #666; border-radius: 4px;
+    padding: 3px 8px; font-size: 11px; cursor: pointer;
+  }
+  #ui button:hover { background: #555; }
+  #ui button.active { background: #2c7; color: #000; border-color: #2c7; }
+  #ui select, #ui input[type="color"] {
+    background: #333; color: #eee; border: 1px solid #555; border-radius: 4px;
+    padding: 2px 4px; font-size: 11px;
+  }
+  #stats {
+    position: fixed; bottom: 12px; left: 12px; z-index: 10;
+    background: rgba(0,0,0,0.65); padding: 6px 10px; border-radius: 6px;
+    font-family: monospace; font-size: 11px; color: #9c9; backdrop-filter: blur(6px);
+  }
+  #loader {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    background: rgba(0,0,0,0.85); padding: 20px 30px; border-radius: 10px;
+    font-size: 14px; display: none; z-index: 100;
+  }
+  #error {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    background: rgba(120,30,30,0.95); padding: 20px 30px; border-radius: 10px;
+    max-width: 420px; font-size: 13px; line-height: 1.4; display: none; z-index: 100;
+  }
+  #downloads { margin-top: 6px; font-size: 11px; }
+  #downloads a { color: #6cf; text-decoration: none; }
+  #downloads a:hover { text-decoration: underline; }
+  #lodSwitcher { margin-top: 6px; }
+  #lodSwitcher button { margin-right: 4px; }
+  .hint { color: #888; font-size: 10px; margin-top: 6px; }
+</style>
+</head>
+<body>
+<canvas id="renderCanvas"></canvas>
+
+<div id="ui">
+  <h1>🎨 Spark GLB Viewer</h1>
+  <div id="lodSwitcher"></div>
+  <div class="row"><label>Render</label>
+    <button id="btnShaded" class="active">Shaded</button>
+    <button id="btnWire">Wireframe</button>
+  </div>
+  <div class="row"><label>Background</label>
+    <input type="color" id="bgColor" value="#1a1a1a" />
+    <button id="btnEnv" class="active">HDR</button>
+    <button id="btnGrid">Grid</button>
+    <button id="btnAxes">Axes</button>
+  </div>
+  <div class="row"><label>Tools</label>
+    <button id="btnInspector">Inspector (Ctrl+I)</button>
+    <button id="btnSnap">Snapshot</button>
+    <button id="btnFit">Fit camera</button>
+  </div>
+  <div id="animRow" class="row" style="display:none;"><label>Animation</label>
+    <select id="animSelect"></select>
+    <button id="btnPlay">▶ Play</button>
+  </div>
+  <div id="downloads"></div>
+  <div class="hint">Drag = orbit · Right-drag = pan · Scroll = zoom · Ctrl+I = Inspector</div>
+</div>
+
+<div id="stats">FPS — | Verts — | Tris — | Draws —</div>
+<div id="loader">Loading…</div>
+<div id="error"></div>
+
+<script src="https://cdn.babylonjs.com/babylon.js"></script>
+<script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
+<script src="https://cdn.babylonjs.com/inspector/babylon.inspector.bundle.js"></script>
+<script src="https://cdn.babylonjs.com/serializers/babylonjs.serializers.min.js"></script>
+
+<script>
+(() => {
+  const params = new URLSearchParams(window.location.search);
+  const modelUrl = params.get('model') || '';
+  // Optional LOD comparison: pass &lod_a=URL&lod_b=URL&lod_c=URL&lod_d=URL
+  const lodUrls = {};
+  ['a', 'b', 'c', 'd'].forEach(k => {
+    const v = params.get(`lod_${k}`);
+    if (v) lodUrls[k] = v;
+  });
+  // If model= is given AND no lod_*, just show single. If lod_*, default to first available.
+  const hasLods = Object.keys(lodUrls).length > 0;
+  let currentUrl = hasLods ? (lodUrls.a || lodUrls.b || lodUrls.c || lodUrls.d) : modelUrl;
+
+  const canvas = document.getElementById('renderCanvas');
+  const loader = document.getElementById('loader');
+  const errorEl = document.getElementById('error');
+  const statsEl = document.getElementById('stats');
+  const downloads = document.getElementById('downloads');
+  const lodSwitcher = document.getElementById('lodSwitcher');
+
+  if (!currentUrl) {
+    errorEl.textContent = 'No model URL provided. Add ?model=<GLB_URL> to this page.';
+    errorEl.style.display = 'block';
+    return;
+  }
+
+  // ── Babylon engine + scene ──────────────────────────────────────────────────
+  const engine = new BABYLON.Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true });
+  const scene = new BABYLON.Scene(engine);
+  scene.clearColor = BABYLON.Color3.FromHexString('#1a1a1a').toColor4(1);
+
+  // HDR environment (Babylon's default studio HDR)
+  const envTex = BABYLON.CubeTexture.CreateFromPrefilteredData(
+    'https://playground.babylonjs.com/textures/environment.env', scene);
+  scene.environmentTexture = envTex;
+  scene.environmentIntensity = 1.0;
+
+  const camera = new BABYLON.ArcRotateCamera(
+    'cam', -Math.PI/2, Math.PI/2.5, 3, BABYLON.Vector3.Zero(), scene);
+  camera.attachControl(canvas, true);
+  camera.wheelDeltaPercentage = 0.02;
+  camera.lowerRadiusLimit = 0.05;
+  camera.upperRadiusLimit = 200;
+  camera.pinchPrecision = 200;
+
+  const hemi = new BABYLON.HemisphericLight('hemi', new BABYLON.Vector3(0, 1, 0), scene);
+  hemi.intensity = 0.4;
+  const dir = new BABYLON.DirectionalLight('dir', new BABYLON.Vector3(-1, -2, -1), scene);
+  dir.intensity = 0.6;
+
+  // Grid + axes
+  let grid = null, axes = null;
+  function buildGrid() {
+    if (grid) return;
+    grid = BABYLON.MeshBuilder.CreateGround('grid', { width: 10, height: 10, subdivisions: 20 }, scene);
+    const mat = new BABYLON.StandardMaterial('gridMat', scene);
+    mat.wireframe = true;
+    mat.alpha = 0.3;
+    grid.material = mat;
+    grid.position.y = 0;
+    grid.isPickable = false;
+  }
+  function toggleGrid(on) { if (on) buildGrid(); if (grid) grid.setEnabled(on); }
+  function buildAxes() {
+    if (axes) return;
+    axes = new BABYLON.AxesViewer(scene, 1.0);
+  }
+  function toggleAxes(on) {
+    if (on) buildAxes();
+    if (axes) {
+      [axes.xAxis, axes.yAxis, axes.zAxis].forEach(m => m.setEnabled(on));
+    }
+  }
+
+  // ── State ───────────────────────────────────────────────────────────────────
+  let importedRoot = null;
+  let importedMeshes = [];
+  let animGroups = [];
+  let currentAnim = null;
+
+  function clearImported() {
+    if (importedMeshes.length) {
+      for (const m of importedMeshes) {
+        try { m.dispose(false, true); } catch (e) {}
+      }
+    }
+    if (importedRoot) try { importedRoot.dispose(); } catch (e) {}
+    for (const g of animGroups) try { g.dispose(); } catch (e) {}
+    importedMeshes = []; animGroups = []; importedRoot = null; currentAnim = null;
+  }
+
+  function fitCamera() {
+    if (!importedMeshes.length) return;
+    let min = null, max = null;
+    for (const m of importedMeshes) {
+      if (!m.getBoundingInfo) continue;
+      const bb = m.getBoundingInfo().boundingBox;
+      const lo = bb.minimumWorld, hi = bb.maximumWorld;
+      if (!min) { min = lo.clone(); max = hi.clone(); continue; }
+      min.minimizeInPlace(lo);
+      max.maximizeInPlace(hi);
+    }
+    if (!min) return;
+    const center = min.add(max).scale(0.5);
+    const size = max.subtract(min).length();
+    camera.target = center;
+    camera.radius = size * 1.4;
+    camera.lowerRadiusLimit = size * 0.05;
+    camera.upperRadiusLimit = size * 20;
+  }
+
+  function loadModel(url) {
+    loader.style.display = 'block';
+    errorEl.style.display = 'none';
+    clearImported();
+    BABYLON.SceneLoader.ImportMeshAsync('', '', url, scene)
+      .then(result => {
+        importedMeshes = result.meshes.filter(m => m.name !== '__root__');
+        importedRoot = result.meshes.find(m => m.name === '__root__') || importedMeshes[0];
+        animGroups = result.animationGroups || [];
+        fitCamera();
+        // Animation UI
+        const animRow = document.getElementById('animRow');
+        const animSelect = document.getElementById('animSelect');
+        animSelect.innerHTML = '';
+        if (animGroups.length > 0) {
+          animRow.style.display = 'flex';
+          animGroups.forEach((g, i) => {
+            const opt = document.createElement('option');
+            opt.value = i; opt.textContent = g.name || `Animation ${i}`;
+            animSelect.appendChild(opt);
+          });
+        } else {
+          animRow.style.display = 'none';
+        }
+        loader.style.display = 'none';
+      })
+      .catch(err => {
+        loader.style.display = 'none';
+        errorEl.innerHTML =
+          '<b>Failed to load model</b><br>' +
+          'URL: <code style="font-size:11px;word-break:break-all;">' +
+          url + '</code><br><br>' +
+          'Error: ' + (err && err.message ? err.message : err) + '<br><br>' +
+          'If this is a CORS error, the S3 bucket needs CORS allowing GET from any origin.';
+        errorEl.style.display = 'block';
+      });
+  }
+
+  // ── UI bindings ─────────────────────────────────────────────────────────────
+  function setActive(btnId, others) {
+    document.getElementById(btnId).classList.add('active');
+    (others || []).forEach(id => document.getElementById(id).classList.remove('active'));
+  }
+  function setWireframe(on) {
+    importedMeshes.forEach(m => {
+      if (m.material) m.material.wireframe = on;
+    });
+  }
+  document.getElementById('btnShaded').onclick = () => { setWireframe(false); setActive('btnShaded', ['btnWire']); };
+  document.getElementById('btnWire').onclick   = () => { setWireframe(true);  setActive('btnWire', ['btnShaded']); };
+
+  document.getElementById('bgColor').oninput = e => {
+    scene.clearColor = BABYLON.Color3.FromHexString(e.target.value).toColor4(1);
+  };
+  let envOn = true;
+  document.getElementById('btnEnv').onclick = () => {
+    envOn = !envOn;
+    scene.environmentTexture = envOn ? envTex : null;
+    document.getElementById('btnEnv').classList.toggle('active', envOn);
+  };
+  let gridOn = false;
+  document.getElementById('btnGrid').onclick = () => {
+    gridOn = !gridOn; toggleGrid(gridOn);
+    document.getElementById('btnGrid').classList.toggle('active', gridOn);
+  };
+  let axesOn = false;
+  document.getElementById('btnAxes').onclick = () => {
+    axesOn = !axesOn; toggleAxes(axesOn);
+    document.getElementById('btnAxes').classList.toggle('active', axesOn);
+  };
+  document.getElementById('btnFit').onclick = fitCamera;
+  document.getElementById('btnInspector').onclick = () => {
+    if (scene.debugLayer.isVisible()) scene.debugLayer.hide();
+    else scene.debugLayer.show({ embedMode: true, overlay: true });
+  };
+  document.getElementById('btnSnap').onclick = () => {
+    BABYLON.Tools.CreateScreenshot(engine, camera, { width: 1920, height: 1080 });
+  };
+  document.getElementById('btnPlay').onclick = () => {
+    const sel = document.getElementById('animSelect');
+    const g = animGroups[parseInt(sel.value, 10)];
+    if (!g) return;
+    if (g.isPlaying) g.stop(); else g.play(true);
+  };
+  window.addEventListener('keydown', e => {
+    if (e.key.toLowerCase() === 'i' && e.ctrlKey) {
+      e.preventDefault();
+      document.getElementById('btnInspector').click();
+    }
+  });
+
+  // ── LOD switcher buttons ────────────────────────────────────────────────────
+  if (hasLods) {
+    const labels = { a: 'LOD A', b: 'LOD B', c: 'LOD C', d: 'LOD D' };
+    for (const k of ['a', 'b', 'c', 'd']) {
+      if (!lodUrls[k]) continue;
+      const b = document.createElement('button');
+      b.textContent = labels[k];
+      b.onclick = () => {
+        currentUrl = lodUrls[k];
+        loadModel(currentUrl);
+        [...lodSwitcher.children].forEach(c => c.classList.remove('active'));
+        b.classList.add('active');
+        updateDownloads();
+      };
+      if (k === 'a') b.classList.add('active');
+      lodSwitcher.appendChild(b);
+    }
+  }
+
+  function updateDownloads() {
+    downloads.innerHTML = '<a href="' + currentUrl + '" download>⬇ Download this GLB</a>';
+  }
+  updateDownloads();
+
+  // ── Stats overlay ───────────────────────────────────────────────────────────
+  setInterval(() => {
+    let verts = 0, tris = 0;
+    importedMeshes.forEach(m => {
+      if (m.geometry) {
+        verts += m.getTotalVertices();
+        tris  += m.getTotalIndices() / 3 | 0;
+      }
+    });
+    statsEl.textContent =
+      `FPS ${engine.getFps().toFixed(0)} · Verts ${verts.toLocaleString()} ` +
+      `· Tris ${tris.toLocaleString()} · Draws ${scene.getActiveMeshes().length}`;
+  }, 500);
+
+  // ── Render loop ─────────────────────────────────────────────────────────────
+  engine.runRenderLoop(() => scene.render());
+  window.addEventListener('resize', () => engine.resize());
+
+  loadModel(currentUrl);
+})();
+</script>
+</body>
+</html>

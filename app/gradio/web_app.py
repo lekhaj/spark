@@ -462,5 +462,23 @@ with gr.Blocks(title="AI-Powered 3D Asset Generator") as demo:
             generation_studio_ui()
 
 
-# Launch the Gradio application
-demo.launch(server_name="0.0.0.0", server_port=7860)# share=True
+# ─── FastAPI mount so we can serve /static/babylon_viewer.html alongside Gradio
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+import uvicorn
+
+_static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "static")
+_static_dir = os.path.normpath(_static_dir)
+
+fastapi_app = FastAPI()
+fastapi_app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], allow_methods=["GET", "HEAD"], allow_headers=["*"],
+)
+if os.path.isdir(_static_dir):
+    fastapi_app.mount("/static", StaticFiles(directory=_static_dir, html=True), name="static")
+
+fastapi_app = gr.mount_gradio_app(fastapi_app, demo, path="/")
+
+uvicorn.run(fastapi_app, host="0.0.0.0", port=7860)
