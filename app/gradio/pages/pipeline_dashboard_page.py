@@ -43,19 +43,19 @@ def _json_pretty(obj):
 # ── dropdown helpers ───────────────────────────────────────────────────────────
 
 def _spec_ids():
-    try:   return [s["_id"] for s in list_character_specs(_db())]
+    try:   return [str(s["_id"]) for s in list_character_specs(_db())]
     except: return []
 
 def _style_ids():
-    try:   return [s["_id"] for s in list_styles(_db())]
+    try:   return [str(s["_id"]) for s in list_styles(_db())]
     except: return []
 
 def _tpl_ids():
-    try:   return [t["_id"] for t in list_prompt_templates(_db())]
+    try:   return [str(t["_id"]) for t in list_prompt_templates(_db())]
     except: return []
 
 def _ref_ids():
-    try:   return [r["_id"] for r in list_references(_db())]
+    try:   return [str(r["_id"]) for r in list_references(_db())]
     except: return []
 
 def _ref_groups():
@@ -65,7 +65,7 @@ def _ref_groups():
     except: return ["all"]
 
 def _biome_ids():
-    try:   return [b["_id"] for b in _db().biomes.find({}, {"_id": 1}).sort("_id", 1)]
+    try:   return [str(b["_id"]) for b in _db().biomes.find({}, {"_id": 1}).sort("_id", 1)]
     except: return ["claudetest002"]
 
 
@@ -296,7 +296,7 @@ def load_refs(group):
     try:
         db   = _db()
         refs = list_references(db) if group == "all" else list_references(db, group=group)
-        rows = [{"ID": r["_id"], "Group": r.get("group",""), "Subgroup": r.get("subgroup",""),
+        rows = [{"ID": str(r["_id"]), "Group": r.get("group",""), "Subgroup": r.get("subgroup",""),
                  "Pose": r.get("pose",""), "View": r.get("view",""),
                  "Description": r.get("description","")[:80],
                  "Source": r.get("metadata",{}).get("source","")} for r in refs]
@@ -309,7 +309,7 @@ def load_refs(group):
 def search_refs(query):
     try:
         refs = search_references(_db(), query)
-        rows = [{"ID": r["_id"], "Group": r.get("group",""),
+        rows = [{"ID": str(r["_id"]), "Group": r.get("group",""),
                  "Pose": r.get("pose",""), "View": r.get("view",""),
                  "Tags": ", ".join(r.get("tags",[]))} for r in refs]
         import pandas as pd
