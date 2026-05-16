@@ -73,7 +73,7 @@ AWS_REGION = os.getenv("AWS_REGION",    "us-east-1")
 # ⚙️  CHANGE THESE FLAGS TO CONTROL THE RUN
 # ═════════════════════════════════════════════════════════════════════════════
 
-CHARACTER_NAME = "lion_mount"        # ← Set to lion_mount for the quadruped test
+CHARACTER_NAME = "lion_mount_hack"   # ← Testing the Option 3 prompt hacks!
 SHAKKER_STEPS  = 4                   # ← 4 steps required for FLUX.1-schnell
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -127,6 +127,17 @@ CHARACTERS = {
         "height": 512,
         "skeleton_size": (512, 512),
         "is_animal": True,             # ← bypasses humanoid ControlNet
+    },
+    "lion_mount_hack": {
+        "prompt": (
+            "majestic lion, neutral symmetrical standing pose, orthographic 3/4 side profile, "
+            "four paws flat on ground, legs slightly bent, tail held high in the air, "
+            "panting heavily, clean design, white background, flat studio lighting, full body"
+        ),
+        "width":  512,
+        "height": 512,
+        "skeleton_size": (512, 512),
+        "is_animal": True,
     },
 }
 
