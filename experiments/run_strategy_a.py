@@ -119,9 +119,9 @@ CHARACTERS = {
     },
     "lion_mount": {
         "prompt": (
-            "majestic lion, neutral standing pose, orthographic 3/4 side profile, "
-            "all four paws flat on the ground, simple clean design, "
-            "white background, flat studio lighting, full body, paws visible"
+            "majestic lion, neutral symmetrical standing pose, orthographic 3/4 side profile, "
+            "four paws flat on ground, legs slightly bent, tail straight out, "
+            "mouth slightly open, clean design, white background, flat studio lighting, full body"
         ),
         "width":  512,
         "height": 512,
