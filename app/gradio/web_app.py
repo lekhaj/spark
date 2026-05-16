@@ -471,6 +471,10 @@ import uvicorn
 _static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "static")
 _static_dir = os.path.normpath(_static_dir)
 
+# queue() must be called before gr.mount_gradio_app — without it Gradio's
+# websocket queue never starts and the UI hangs on the loading screen.
+demo.queue()
+
 fastapi_app = FastAPI()
 fastapi_app.add_middleware(
     CORSMiddleware,
