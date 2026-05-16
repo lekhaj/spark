@@ -99,7 +99,11 @@ def _parse_gpu_instance_map() -> dict[str, dict]:
                 continue
             queue, rest = entry.split("=", 1)
             iid, _, label = rest.partition(":")
-            out[queue.strip()] = {"id": iid.strip(), "label": (label or iid).strip()}
+            q = queue.strip()
+            # Infer prewarm: True for spot queues (which run spark-prewarm.service),
+            # False for legacy on-demand instances (don't expect sentinel).
+            prewarm = q.endswith("_spot")
+            out[q] = {"id": iid.strip(), "label": (label or iid).strip(), "prewarm": prewarm}
         return out
     # Defaults — leave id="" for instances that should be resolved at runtime
     # (the launcher will discover by tag Project=spark-gpu).
