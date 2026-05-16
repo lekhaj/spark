@@ -73,7 +73,7 @@ AWS_REGION = os.getenv("AWS_REGION",    "us-east-1")
 # ⚙️  CHANGE THESE FLAGS TO CONTROL THE RUN
 # ═════════════════════════════════════════════════════════════════════════════
 
-CHARACTER_NAME = "lion_mount_hack"   # ← Testing the Option 3 prompt hacks!
+CHARACTER_NAME = "red_hair_adventurer" # ← New female character test
 SHAKKER_STEPS  = 4                   # ← 4 steps required for FLUX.1-schnell
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -86,6 +86,16 @@ S3_KEY_OUTPUT = f"images/bhavesh_experiments/{CHARACTER_NAME}_strategyA_tpose.pn
 # Strategy A does NOT use a concept image. It uses these text prompts directly.
 # Keep under 77 tokens. No negative prompts — Flux doesn't support them.
 CHARACTERS = {
+    "red_hair_adventurer": {
+        "prompt": (
+            "young female adventurer, T-pose, arms extended horizontally, "
+            "long red hair, blue peasant blouse with red trim, brown leather corset, "
+            "dark pants, clean design, white background, flat studio lighting, full body, feet visible"
+        ),
+        "width":  512,
+        "height": 512,
+        "skeleton_size": (512, 512),
+    },
     "hooded_assassin": {
         "prompt": (
             "young male assassin, T-pose, arms extended horizontally, "
