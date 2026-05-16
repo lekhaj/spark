@@ -92,6 +92,25 @@ class AutoShutdown:
             f"AutoShutdown started — watching queues: {self.queues}, "
             f"threshold: {IDLE_THRESHOLD_MIN} min"
         )
+        # Clear any stale prewarm:ready:<iid> key in Redis. The sentinel file
+        # /var/run/spark-prewarm.done lives on tmpfs and is wiped on every
+        # reboot, but the Redis key has a 24h TTL — so without this DEL, a
+        # rebooted GPU would falsely advertise "ready" to the CPU orchestrator
+        # before spark-prewarm.service had a chance to re-warm the page cache.
+        # We only republish the key once the actual sentinel file exists
+        # (handled in _monitor_loop → _publish_prewarm_ready).
+        try:
+            r = self._get_redis()
+            if r is not None:
+                iid = os.getenv("AWS_GPU_INSTANCE_ID", "").strip() or _imds_instance_id()
+                if iid:
+                    key = PREWARM_READY_KEY.format(instance_id=iid)
+                    deleted = r.delete(key)
+                    if deleted:
+                        logger.info(f"Cleared stale {key} on startup (will republish after sentinel)")
+        except Exception as e:
+            logger.warning(f"Could not clear stale prewarm:ready on startup: {e}")
+
         self._thread.start()
 
     def notify_active(self):
