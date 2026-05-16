@@ -81,7 +81,7 @@ REDIS_HOST, REDIS_PORT, REDIS_PASSWORD = _resolve_redis()
 S3_BUCKET   = os.getenv("AWS_S3_BUCKET") or os.getenv("S3_BUCKET", "sparkassets-us")
 S3_REGION   = os.getenv("AWS_REGION", "us-east-1")
 S3_BASE_URL = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com"
-REDIS_QUEUE = "manual_gen_tasks"
+REDIS_QUEUE = os.getenv("MANUAL_GEN_QUEUE", "manual_gen_tasks")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

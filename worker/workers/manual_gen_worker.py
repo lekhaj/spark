@@ -100,7 +100,9 @@ STAGE_REGISTRY: dict[str, tuple[str | None, str]] = {
 
 class ManualGenWorker(BaseWorker):
     worker_name = "ManualGenWorker"
-    input_queue = "manual_gen_tasks"
+    # Queue name is env-configurable so a second GPU (e.g. spot test instance)
+    # can listen on its own queue without competing with the prod worker.
+    input_queue = os.getenv("MANUAL_GEN_QUEUE", "manual_gen_tasks")
 
     def __init__(self):
         super().__init__()

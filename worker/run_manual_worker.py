@@ -77,7 +77,8 @@ def main() -> None:
     logger.info("=" * 60)
     logger.info("  Spark — Manual Generation Worker")
     logger.info("=" * 60)
-    logger.info(f"  Queue   : manual_gen_tasks")
+    queue_name = os.getenv("MANUAL_GEN_QUEUE", "manual_gen_tasks")
+    logger.info(f"  Queue   : {queue_name}")
     logger.info(f"  Redis   : {redis_host}:{redis_port}")
     logger.info(f"  MongoDB : {mongo_db}  (collection: manual_gen_sessions)")
     logger.info(f"  GPU     : {_gpu_info()}")
@@ -85,7 +86,7 @@ def main() -> None:
     logger.info("=" * 60)
 
     # ── Auto-shutdown: stop EC2 instance after IDLE_SHUTDOWN_MINUTES of idle ──
-    shutdown = AutoShutdown(queues=["manual_gen_tasks"])
+    shutdown = AutoShutdown(queues=[queue_name])
     shutdown.start()
     logger.info(f"  AutoShutdown : idle threshold = {IDLE_THRESHOLD_MIN} min")
 
