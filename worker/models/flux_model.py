@@ -59,12 +59,27 @@ def load_flux(model_id: str) -> object:
         diffusers.FluxPipeline with sequential CPU offload enabled.
     """
     from diffusers import FluxPipeline
+    import os
 
     logger.info(f"[flux] Loading model: {model_id}")
     pipe = FluxPipeline.from_pretrained(model_id, torch_dtype=torch.bfloat16)
-    pipe.enable_sequential_cpu_offload()
+
+    # FLUX_OFFLOAD controls how aggressively to spill weights to CPU RAM.
+    #   "sequential" — every layer cycles CPU<->GPU per step (default; safest on
+    #                  small VRAM like L4 23 GB, but I/O-bound and slow)
+    #   "model"      — whole model moved to GPU per step (~16 GB VRAM)
+    #   "none"       — full pipeline pinned on GPU (~24 GB VRAM; fastest on L40S)
+    offload_mode = os.getenv("FLUX_OFFLOAD", "sequential").lower()
+    if offload_mode == "none":
+        pipe.to("cuda")
+        logger.info("[flux] Model loaded (no offload — full GPU residency).")
+    elif offload_mode == "model":
+        pipe.enable_model_cpu_offload()
+        logger.info("[flux] Model loaded (model-level CPU offload).")
+    else:
+        pipe.enable_sequential_cpu_offload()
+        logger.info("[flux] Model loaded (sequential CPU offload).")
     pipe.vae.enable_slicing()
-    logger.info("[flux] Model loaded (sequential CPU offload).")
     return pipe
 
 
