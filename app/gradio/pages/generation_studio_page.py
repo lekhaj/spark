@@ -92,29 +92,125 @@ def _db():
     return get_db(MONGO_URI, MONGO_DB)
 
 def _push_task(payload: dict, queue: str = None) -> str:
+    """
+    Orchestrator-aware task push.
+
+    Flow (per user-requested orchestration):
+      1. ensure_gpu_ready() — start/launch the spot if needed
+      2. If spot was cold (reason in launched/started) AND user is targeting
+         the spot queue:
+           a. snapshot autoshutdown:enabled flag
+           b. disable autoshutdown (only if it was enabled)
+           c. block until prewarm:ready:<iid>=1  (≤30 min)
+      3. push task to the resolved queue
+      4. if we disabled autoshutdown, spawn a background watcher that polls
+         Mongo for status=done|error on this task and re-enables the flag.
+    Subsequent tasks on a warm spot see prewarm:ready already set and skip
+    the whole block — this only fires on the FIRST task after a cold launch.
+    """
+    import logging
+    log = logging.getLogger("generation_studio")
+
     # Resolve at call-time so the GPU-target dropdown can update REDIS_QUEUE
     # at runtime without having to restart the gradio app.
     if queue is None:
         queue = REDIS_QUEUE
+
     import redis
+    r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD,
+                    db=0, decode_responses=True)
+
+    # ── 1. ensure GPU is at least running ─────────────────────────────────
+    reason = "disabled"
     try:
         from lib.gpu_launcher import ensure_gpu_ready
         ok, reason = ensure_gpu_ready()
         if not ok and reason != "disabled":
-            # Best-effort: log and continue. Task will sit in queue until GPU is up.
-            import logging
-            logging.getLogger("generation_studio").warning(
-                "GPU not ready before queueing (reason=%s) — task will wait in queue.", reason)
+            log.warning("GPU not ready before queueing (reason=%s) — task will wait.", reason)
     except Exception as _e:
-        import logging
-        logging.getLogger("generation_studio").debug("gpu_launcher unavailable: %s", _e)
+        log.debug("gpu_launcher unavailable: %s", _e)
 
-    r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD,
-                    db=0, decode_responses=True)
+    # ── 2. cold-launch protection ─────────────────────────────────────────
+    # Only applies when the spot was just brought up (launched/started) AND
+    # the user is targeting the spot queue. Already-warm path (reason="running")
+    # skips everything below and goes straight to rpush.
+    cold = reason in ("launched", "started")
+    targets_spot = queue.endswith("_spot") or os.getenv("MANUAL_GEN_QUEUE", "") == queue
+    was_enabled = False
+    disabled_here = False
+
+    if cold and targets_spot:
+        try:
+            from lib.autoshutdown_ctl import (
+                autoshutdown_was_enabled, disable_autoshutdown,
+                wait_for_prewarm, is_prewarm_ready,
+            )
+            iid = os.getenv("AWS_GPU_INSTANCE_ID", "").strip()
+            # Cheap fast-path: maybe sentinel is already published from a
+            # previous boot (cache still warm). Skip the wait if so.
+            if iid and not is_prewarm_ready(r, iid):
+                was_enabled = autoshutdown_was_enabled(r)
+                if was_enabled:
+                    disable_autoshutdown(r)
+                    disabled_here = True
+                log.info("Cold spot detected (reason=%s) — waiting for prewarm sentinel", reason)
+                ok_warm = wait_for_prewarm(r, iid, timeout=1800, poll=10)
+                if not ok_warm:
+                    log.warning("Prewarm wait timed out — queueing anyway; first inference may be slow")
+        except Exception as e:
+            log.warning("Cold-launch protection failed (continuing without it): %s", e)
+
+    # ── 3. push task ──────────────────────────────────────────────────────
     payload.setdefault("task_id", str(uuid.uuid4()))
     payload.setdefault("timestamp", time.time())
     r.rpush(queue, json.dumps(payload))
+
+    # ── 4. background restore-on-completion ───────────────────────────────
+    if disabled_here:
+        import threading
+        t = threading.Thread(
+            target=_watch_and_restore_autoshutdown,
+            args=(payload["task_id"], was_enabled),
+            name=f"AsRestore-{payload['task_id'][:8]}",
+            daemon=True,
+        )
+        t.start()
+
     return payload["task_id"]
+
+
+def _watch_and_restore_autoshutdown(task_id: str, was_enabled: bool,
+                                    timeout: int = 3600, poll: int = 15) -> None:
+    """
+    Poll Mongo until the given task hits status=done|error, then re-enable
+    AutoShutdown via Redis. Runs in a daemon thread spawned by _push_task().
+
+    Timeout (1h) is a safety belt — if Mongo never reports done, we restore
+    anyway so the spot can eventually stop itself.
+    """
+    import logging
+    log = logging.getLogger("generation_studio")
+    try:
+        import redis
+        from lib.autoshutdown_ctl import restore_autoshutdown
+        r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD,
+                        db=0, decode_responses=True)
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                doc = get_run_any(_db(), task_id)
+                st = (doc or {}).get("status", "")
+                if st in ("done", "error"):
+                    log.info("Task %s reached status=%s — restoring AutoShutdown", task_id[:8], st)
+                    restore_autoshutdown(r, was_enabled)
+                    return
+            except Exception as e:
+                log.debug("watcher mongo poll failed: %s", e)
+            time.sleep(poll)
+        log.warning("Task %s never completed within %ds — restoring AutoShutdown anyway", task_id[:8], timeout)
+        restore_autoshutdown(r, was_enabled)
+    except Exception as e:
+        log.warning("AutoShutdown restore watcher crashed: %s", e)
 
 def _list_chars() -> list[str]:
     """Read character list from the registry + any existing stage runs."""

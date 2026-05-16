@@ -48,7 +48,7 @@ AWS_GPU_SUBNET_ID=subnet-0c5b465f9ede9e6ce
 AWS_GPU_SG_ID=sg-0a4a561065082e3c9
 AWS_GPU_KEY_NAME=us_cpu_key
 AWS_GPU_INSTANCE_PROFILE=ec2_s3
-AWS_GPU_EIP_ALLOC_ID=eipalloc-09678f3d9f0162d2d
+AWS_GPU_EIP_ALLOC_ID=eipalloc-0db12aa4d8be94e92   # 52.91.128.47 (GPU spot EIP)
 AWS_GPU_PROJECT_TAG=spark-gpu
 
 # Where the gradio app pushes tasks

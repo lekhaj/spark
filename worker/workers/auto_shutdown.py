@@ -22,6 +22,7 @@ import logging
 import os
 import threading
 import time
+import urllib.request
 
 import boto3
 import redis
@@ -42,6 +43,27 @@ REDIS_PASSWORD     = os.getenv("REDIS_PASSWORD") or None
 # touches it once the page cache is warm. Lets a fresh spot finish loading
 # weights without auto-stopping itself mid-warmup.
 PREWARM_SENTINEL   = os.getenv("PREWARM_SENTINEL", "/var/run/spark-prewarm.done")
+# Redis key used by the CPU orchestrator to block on prewarm completion.
+# Filled in lazily once IMDS resolves the instance-id.
+PREWARM_READY_KEY  = "prewarm:ready:{instance_id}"
+
+
+def _imds_instance_id() -> str | None:
+    """Fetch this instance's id via IMDSv2. Returns None if not on EC2."""
+    try:
+        token_req = urllib.request.Request(
+            "http://169.254.169.254/latest/api/token",
+            method="PUT",
+            headers={"X-aws-ec2-metadata-token-ttl-seconds": "300"},
+        )
+        token = urllib.request.urlopen(token_req, timeout=2).read().decode()
+        iid_req = urllib.request.Request(
+            "http://169.254.169.254/latest/meta-data/instance-id",
+            headers={"X-aws-ec2-metadata-token": token},
+        )
+        return urllib.request.urlopen(iid_req, timeout=2).read().decode().strip()
+    except Exception:
+        return None
 
 
 class AutoShutdown:
@@ -150,10 +172,28 @@ class AutoShutdown:
             pass
         return IDLE_THRESHOLD_MIN
 
+    def _publish_prewarm_ready(self, r) -> None:
+        """Set Redis flag so the CPU orchestrator can unblock pending tasks."""
+        iid = os.getenv("AWS_GPU_INSTANCE_ID", "").strip() or _imds_instance_id()
+        if not iid:
+            logger.warning("Cannot publish prewarm:ready — instance-id unknown")
+            return
+        try:
+            key = PREWARM_READY_KEY.format(instance_id=iid)
+            # 24h TTL — sentinel survives reboot of this thread but expires
+            # if the spot is stopped/started (page cache is cold again).
+            r.set(key, "1", ex=86400)
+            logger.info(f"Published {key}=1 — CPU orchestrator can release queued tasks")
+        except Exception as e:
+            logger.warning(f"Failed to publish prewarm:ready: {e}")
+
     def _monitor_loop(self):
         idle_since: float | None = None
         # Log "waiting for prewarm" at most once per N ticks so we don't spam.
         _last_prewarm_log: float = 0.0
+        # Latch: only publish prewarm:ready to Redis once per thread lifetime
+        # (the sentinel file persists, so once True we don't keep republishing).
+        _prewarm_published: bool = False
 
         while True:
             time.sleep(CHECK_INTERVAL_SEC)
@@ -177,6 +217,12 @@ class AutoShutdown:
             if r is None:
                 idle_since = None   # can't determine — reset timer
                 continue
+
+            # Sentinel exists AND Redis is reachable → publish prewarm:ready
+            # exactly once so the CPU orchestrator's _wait_for_prewarm() returns.
+            if not _prewarm_published:
+                self._publish_prewarm_ready(r)
+                _prewarm_published = True
 
             if not self._is_enabled(r):
                 if idle_since is not None:
