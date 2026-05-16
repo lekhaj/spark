@@ -882,6 +882,67 @@ def generation_studio_ui():
             return f"Active queue: {q}"
         gpu_target.change(_set_target_queue, inputs=gpu_target, outputs=gpu_target_info)
 
+        # ── GPU lifecycle status (live, auto-refresh) ────────────────────────
+        # One row per known instance. Shows EC2 state + prewarm sentinel so
+        # you can see at a glance whether queueing now will be fast (Ready)
+        # or slow (Prewarming / Stopped → boot).
+        with gr.Accordion("📡 GPU Status (live)", open=True):
+            gr.Markdown(
+                "_Phase = `EC2 state` + `prewarm sentinel`. Auto-refreshes every 10 s. "
+                "Queue when status reads **🟢 Ready** to avoid the cold first-inference wait._"
+            )
+            _status_rows: list[tuple[str, dict, gr.Markdown]] = []
+            for q_name, meta in GPU_INSTANCE_MAP.items():
+                with gr.Row():
+                    label_md = gr.Markdown(
+                        f"**{meta['label']}**  \n"
+                        f"`{meta['id'] or '(no id)'}`  ·  queue: `{q_name}`",
+                    )
+                    status_md = gr.Markdown("⏳ Loading…")
+                _status_rows.append((meta["id"], meta, status_md))
+
+            def _render_one(iid):
+                if not iid:
+                    return "❌ Not configured (set `AWS_GPU_INSTANCE_ID` or `GPU_INSTANCE_MAP`)"
+                try:
+                    import redis
+                    from lib.gpu_launcher import get_gpu_status
+                    r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT,
+                                    password=REDIS_PASSWORD, db=0, decode_responses=True)
+                    s = get_gpu_status(iid, r=r)
+                    bits = [s["phase_label"]]
+                    if s["instance_type"]:
+                        bits.append(f"`{s['instance_type']}`")
+                    if s["public_ip"]:
+                        bits.append(f"IP: `{s['public_ip']}`")
+                    if s["detail"]:
+                        bits.append(f"_{s['detail']}_")
+                    return "  ·  ".join(bits)
+                except Exception as e:
+                    return f"⚠ status error: {e}"
+
+            def _render_all():
+                return [_render_one(iid) for iid, _m, _md in _status_rows]
+
+            status_refresh_btn = gr.Button("🔄 Refresh now", size="sm")
+            status_refresh_btn.click(
+                _render_all, inputs=[],
+                outputs=[md for _iid, _m, md in _status_rows],
+            )
+
+            # Auto-refresh every 10 s while the tab is open
+            status_timer = gr.Timer(value=10, active=True)
+            status_timer.tick(
+                _render_all, inputs=[],
+                outputs=[md for _iid, _m, md in _status_rows],
+            )
+
+            # Initial fill on page load
+            tab.load(
+                _render_all, inputs=[],
+                outputs=[md for _iid, _m, md in _status_rows],
+            )
+
         # ── Per-instance AutoShutdown admin ──────────────────────────────────
         # Each GPU instance has its own Redis-controlled AutoShutdown enabled
         # flag and idle threshold. The per-instance key takes precedence over

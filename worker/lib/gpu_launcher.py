@@ -233,6 +233,94 @@ def _maybe_attach_eip(ec2, iid: str) -> None:
         logger.warning("associate_address failed for %s: %s", iid, e)
 
 
+def get_gpu_status(instance_id: str, r=None) -> dict:
+    """
+    Resolve a single GPU instance's lifecycle phase for the UI status panel.
+
+    Returns a dict:
+      {
+        "iid": "<instance-id>",
+        "ec2_state": "running|stopped|pending|stopping|terminated|missing|error",
+        "prewarm_ready": True | False,        # Redis prewarm:ready:<iid> == "1"
+        "phase":   "ready|prewarming|booting|stopped|stopping|missing|unknown",
+        "phase_label": "🟢 Ready for inference",
+        "public_ip":  "52.91.128.47" or "",
+        "instance_type": "g6e.2xlarge" or "",
+        "launch_time":  "2026-05-16T14:21:37Z" or "",
+        "detail":  "optional human note",
+      }
+    """
+    out = {
+        "iid": instance_id or "",
+        "ec2_state": "missing",
+        "prewarm_ready": False,
+        "phase": "missing",
+        "phase_label": "❌ Not configured",
+        "public_ip": "",
+        "instance_type": "",
+        "launch_time": "",
+        "detail": "",
+    }
+    if not instance_id:
+        return out
+
+    # ── EC2 describe ──────────────────────────────────────────────────────
+    try:
+        ec2 = _ec2_client()
+        inst = _describe(ec2, instance_id)
+    except Exception as e:
+        out["ec2_state"] = "error"
+        out["phase"] = "unknown"
+        out["phase_label"] = "⚠ EC2 lookup failed"
+        out["detail"] = str(e)[:100]
+        return out
+
+    if inst is None:
+        out["phase_label"] = "❌ Instance not found"
+        return out
+
+    state = inst["State"]["Name"]
+    out["ec2_state"]      = state
+    out["public_ip"]      = inst.get("PublicIpAddress", "") or ""
+    out["instance_type"]  = inst.get("InstanceType", "") or ""
+    lt = inst.get("LaunchTime")
+    out["launch_time"]    = lt.isoformat() if lt else ""
+
+    # ── Prewarm sentinel via Redis ────────────────────────────────────────
+    if r is not None and state == "running":
+        try:
+            from lib.autoshutdown_ctl import is_prewarm_ready
+            out["prewarm_ready"] = is_prewarm_ready(r, instance_id)
+        except Exception:
+            out["prewarm_ready"] = False
+
+    # ── Phase resolution ──────────────────────────────────────────────────
+    if state == "running":
+        if out["prewarm_ready"]:
+            out["phase"]       = "ready"
+            out["phase_label"] = "🟢 Ready for inference"
+        else:
+            out["phase"]       = "prewarming"
+            out["phase_label"] = "🟠 Prewarming model weights (~15-20 min)"
+    elif state == "pending":
+        out["phase"]       = "booting"
+        out["phase_label"] = "🟡 Booting"
+    elif state == "stopping":
+        out["phase"]       = "stopping"
+        out["phase_label"] = "🟡 Stopping"
+    elif state == "stopped":
+        out["phase"]       = "stopped"
+        out["phase_label"] = "⏸  Stopped — will start on next queue"
+    elif state == "terminated":
+        out["phase"]       = "missing"
+        out["phase_label"] = "❌ Terminated"
+    else:
+        out["phase"]       = "unknown"
+        out["phase_label"] = f"⚠ State: {state}"
+
+    return out
+
+
 def stop_gpu(force: bool = False) -> tuple[bool, str]:
     """Stop the GPU instance. Returns (ok, reason)."""
     if not _enabled() and not force:
