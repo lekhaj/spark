@@ -998,7 +998,7 @@ def generation_studio_ui():
         # flag and idle threshold. The per-instance key takes precedence over
         # the global key; the GPU-side auto_shutdown.py reads the per-instance
         # key first and only falls back to global if unset.
-        with gr.Accordion("🛠️ GPU AutoShutdown Settings (per-instance)", open=False):
+        with gr.Accordion("🛠️ GPU AutoShutdown Settings (per-instance)", open=True):
             gr.Markdown(
                 "_Each GPU has its own Redis-driven enable flag and idle timer. "
                 "Disabling pauses the self-stop loop on that GPU; the orchestrator "
