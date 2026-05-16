@@ -82,11 +82,23 @@ def main():
     bg_remover = rembg.new_session("u2net")
     clean_image = rembg.remove(image, session=bg_remover)
 
-    # 3. Format for Trellis (512x512 White Background)
-    print("[3/5] Formatting image for Trellis.2 (white background, 512x512)...")
+    # 3. Format for Trellis (White Background, Pad to Square, Resize to 512)
+    print("[3/5] Formatting image for Trellis.2 (padding to square, 512x512)...")
+    
+    # First, paste onto a white background
     bg = Image.new("RGB", clean_image.size, (255, 255, 255))
     bg.paste(clean_image, mask=clean_image.split()[3])
-    formatted_image = bg.resize((512, 512))
+    
+    # Next, pad the image to a perfect square to prevent squishing the tall 512x768 images
+    w, h = bg.size
+    max_dim = max(w, h)
+    square_bg = Image.new("RGB", (max_dim, max_dim), (255, 255, 255))
+    offset_x = (max_dim - w) // 2
+    offset_y = (max_dim - h) // 2
+    square_bg.paste(bg, (offset_x, offset_y))
+    
+    # Finally, resize to the 512x512 Trellis requirement
+    formatted_image = square_bg.resize((512, 512), Image.Resampling.LANCZOS)
 
     # 4. Load Trellis & Generate 3D
     print(f"\n[4/5] Loading Trellis.2-4B into VRAM (Takes ~15 seconds)...")
