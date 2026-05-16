@@ -120,7 +120,7 @@ CHARACTERS = {
     "lion_mount": {
         "prompt": (
             "majestic lion, neutral symmetrical standing pose, orthographic 3/4 side profile, "
-            "four paws flat on ground, legs slightly bent, tail straight out, "
+            "four paws flat on ground, legs slightly bent, stiff horizontal tail extending straight backward, "
             "mouth slightly open, clean design, white background, flat studio lighting, full body"
         ),
         "width":  512,
@@ -233,6 +233,7 @@ def main() -> None:
         num_inference_steps=SHAKKER_STEPS,
         width=cfg["width"],
         height=cfg["height"],
+        seed=999,                      # ← changed seed so it draws a fresh layout
     )
 
     # ── Upload to S3 ──────────────────────────────────────────────────────────
