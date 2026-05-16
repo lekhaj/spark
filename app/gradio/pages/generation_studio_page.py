@@ -101,11 +101,14 @@ def _parse_gpu_instance_map() -> dict[str, dict]:
             iid, _, label = rest.partition(":")
             out[queue.strip()] = {"id": iid.strip(), "label": (label or iid).strip()}
         return out
-    # Defaults match current production layout
+    # Defaults — leave id="" for instances that should be resolved at runtime
+    # (the launcher will discover by tag Project=spark-gpu). The L4 entry is
+    # only useful if you set a real id via GPU_INSTANCE_MAP env override.
     return {
-        "manual_gen_tasks":      {"id": "i-0bad29d398b8d8e4a", "label": "L4 g6.2xlarge (old)"},
-        "manual_gen_tasks_spot": {"id": os.getenv("AWS_GPU_INSTANCE_ID", "i-0f7766b2b07e8b372"),
-                                  "label": "L40S g6e.2xlarge (spot)"},
+        "manual_gen_tasks":      {"id": "",
+                                  "label": "Default L4 (set GPU_INSTANCE_MAP to override)"},
+        "manual_gen_tasks_spot": {"id": os.getenv("AWS_GPU_INSTANCE_ID", "").strip(),
+                                  "label": "L40S g6e.2xlarge (spot — auto-resolved)"},
     }
 
 GPU_INSTANCE_MAP = _parse_gpu_instance_map()
