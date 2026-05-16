@@ -117,9 +117,27 @@ def _parse_gpu_instance_map() -> dict[str, dict]:
 
 GPU_INSTANCE_MAP = _parse_gpu_instance_map()
 
+# Redis key used to persist the UI's GPU target across gradio worker
+# processes — the in-process `global REDIS_QUEUE` mutation doesn't reliably
+# propagate when gradio spawns multiple workers, so we round-trip via Redis.
+KEY_UI_QUEUE = "ui:active_queue"
+
 def _iid_for_queue(queue: str) -> str | None:
     """Return the instance-id that serves the given queue (or None if unmapped)."""
     return (GPU_INSTANCE_MAP.get(queue) or {}).get("id")
+
+def _active_queue_from_redis() -> str:
+    """Read the UI-selected queue from Redis; fall back to env default."""
+    try:
+        import redis
+        r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD,
+                        db=0, decode_responses=True)
+        q = r.get(KEY_UI_QUEUE)
+        if q and q in GPU_INSTANCE_MAP:
+            return q
+    except Exception:
+        pass
+    return REDIS_QUEUE
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -149,10 +167,11 @@ def _push_task(payload: dict, queue: str = None) -> str:
     import logging
     log = logging.getLogger("generation_studio")
 
-    # Resolve at call-time so the GPU-target dropdown can update REDIS_QUEUE
-    # at runtime without having to restart the gradio app.
+    # Resolve at call-time. Use Redis-backed UI selection so the choice
+    # propagates across gradio worker processes (the in-process REDIS_QUEUE
+    # global was unreliable when gradio runs > 1 worker).
     if queue is None:
-        queue = REDIS_QUEUE
+        queue = _active_queue_from_redis()
 
     import redis
     r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD,
@@ -881,10 +900,27 @@ def generation_studio_ui():
             )
 
         def _set_target_queue(q):
+            # Persist to Redis so the choice survives across gradio workers
+            # and is the source of truth for _push_task().
             global REDIS_QUEUE
             REDIS_QUEUE = q
-            return f"Active queue: {q}"
+            try:
+                import redis
+                r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT,
+                                password=REDIS_PASSWORD, db=0, decode_responses=True)
+                r.set(KEY_UI_QUEUE, q)
+            except Exception as e:
+                return f"⚠ Set locally but Redis persist failed: {e}"
+            iid = _iid_for_queue(q) or "(no id)"
+            return f"✓ Active: {q}  →  {iid}"
         gpu_target.change(_set_target_queue, inputs=gpu_target, outputs=gpu_target_info)
+
+        # On page load, sync the dropdown to whatever's in Redis (or env default)
+        def _load_target_queue():
+            q = _active_queue_from_redis()
+            iid = _iid_for_queue(q) or "(no id)"
+            return q, f"✓ Active: {q}  →  {iid}"
+        tab.load(_load_target_queue, inputs=[], outputs=[gpu_target, gpu_target_info])
 
         # ── GPU lifecycle status (live, auto-refresh) ────────────────────────
         # One row per known instance. Shows EC2 state + prewarm sentinel so
