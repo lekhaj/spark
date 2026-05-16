@@ -1007,25 +1007,25 @@ def generation_studio_ui():
         def _do_refresh():
             chars = _list_chars()
             upd   = gr.update(choices=chars, value=(chars[0] if chars else None))
-            return [upd] * 7
+            return [upd] * 8
 
         g_refresh_btn.click(_do_refresh, [],
-                            [g_char, fx_char, nm_char, s1_char, tr_char, px_char, rg_char])
+                            [g_char, fx_char, nm_char, s1_char, tr_char, px_char, ml_char, rg_char])
 
         # ── Global: Create New Character ──────────────────────────────────────
         def _do_create(label):
             label = (label or "").strip()
             if not label:
-                return [gr.update()] * 7 + ["Enter a character label first."]
+                return [gr.update()] * 8 + ["Enter a character label first."]
             ok    = create_character(_db(), label)
             if not ok:
-                return [gr.update()] * 7 + [f"❌ Failed to save '{label}' — check MongoDB connection."]
+                return [gr.update()] * 8 + [f"❌ Failed to save '{label}' — check MongoDB connection."]
             chars = _list_chars()
             upd   = gr.update(choices=chars, value=label)
-            return [upd] * 7 + [f"✓ Created '{label}'. Select it in any stage below and click ⬇ Prefill All Stages."]
+            return [upd] * 8 + [f"✓ Created '{label}'. Select it in any stage below and click ⬇ Prefill All Stages."]
 
         g_create_btn.click(_do_create, [g_new_char_input],
-                           [g_char, fx_char, nm_char, s1_char, tr_char, px_char, rg_char, g_create_info])
+                           [g_char, fx_char, nm_char, s1_char, tr_char, px_char, ml_char, rg_char, g_create_info])
 
         # ── Global: Prefill All Stages ────────────────────────────────────────
         # In Gradio 5, gr.update(value=X) does NOT trigger .change handlers,
@@ -1189,6 +1189,29 @@ def generation_studio_ui():
                      [px_char_type, px_status, px_url],
                      _ex_pixal3d)
 
+        def _ex_mesh_lod(run):
+            st = run.get("status", "idle")
+            results = []
+            for p in ("a", "b", "c", "d"):
+                url   = run.get(f"lod_{p}_url",   "") or ""
+                tris  = run.get(f"lod_{p}_tris",  "") or ""
+                bts   = run.get(f"lod_{p}_bytes", 0) or 0
+                err   = run.get(f"lod_{p}_error", "") or ""
+                info  = (f"❌ {err[:80]}" if err else
+                         (f"tris={tris} size={bts/1024:.0f}KB" if url else "—"))
+                viewer = (f'<a href="https://3dviewer.net/#model={url}" '
+                          f'target="_blank">Open in 3D viewer</a>') if url else ""
+                results.extend([url, info, viewer])
+            return [st, *results]
+
+        _wire_picker("mesh_lod", ml_char, ml_major, ml_minor, ml_new_maj, ml_sid, ml_info,
+                     [ml_status,
+                      ml_a_url, ml_a_info, ml_a_3d,
+                      ml_b_url, ml_b_info, ml_b_3d,
+                      ml_c_url, ml_c_info, ml_c_3d,
+                      ml_d_url, ml_d_info, ml_d_3d],
+                     _ex_mesh_lod)
+
         _wire_picker("rig", rg_char, rg_major, rg_minor, rg_new_maj, rg_sid, rg_info,
                      [rg_type, rg_status, rg_url],
                      _ex_rig)
@@ -1218,6 +1241,7 @@ def generation_studio_ui():
         _make_src_wiring(s1_char, s1_src_stage, s1_src_ver, s1_src_url_st, s1_src_info)
         _make_src_wiring(tr_char, tr_src_stage,  tr_src_ver,  tr_src_url_st,  tr_src_info)
         _make_src_wiring(px_char, px_src_stage,  px_src_ver,  px_src_url_st,  px_src_info)
+        _make_src_wiring(ml_char, ml_src_stage,  ml_src_ver,  ml_src_url_st,  ml_src_info)
 
         # Trellis: also update view availability info when ver or stage changes
         def _tr_update_view_info(char, src_stage, ver):

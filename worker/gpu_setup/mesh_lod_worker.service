@@ -9,6 +9,9 @@ User=ubuntu
 Group=ubuntu
 WorkingDirectory=/home/ubuntu/spark/worker
 EnvironmentFile=/home/ubuntu/spark/.env
+Environment=HOME=/home/ubuntu
+Environment=USER=ubuntu
+Environment=TMPDIR=/tmp
 ExecStart=/home/ubuntu/spark/venv/bin/python run_mesh_lod_worker.py
 Restart=on-failure
 RestartSec=10

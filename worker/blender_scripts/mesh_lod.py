@@ -118,8 +118,11 @@ def _add_decimate_planar(obj, angle_deg=15.0, name="DecimatePlanar"):
 def _voxel_remesh(obj, voxel_size=0.03):
     _activate(obj)
     obj.data.remesh_voxel_size = voxel_size
-    obj.data.use_remesh_preserve_volume = True
-    obj.data.use_remesh_preserve_paint_mask = False
+    # Newer Blenders dropped/renamed the preserve_paint_mask flag — set only
+    # the attributes that exist on this build.
+    for attr_name in ("use_remesh_preserve_volume",):
+        if hasattr(obj.data, attr_name):
+            setattr(obj.data, attr_name, True)
     bpy.ops.object.voxel_remesh()
 
 

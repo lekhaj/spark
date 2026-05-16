@@ -128,9 +128,21 @@ def _run_blender(profile: str, in_glb: str, out_glb: str, args: dict) -> tuple[i
         BLENDER_BIN, "--background", "--python", BLENDER_SCRIPT, "--",
         profile, in_glb, out_glb, args_json,
     ]
+    # Blender needs HOME/USER to know where to put its config & cache dirs.
+    # Under systemd EnvironmentFile= these aren't auto-set, causing
+    # `mkdir: missing operand` and sometimes a SIGTERM during startup.
+    env = {
+        **os.environ,
+        "HOME":            os.environ.get("HOME", "/home/ubuntu"),
+        "USER":            os.environ.get("USER", "ubuntu"),
+        "TMPDIR":          os.environ.get("TMPDIR", "/tmp"),
+        "BLENDER_USER_CONFIG":  os.environ.get("BLENDER_USER_CONFIG", "/tmp/blender_cfg"),
+        "BLENDER_USER_SCRIPTS": os.environ.get("BLENDER_USER_SCRIPTS", "/tmp/blender_cfg"),
+    }
+    os.makedirs(env["BLENDER_USER_CONFIG"], exist_ok=True)
     logger.info(f"[lod {profile}] blender → {' '.join(cmd[:4])} … out={out_glb}")
     proc = subprocess.run(
-        cmd, capture_output=True, text=True, timeout=900,
+        cmd, capture_output=True, text=True, timeout=1800, env=env,
     )
     return proc.returncode, proc.stdout, proc.stderr
 
