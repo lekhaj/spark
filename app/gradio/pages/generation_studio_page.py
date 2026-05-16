@@ -542,6 +542,54 @@ def _q_pixal3d(char, major, minor, char_type, src_stage, src_ver):
     return sid, minor_upd, info, f"queued ✓  v{ver}  task={tid[:8]}…"
 
 
+def _q_mesh_lod(char, major, minor, src_stage, src_ver,
+                profiles, ratio_b, ratio_c, voxel_d,
+                quadriflow, qf_target, bake_res):
+    """Queue Mesh-LOD task on its own CPU queue (mesh_lod_tasks)."""
+    stage = "mesh_lod"
+    db    = _db()
+
+    src_url = (_get_src_url_for_ver(char, src_stage, src_ver) if src_ver
+               else get_latest_done_image_url(db, char, src_stage) or "")
+    if not src_url:
+        return None, gr.update(), gr.update(), f"No done GLB in '{src_stage}'.", \
+               "", "", "", "", "", "", "", "", "", "", "", ""
+
+    if not profiles:
+        profiles = ["a", "b", "c", "d"]
+
+    params = {
+        "ratio_b":           float(ratio_b),
+        "ratio_c":           float(ratio_c),
+        "voxel_size_d":      float(voxel_d),
+        "quadriflow":        bool(quadriflow),
+        "quadriflow_target": int(qf_target),
+        "bake_resolution":   int(bake_res),
+    }
+    sid, new_n, minor_upd, info_upd, err = _prepare_run(
+        char, stage, major, minor, "", "", params)
+    if err:
+        return sid, minor_upd, gr.update(), err, \
+               "", "", "", "", "", "", "", "", "", "", "", ""
+
+    save_run_params(db, sid, "", "", params, stage=stage)
+    _ver_minor = new_n if new_n is not None else int(minor)
+    tid = _push_task({
+        "type": "mesh_lod", "session_id": sid, "stage": stage,
+        "char_name": char, "major": int(major), "minor": _ver_minor,
+        "source_url": src_url,
+        "profiles": profiles,
+        "params": params,
+    }, queue="mesh_lod_tasks")
+    mark_queued(db, sid, stage=stage, task_id=tid)
+    ver  = f"{major}.{new_n}" if new_n is not None else f"{major}.{minor}"
+    info = f"{sid[:8]}…  v{ver}  [queued]"
+    status = f"queued ✓  v{ver}  profiles={','.join(profiles)}  task={tid[:8]}…"
+    # Reset result fields
+    return sid, minor_upd, info, status, \
+           "", "", "", "", "", "", "", "", "", "", "", ""
+
+
 def _q_rig(char, major, minor, char_type, trellis_src_ver):
     stage = "rig"
     db    = _db()
@@ -861,6 +909,68 @@ def generation_studio_ui():
                 px_r_btn = gr.Button("Refresh", size="sm")
             px_url = gr.Textbox(label="GLB URL (when done)", interactive=False)
             px_3d_btn = gr.HTML(value="")
+
+        # ══════════════════════════════════════════════════════════════════════
+        #  STAGE 3c: MESH LOD (CPU)
+        # ══════════════════════════════════════════════════════════════════════
+        with gr.Accordion("Stage 3c — Mesh LOD / poly-count optimization (CPU)", open=False):
+            ml_char, ml_major, ml_minor, ml_new_maj, ml_sid, ml_info = _make_picker(_chars)
+            gr.Markdown(
+                "_Generates up to 4 LODs from the source GLB:_ \n"
+                "* **A — Preserve** _(merge + clean only; no decimation, lossless)_\n"
+                "* **B — Decimate safe** _(ratio ≈ 0.4, UV preserved)_\n"
+                "* **C — Decimate aggressive** _(ratio ≈ 0.15 + planar dissolve)_\n"
+                "* **D — Voxel remesh + texture rebake** _(target ~5-10k tris, can take 2-3 min)_"
+            )
+            gr.Markdown("**Select source stage + version (must be a finished GLB):**")
+            ml_src_stage, ml_src_ver, ml_src_url_st, ml_src_info = _make_src_picker(
+                ["trellis", "pixal3d"], "pixal3d")
+            with gr.Row():
+                ml_profiles = gr.CheckboxGroup(
+                    choices=[("A — Preserve",     "a"),
+                             ("B — Safe decimate", "b"),
+                             ("C — Aggressive",    "c"),
+                             ("D — Voxel + bake",  "d")],
+                    value=["a", "b", "c", "d"],
+                    label="LOD profiles to generate")
+            with gr.Row():
+                ml_ratio_b = gr.Slider(0.05, 1.0, value=0.40,
+                                       label="B ratio (keep fraction)", scale=1)
+                ml_ratio_c = gr.Slider(0.05, 1.0, value=0.15,
+                                       label="C ratio (keep fraction)", scale=1)
+                ml_voxel_d = gr.Slider(0.005, 0.10, value=0.030, step=0.005,
+                                       label="D voxel size", scale=1)
+            with gr.Row():
+                ml_quadriflow = gr.Checkbox(value=False, label="D: QuadriFlow (slow, prettier topology)")
+                ml_qf_target  = gr.Number(value=5000, precision=0, label="QuadriFlow target faces")
+                ml_bake_res   = gr.Dropdown(choices=[512, 1024, 2048], value=1024,
+                                            label="D bake resolution (px)")
+            with gr.Row():
+                ml_q_btn = gr.Button("Queue Mesh LOD", variant="primary")
+                ml_status = gr.Textbox(label="Status", value="idle", interactive=False, scale=2)
+                ml_r_btn = gr.Button("Refresh", size="sm")
+            with gr.Row():
+                with gr.Column():
+                    gr.Markdown("**LOD A — Preserve**")
+                    ml_a_info = gr.Textbox(label="", interactive=False, lines=1)
+                    ml_a_url  = gr.Textbox(label="URL", interactive=False)
+                    ml_a_3d   = gr.HTML(value="")
+                with gr.Column():
+                    gr.Markdown("**LOD B — Safe decimate**")
+                    ml_b_info = gr.Textbox(label="", interactive=False, lines=1)
+                    ml_b_url  = gr.Textbox(label="URL", interactive=False)
+                    ml_b_3d   = gr.HTML(value="")
+            with gr.Row():
+                with gr.Column():
+                    gr.Markdown("**LOD C — Aggressive**")
+                    ml_c_info = gr.Textbox(label="", interactive=False, lines=1)
+                    ml_c_url  = gr.Textbox(label="URL", interactive=False)
+                    ml_c_3d   = gr.HTML(value="")
+                with gr.Column():
+                    gr.Markdown("**LOD D — Voxel + rebake**")
+                    ml_d_info = gr.Textbox(label="", interactive=False, lines=1)
+                    ml_d_url  = gr.Textbox(label="URL", interactive=False)
+                    ml_d_3d   = gr.HTML(value="")
 
         # ══════════════════════════════════════════════════════════════════════
         #  STAGE 4: RIG
@@ -1235,6 +1345,55 @@ def generation_studio_ui():
         px_r_btn.click(
             lambda sid: _refresh_run(sid),
             [px_sid], [px_status, px_url]
+        )
+
+        # Mesh LOD
+        (ml_q_btn.click(
+            _q_mesh_lod,
+            [ml_char, ml_major, ml_minor,
+             ml_src_stage, ml_src_ver,
+             ml_profiles,
+             ml_ratio_b, ml_ratio_c, ml_voxel_d,
+             ml_quadriflow, ml_qf_target, ml_bake_res],
+            [ml_sid, ml_minor, ml_info, ml_status,
+             ml_a_url, ml_a_info, ml_a_3d,
+             ml_b_url, ml_b_info, ml_b_3d,
+             ml_c_url, ml_c_info, ml_c_3d,
+             ml_d_url, ml_d_info, ml_d_3d],
+        ).then(lambda: gr.Timer(active=True), outputs=[stage_timer]))
+
+        def _refresh_mesh_lod(sid):
+            doc = get_run_any(_db(), sid) if sid else None
+            if not doc:
+                return ("idle",
+                        "", "", "",
+                        "", "", "",
+                        "", "", "",
+                        "", "", "")
+            st = doc.get("status", "?")
+            results = []
+            for p in ("a", "b", "c", "d"):
+                url   = doc.get(f"lod_{p}_url",   "")
+                tris  = doc.get(f"lod_{p}_tris",  "")
+                bts   = doc.get(f"lod_{p}_bytes", 0)
+                err   = doc.get(f"lod_{p}_error", "")
+                info  = (f"❌ {err[:80]}" if err else
+                         (f"tris={tris} size={bts/1024:.0f}KB" if url else "—"))
+                viewer = ""
+                if url:
+                    viewer = (f'<a href="https://3dviewer.net/#model={url}" '
+                              f'target="_blank">Open in 3D viewer</a>')
+                results.extend([url, info, viewer])
+            return (st, *results)
+
+        ml_r_btn.click(
+            _refresh_mesh_lod,
+            [ml_sid],
+            [ml_status,
+             ml_a_url, ml_a_info, ml_a_3d,
+             ml_b_url, ml_b_info, ml_b_3d,
+             ml_c_url, ml_c_info, ml_c_3d,
+             ml_d_url, ml_d_info, ml_d_3d],
         )
 
         # Rig
