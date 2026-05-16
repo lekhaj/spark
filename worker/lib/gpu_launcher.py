@@ -29,10 +29,22 @@ Lookup strategy
 
 Environment vars
 ----------------
-    GPU_AUTO_LAUNCH       "1" to activate. Default "0".
-    AWS_GPU_INSTANCE_ID   instance to manage (e.g. i-0d6b9d6d34ccc053d).
-    AWS_REGION            default "us-east-1".
-    GPU_BOOT_TIMEOUT_S    seconds to wait for running state. Default 120.
+    GPU_AUTO_LAUNCH         "1" to activate. Default "0".
+    AWS_GPU_INSTANCE_ID     instance to manage (e.g. i-0d6b9d6d34ccc053d).
+    AWS_REGION              default "us-east-1".
+    GPU_BOOT_TIMEOUT_S      seconds to wait for running state. Default 180.
+
+For launching a NEW persistent-spot from AMI when the previous one is
+terminated by AWS (rare with persistent+stop, but handled):
+
+    AWS_GPU_AMI_ID          AMI to boot from (e.g. ami-0d689e40322983537)
+    AWS_GPU_INSTANCE_TYPE   default "g6e.2xlarge"
+    AWS_GPU_SUBNET_ID       subnet (AZ-locked); default subnet-0c5b465f9ede9e6ce
+    AWS_GPU_SG_ID           security group; default sg-0a4a561065082e3c9
+    AWS_GPU_KEY_NAME        SSH key pair name; default us_cpu_key
+    AWS_GPU_INSTANCE_PROFILE  IAM instance profile; default ec2_s3
+    AWS_GPU_EIP_ALLOC_ID    optional Elastic IP allocation to attach
+    AWS_GPU_PROJECT_TAG     tag value for "Project"; default "spark-gpu"
 """
 
 from __future__ import annotations
@@ -108,12 +120,21 @@ def ensure_gpu_ready(timeout: Optional[int] = None) -> tuple[bool, str]:
         return False, f"boto3-unavailable: {e}"
 
     iid = _find_instance_id(ec2)
-    if not iid:
-        return False, "missing"
+    inst = _describe(ec2, iid) if iid else None
 
-    inst = _describe(ec2, iid)
-    if inst is None:
-        return False, "missing"
+    # No instance exists at all (e.g. first launch after manual termination,
+    # or AWS reclaimed the persistent spot). Provision a fresh one from AMI
+    # if we have the config to do so.
+    if inst is None or inst["State"]["Name"] == "terminated":
+        new_id, reason = _launch_spot_from_ami(ec2)
+        if not new_id:
+            return False, reason
+        logger.info("ensure_gpu_ready: launched new spot %s (was %s)", new_id, iid or "missing")
+        iid = new_id
+        if _wait_for(ec2, iid, "running", timeout):
+            _maybe_attach_eip(ec2, iid)
+            return True, "launched"
+        return False, "timeout-new-spot"
 
     state = inst["State"]["Name"]
     logger.info("ensure_gpu_ready: %s state=%s", iid, state)
@@ -121,9 +142,7 @@ def ensure_gpu_ready(timeout: Optional[int] = None) -> tuple[bool, str]:
     if state == "running":
         return True, "running"
 
-    if state == "terminated":
-        # Phase 2: launch new spot from AMI. Not yet implemented.
-        return False, "terminated"
+    # terminated case is handled above (we never get here with state==terminated)
 
     if state == "stopping":
         if not _wait_for(ec2, iid, "stopped", timeout):
@@ -154,6 +173,65 @@ def _wait_for(ec2, iid: str, target: str, timeout: int, poll: int = 5) -> bool:
 
 
 # ── Optional: stop helper for explicit shutdown from CPU UI ───────────────────
+
+def _launch_spot_from_ami(ec2) -> tuple[Optional[str], str]:
+    """RunInstances → persistent spot from AMI. Returns (instance_id, reason)."""
+    ami = os.getenv("AWS_GPU_AMI_ID", "").strip()
+    if not ami:
+        return None, "no-ami-configured"
+
+    instance_type    = os.getenv("AWS_GPU_INSTANCE_TYPE",   "g6e.2xlarge")
+    subnet_id        = os.getenv("AWS_GPU_SUBNET_ID",       "subnet-0c5b465f9ede9e6ce")
+    sg_id            = os.getenv("AWS_GPU_SG_ID",           "sg-0a4a561065082e3c9")
+    key_name         = os.getenv("AWS_GPU_KEY_NAME",        "us_cpu_key")
+    instance_profile = os.getenv("AWS_GPU_INSTANCE_PROFILE","ec2_s3")
+    project_tag      = os.getenv("AWS_GPU_PROJECT_TAG",     "spark-gpu")
+
+    logger.info(
+        "launching spot from AMI %s (%s in %s)",
+        ami, instance_type, subnet_id,
+    )
+    try:
+        resp = ec2.run_instances(
+            ImageId=ami,
+            InstanceType=instance_type,
+            MinCount=1, MaxCount=1,
+            SubnetId=subnet_id,
+            SecurityGroupIds=[sg_id],
+            KeyName=key_name,
+            IamInstanceProfile={"Name": instance_profile},
+            InstanceMarketOptions={
+                "MarketType": "spot",
+                "SpotOptions": {
+                    "SpotInstanceType": "persistent",
+                    "InstanceInterruptionBehavior": "stop",
+                },
+            },
+            TagSpecifications=[
+                {"ResourceType": "instance", "Tags": [
+                    {"Key": "Name",    "Value": "spark_gpu_spot"},
+                    {"Key": "Project", "Value": project_tag},
+                ]},
+            ],
+        )
+        iid = resp["Instances"][0]["InstanceId"]
+        return iid, "launched"
+    except Exception as e:
+        logger.error("run_instances failed: %s", e)
+        return None, f"launch-failed: {e}"
+
+
+def _maybe_attach_eip(ec2, iid: str) -> None:
+    """Attach the configured Elastic IP, if any, to the given instance."""
+    alloc = os.getenv("AWS_GPU_EIP_ALLOC_ID", "").strip()
+    if not alloc:
+        return
+    try:
+        ec2.associate_address(InstanceId=iid, AllocationId=alloc)
+        logger.info("attached EIP %s to %s", alloc, iid)
+    except Exception as e:
+        logger.warning("associate_address failed for %s: %s", iid, e)
+
 
 def stop_gpu(force: bool = False) -> tuple[bool, str]:
     """Stop the GPU instance. Returns (ok, reason)."""

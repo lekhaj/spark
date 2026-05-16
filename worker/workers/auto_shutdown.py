@@ -38,6 +38,10 @@ AWS_REGION         = os.getenv("AWS_REGION", "us-east-1")
 REDIS_HOST         = os.getenv("REDIS_HOST", "172.31.26.6")   # CPU private IP
 REDIS_PORT         = int(os.getenv("REDIS_PORT", "6379"))
 REDIS_PASSWORD     = os.getenv("REDIS_PASSWORD") or None
+# Path to a file that, when missing, suppresses idle counting. spark-prewarm.service
+# touches it once the page cache is warm. Lets a fresh spot finish loading
+# weights without auto-stopping itself mid-warmup.
+PREWARM_SENTINEL   = os.getenv("PREWARM_SENTINEL", "/var/run/spark-prewarm.done")
 
 
 class AutoShutdown:
@@ -148,9 +152,26 @@ class AutoShutdown:
 
     def _monitor_loop(self):
         idle_since: float | None = None
+        # Log "waiting for prewarm" at most once per N ticks so we don't spam.
+        _last_prewarm_log: float = 0.0
 
         while True:
             time.sleep(CHECK_INTERVAL_SEC)
+
+            # Don't count idle time while spark-prewarm.service is still
+            # priming the page cache — the instance would otherwise stop
+            # itself mid-warmup. The service touches PREWARM_SENTINEL
+            # when it's safe to start counting idle.
+            if PREWARM_SENTINEL and not os.path.exists(PREWARM_SENTINEL):
+                idle_since = None
+                now = time.time()
+                if now - _last_prewarm_log > 300:   # log every 5 min
+                    logger.info(
+                        f"Pre-warm sentinel {PREWARM_SENTINEL} not present — "
+                        f"deferring idle counting"
+                    )
+                    _last_prewarm_log = now
+                continue
 
             r = self._get_redis()
             if r is None:

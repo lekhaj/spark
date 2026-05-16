@@ -1,0 +1,17 @@
+[Unit]
+Description=Spark GPU pre-warm: read model weights into page cache to defeat EBS snapshot lazy-load
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+Group=ec2-user
+ExecStart=/usr/local/bin/spark-prewarm.sh
+RemainAfterExit=true
+TimeoutStartSec=3600
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
