@@ -93,6 +93,18 @@ def _db():
 
 def _push_task(payload: dict, queue: str = REDIS_QUEUE) -> str:
     import redis
+    try:
+        from lib.gpu_launcher import ensure_gpu_ready
+        ok, reason = ensure_gpu_ready()
+        if not ok and reason != "disabled":
+            # Best-effort: log and continue. Task will sit in queue until GPU is up.
+            import logging
+            logging.getLogger("generation_studio").warning(
+                "GPU not ready before queueing (reason=%s) — task will wait in queue.", reason)
+    except Exception as _e:
+        import logging
+        logging.getLogger("generation_studio").debug("gpu_launcher unavailable: %s", _e)
+
     r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD,
                     db=0, decode_responses=True)
     payload.setdefault("task_id", str(uuid.uuid4()))
