@@ -9,7 +9,7 @@ User=ec2-user
 Group=ec2-user
 ExecStart=/usr/local/bin/spark-prewarm.sh
 RemainAfterExit=true
-TimeoutStartSec=3600
+TimeoutStartSec=7200
 StandardOutput=journal
 StandardError=journal
 

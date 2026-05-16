@@ -82,13 +82,16 @@ def run_pixal3d(front_image: Image.Image, params: dict | None = None) -> bytes:
         }
 
         logger.info(f"[pixal3d] running subprocess: {' '.join(cmd)}")
+        # First cold run on a fresh spot can take 30-50 min for EBS lazy-load
+        # of all model weights. Subsequent warm calls are 1-3 min.
+        timeout_s = int(os.getenv("PIXAL3D_TIMEOUT_S", "3600"))
         proc = subprocess.run(
             cmd,
             cwd=repo_path,
             env=env,
             capture_output=True,
             text=True,
-            timeout=1800,
+            timeout=timeout_s,
         )
         if proc.returncode != 0:
             tail = (proc.stderr or proc.stdout or "")[-2000:]
