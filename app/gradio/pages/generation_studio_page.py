@@ -84,6 +84,37 @@ S3_BASE_URL = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com"
 REDIS_QUEUE = os.getenv("MANUAL_GEN_QUEUE", "manual_gen_tasks")
 
 
+# Map queue-name → (instance-id, label) so the orchestrator and the
+# AutoShutdown admin UI both know which physical GPU serves each queue.
+#
+# Override via env var GPU_INSTANCE_MAP, comma-separated:
+#   GPU_INSTANCE_MAP=manual_gen_tasks=i-aaa:L4 g6.2xlarge,manual_gen_tasks_spot=i-bbb:L40S g6e.2xlarge
+def _parse_gpu_instance_map() -> dict[str, dict]:
+    raw = os.getenv("GPU_INSTANCE_MAP", "").strip()
+    if raw:
+        out = {}
+        for entry in raw.split(","):
+            entry = entry.strip()
+            if not entry or "=" not in entry:
+                continue
+            queue, rest = entry.split("=", 1)
+            iid, _, label = rest.partition(":")
+            out[queue.strip()] = {"id": iid.strip(), "label": (label or iid).strip()}
+        return out
+    # Defaults match current production layout
+    return {
+        "manual_gen_tasks":      {"id": "i-0bad29d398b8d8e4a", "label": "L4 g6.2xlarge (old)"},
+        "manual_gen_tasks_spot": {"id": os.getenv("AWS_GPU_INSTANCE_ID", "i-0f7766b2b07e8b372"),
+                                  "label": "L40S g6e.2xlarge (spot)"},
+    }
+
+GPU_INSTANCE_MAP = _parse_gpu_instance_map()
+
+def _iid_for_queue(queue: str) -> str | None:
+    """Return the instance-id that serves the given queue (or None if unmapped)."""
+    return (GPU_INSTANCE_MAP.get(queue) or {}).get("id")
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  DATA HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -139,22 +170,25 @@ def _push_task(payload: dict, queue: str = None) -> str:
     was_enabled = False
     disabled_here = False
 
+    # Resolve the GPU instance serving this queue (per-instance keys)
+    target_iid = _iid_for_queue(queue) or os.getenv("AWS_GPU_INSTANCE_ID", "").strip()
+
     if cold and targets_spot:
         try:
             from lib.autoshutdown_ctl import (
                 autoshutdown_was_enabled, disable_autoshutdown,
                 wait_for_prewarm, is_prewarm_ready,
             )
-            iid = os.getenv("AWS_GPU_INSTANCE_ID", "").strip()
             # Cheap fast-path: maybe sentinel is already published from a
             # previous boot (cache still warm). Skip the wait if so.
-            if iid and not is_prewarm_ready(r, iid):
-                was_enabled = autoshutdown_was_enabled(r)
+            if target_iid and not is_prewarm_ready(r, target_iid):
+                was_enabled = autoshutdown_was_enabled(r, target_iid)
                 if was_enabled:
-                    disable_autoshutdown(r)
+                    disable_autoshutdown(r, target_iid)
                     disabled_here = True
-                log.info("Cold spot detected (reason=%s) — waiting for prewarm sentinel", reason)
-                ok_warm = wait_for_prewarm(r, iid, timeout=1800, poll=10)
+                log.info("Cold spot %s detected (reason=%s) — waiting for prewarm sentinel",
+                         target_iid, reason)
+                ok_warm = wait_for_prewarm(r, target_iid, timeout=1800, poll=10)
                 if not ok_warm:
                     log.warning("Prewarm wait timed out — queueing anyway; first inference may be slow")
         except Exception as e:
@@ -170,7 +204,7 @@ def _push_task(payload: dict, queue: str = None) -> str:
         import threading
         t = threading.Thread(
             target=_watch_and_restore_autoshutdown,
-            args=(payload["task_id"], was_enabled),
+            args=(payload["task_id"], was_enabled, target_iid),
             name=f"AsRestore-{payload['task_id'][:8]}",
             daemon=True,
         )
@@ -180,6 +214,7 @@ def _push_task(payload: dict, queue: str = None) -> str:
 
 
 def _watch_and_restore_autoshutdown(task_id: str, was_enabled: bool,
+                                    instance_id: str | None = None,
                                     timeout: int = 3600, poll: int = 15) -> None:
     """
     Poll Mongo until the given task hits status=done|error, then re-enable
@@ -201,14 +236,16 @@ def _watch_and_restore_autoshutdown(task_id: str, was_enabled: bool,
                 doc = get_run_any(_db(), task_id)
                 st = (doc or {}).get("status", "")
                 if st in ("done", "error"):
-                    log.info("Task %s reached status=%s — restoring AutoShutdown", task_id[:8], st)
-                    restore_autoshutdown(r, was_enabled)
+                    log.info("Task %s reached status=%s — restoring AutoShutdown for %s",
+                             task_id[:8], st, instance_id or "global")
+                    restore_autoshutdown(r, was_enabled, instance_id)
                     return
             except Exception as e:
                 log.debug("watcher mongo poll failed: %s", e)
             time.sleep(poll)
-        log.warning("Task %s never completed within %ds — restoring AutoShutdown anyway", task_id[:8], timeout)
-        restore_autoshutdown(r, was_enabled)
+        log.warning("Task %s never completed within %ds — restoring AutoShutdown for %s anyway",
+                    task_id[:8], timeout, instance_id or "global")
+        restore_autoshutdown(r, was_enabled, instance_id)
     except Exception as e:
         log.warning("AutoShutdown restore watcher crashed: %s", e)
 
@@ -841,6 +878,77 @@ def generation_studio_ui():
             REDIS_QUEUE = q
             return f"Active queue: {q}"
         gpu_target.change(_set_target_queue, inputs=gpu_target, outputs=gpu_target_info)
+
+        # ── Per-instance AutoShutdown admin ──────────────────────────────────
+        # Each GPU instance has its own Redis-controlled AutoShutdown enabled
+        # flag and idle threshold. The per-instance key takes precedence over
+        # the global key; the GPU-side auto_shutdown.py reads the per-instance
+        # key first and only falls back to global if unset.
+        with gr.Accordion("🛠️ GPU AutoShutdown Settings (per-instance)", open=False):
+            gr.Markdown(
+                "_Each GPU has its own Redis-driven enable flag and idle timer. "
+                "Disabling pauses the self-stop loop on that GPU; the orchestrator "
+                "still toggles these automatically during cold launch + first inference._"
+            )
+            _as_rows: list[tuple[str, dict, gr.Checkbox, gr.Number, gr.Textbox]] = []
+
+            def _get_as_redis():
+                import redis
+                return redis.Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD,
+                                   db=0, decode_responses=True)
+
+            def _refresh_one(iid):
+                try:
+                    from lib.autoshutdown_ctl import get_instance_config
+                    cfg = get_instance_config(_get_as_redis(), iid)
+                    return (cfg["enabled"], cfg["idle_minutes"],
+                            f"✓ enabled={cfg['enabled']}  idle={cfg['idle_minutes']}min  ({cfg['source']})")
+                except Exception as e:
+                    return (True, 15, f"⚠ {e}")
+
+            def _save_one(iid, enabled, minutes):
+                try:
+                    from lib.autoshutdown_ctl import set_autoshutdown_enabled, set_idle_minutes
+                    r = _get_as_redis()
+                    set_autoshutdown_enabled(r, iid, bool(enabled))
+                    set_idle_minutes(r, iid, int(minutes))
+                    return f"✓ saved: enabled={bool(enabled)} idle={int(minutes)}min"
+                except Exception as e:
+                    return f"❌ {e}"
+
+            for q_name, meta in GPU_INSTANCE_MAP.items():
+                iid = meta["id"]; label = meta["label"]
+                with gr.Row():
+                    gr.Markdown(f"**{label}**  \n`{iid}`  (queue: `{q_name}`)")
+                    en_cb = gr.Checkbox(label="AutoShutdown enabled", value=True, scale=1)
+                    idle_n = gr.Number(label="Idle minutes", value=15, precision=0,
+                                       minimum=1, maximum=720, scale=1)
+                    status = gr.Textbox(label="Status", interactive=False, scale=2)
+                    with gr.Column(scale=1):
+                        refresh_btn = gr.Button("↻ Read", size="sm")
+                        save_btn    = gr.Button("💾 Save", size="sm", variant="primary")
+                # Wire callbacks (closure over iid via default-arg trick)
+                refresh_btn.click(
+                    lambda _iid=iid: _refresh_one(_iid),
+                    inputs=[], outputs=[en_cb, idle_n, status],
+                )
+                save_btn.click(
+                    lambda en, mn, _iid=iid: _save_one(_iid, en, mn),
+                    inputs=[en_cb, idle_n], outputs=[status],
+                )
+                _as_rows.append((iid, meta, en_cb, idle_n, status))
+
+            # Auto-populate on page load
+            def _load_all():
+                out = []
+                for iid, _meta, _en, _idle, _st in _as_rows:
+                    en, mn, st = _refresh_one(iid)
+                    out.extend([en, mn, st])
+                return out
+            tab.load(
+                _load_all, inputs=[],
+                outputs=[w for _i, _m, en, idle, st in _as_rows for w in (en, idle, st)],
+            )
 
         stage_timer = gr.Timer(value=4, active=False)
         _chars = _list_chars()

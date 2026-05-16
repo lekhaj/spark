@@ -35,54 +35,129 @@ from typing import Callable, Optional
 logger = logging.getLogger("autoshutdown_ctl")
 
 # Redis keys (mirrored from worker/workers/auto_shutdown.py)
-KEY_ENABLED       = "autoshutdown:enabled"
-KEY_PREWARM_READY = "prewarm:ready:{instance_id}"
+# Per-instance keys take precedence; the unsuffixed forms are global fallbacks
+# kept for backwards-compatibility.
+KEY_ENABLED          = "autoshutdown:enabled"               # global
+KEY_ENABLED_IID      = "autoshutdown:enabled:{instance_id}" # per-instance
+KEY_IDLE_MINUTES     = "autoshutdown:idle_minutes"          # global
+KEY_IDLE_MINUTES_IID = "autoshutdown:idle_minutes:{instance_id}"
+KEY_PREWARM_READY    = "prewarm:ready:{instance_id}"
 
 
-# ── enable/disable flag ───────────────────────────────────────────────────────
+def _resolve_iid(instance_id: Optional[str]) -> Optional[str]:
+    """Strip and validate the instance-id arg; treat empty as None."""
+    if not instance_id:
+        return None
+    iid = instance_id.strip()
+    return iid or None
 
-def autoshutdown_was_enabled(r) -> bool:
+
+# ── enable/disable flag (per-instance, with global fallback) ──────────────────
+
+def autoshutdown_was_enabled(r, instance_id: Optional[str] = None) -> bool:
     """
-    True if AutoShutdown was enabled (default = True if key unset).
+    True if AutoShutdown was enabled for the given instance.
 
-    Mirrors the GPU-side `_is_enabled()` semantics so snapshot/restore
-    is round-trip exact.
+    Lookup order: per-instance key → global key → default True. Mirrors the
+    GPU-side `_is_enabled()` semantics so snapshot/restore is round-trip exact.
     """
+    iid = _resolve_iid(instance_id)
+    keys = ([KEY_ENABLED_IID.format(instance_id=iid)] if iid else []) + [KEY_ENABLED]
+    for k in keys:
+        try:
+            val = r.get(k)
+        except Exception as e:
+            logger.warning(f"redis get({k}) failed: {e}")
+            continue
+        if val is None:
+            continue
+        s = val.decode() if isinstance(val, (bytes, bytearray)) else str(val)
+        return s == "1"
+    return True   # default: enabled
+
+
+def disable_autoshutdown(r, instance_id: Optional[str] = None) -> None:
+    """
+    Set autoshutdown:enabled=0 for the given instance (or global if iid=None).
+    GPU thread on that instance will skip self-stop while this is set.
+    """
+    iid = _resolve_iid(instance_id)
+    key = KEY_ENABLED_IID.format(instance_id=iid) if iid else KEY_ENABLED
     try:
-        val = r.get(KEY_ENABLED)
+        r.set(key, "0")
+        logger.info(f"AutoShutdown DISABLED via Redis flag ({key})")
     except Exception as e:
-        logger.warning(f"redis get({KEY_ENABLED}) failed: {e} — assuming enabled")
-        return True
-    if val is None:
-        return True
-    s = val.decode() if isinstance(val, (bytes, bytearray)) else str(val)
-    return s == "1"
+        logger.warning(f"redis set({key}=0) failed: {e}")
 
 
-def disable_autoshutdown(r) -> None:
-    """Set autoshutdown:enabled=0 (GPU thread will skip self-stop while this is set)."""
-    try:
-        r.set(KEY_ENABLED, "0")
-        logger.info("AutoShutdown DISABLED via Redis flag (CPU orchestrator)")
-    except Exception as e:
-        logger.warning(f"redis set({KEY_ENABLED}=0) failed: {e}")
-
-
-def restore_autoshutdown(r, was_enabled: bool) -> None:
+def restore_autoshutdown(r, was_enabled: bool, instance_id: Optional[str] = None) -> None:
     """
-    Re-enable AutoShutdown only if it was enabled before we touched it.
-
-    No-op if the user had explicitly disabled it — we never silently turn
-    on a flag the user turned off.
+    Re-enable AutoShutdown for the given instance only if it was enabled
+    before we touched it. No-op if the user had explicitly disabled it.
     """
     if not was_enabled:
         logger.info("AutoShutdown was already disabled before; not restoring")
         return
+    iid = _resolve_iid(instance_id)
+    key = KEY_ENABLED_IID.format(instance_id=iid) if iid else KEY_ENABLED
     try:
-        r.set(KEY_ENABLED, "1")
-        logger.info("AutoShutdown RE-ENABLED via Redis flag (CPU orchestrator)")
+        r.set(key, "1")
+        logger.info(f"AutoShutdown RE-ENABLED via Redis flag ({key})")
     except Exception as e:
-        logger.warning(f"redis set({KEY_ENABLED}=1) failed: {e}")
+        logger.warning(f"redis set({key}=1) failed: {e}")
+
+
+# ── per-instance config setters/getters (for the UI panel) ────────────────────
+
+def set_autoshutdown_enabled(r, instance_id: str, enabled: bool) -> None:
+    """UI helper: explicitly set per-instance enabled flag to "0" or "1"."""
+    iid = _resolve_iid(instance_id)
+    if not iid:
+        raise ValueError("instance_id is required")
+    key = KEY_ENABLED_IID.format(instance_id=iid)
+    r.set(key, "1" if enabled else "0")
+    logger.info(f"UI: {key} = {'1' if enabled else '0'}")
+
+
+def set_idle_minutes(r, instance_id: str, minutes: int) -> None:
+    """UI helper: explicitly set per-instance idle threshold."""
+    iid = _resolve_iid(instance_id)
+    if not iid:
+        raise ValueError("instance_id is required")
+    if minutes < 1:
+        raise ValueError("minutes must be >= 1")
+    key = KEY_IDLE_MINUTES_IID.format(instance_id=iid)
+    r.set(key, str(int(minutes)))
+    logger.info(f"UI: {key} = {minutes}")
+
+
+def get_instance_config(r, instance_id: str) -> dict:
+    """Return current effective config for one instance (for UI display)."""
+    iid = _resolve_iid(instance_id)
+    if not iid:
+        return {"enabled": True, "idle_minutes": 15, "source": "no-iid"}
+    enabled = autoshutdown_was_enabled(r, iid)
+    # Idle minutes: per-instance → global → default 15
+    minutes = 15
+    source_min = "default"
+    for k, src in [
+        (KEY_IDLE_MINUTES_IID.format(instance_id=iid), "per-instance"),
+        (KEY_IDLE_MINUTES, "global"),
+    ]:
+        try:
+            v = r.get(k)
+        except Exception:
+            continue
+        if v is None:
+            continue
+        s = v.decode() if isinstance(v, (bytes, bytearray)) else str(v)
+        try:
+            minutes = int(s)
+            source_min = src
+            break
+        except (TypeError, ValueError):
+            continue
+    return {"enabled": enabled, "idle_minutes": minutes, "source": source_min}
 
 
 # ── prewarm sentinel ──────────────────────────────────────────────────────────

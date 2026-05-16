@@ -151,25 +151,55 @@ class AutoShutdown:
         except Exception as e:
             logger.error(f"Failed to stop instance: {e}")
 
+    def _this_iid(self) -> str | None:
+        """Cached lookup of this instance's id (for per-instance Redis keys)."""
+        if not hasattr(self, "_cached_iid"):
+            self._cached_iid = (
+                os.getenv("AWS_GPU_INSTANCE_ID", "").strip()
+                or _imds_instance_id()
+            )
+        return self._cached_iid
+
     def _is_enabled(self, r) -> bool:
-        """Check Redis flag — returns True if autoshutdown is enabled (default: True)."""
-        try:
-            val = r.get("autoshutdown:enabled")
+        """
+        Check Redis flag — per-instance key takes precedence, then global,
+        then default (True).
+        Keys read:
+          autoshutdown:enabled:<iid>   (preferred)
+          autoshutdown:enabled         (fallback)
+        """
+        iid = self._this_iid()
+        keys = ([f"autoshutdown:enabled:{iid}"] if iid else []) + ["autoshutdown:enabled"]
+        for k in keys:
+            try:
+                val = r.get(k)
+            except Exception:
+                continue
             if val is None:
-                return True   # no flag set → default on
-            return val.decode() == "1" if isinstance(val, bytes) else str(val) == "1"
-        except Exception:
-            return True   # fail-safe: default on if Redis error
+                continue
+            s = val.decode() if isinstance(val, (bytes, bytearray)) else str(val)
+            return s == "1"
+        return True   # no flag set anywhere → default on
 
     def _get_idle_threshold(self, r) -> int:
-        """Read idle threshold from Redis, falling back to env var default."""
-        try:
-            val = r.get("autoshutdown:idle_minutes")
-            if val is not None:
-                v = val.decode() if isinstance(val, bytes) else str(val)
+        """
+        Read idle threshold from Redis (per-instance preferred), falling back
+        to global key, falling back to env var default.
+        """
+        iid = self._this_iid()
+        keys = ([f"autoshutdown:idle_minutes:{iid}"] if iid else []) + ["autoshutdown:idle_minutes"]
+        for k in keys:
+            try:
+                val = r.get(k)
+            except Exception:
+                continue
+            if val is None:
+                continue
+            v = val.decode() if isinstance(val, (bytes, bytearray)) else str(val)
+            try:
                 return int(v)
-        except Exception:
-            pass
+            except (TypeError, ValueError):
+                continue
         return IDLE_THRESHOLD_MIN
 
     def _publish_prewarm_ready(self, r) -> None:
