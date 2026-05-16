@@ -120,14 +120,12 @@ def load_shakker() -> ShakkerPipes:
     )
 
     # ── Memory management:
-    # The L4 GPU has 22.04 GB of VRAM. The 12B transformer needs ~22.01 GB.
-    # We are literally 50 MB short, which causes OOM crashes during inference
-    # if we try to use model_cpu_offload.
-    # We MUST use sequential_cpu_offload. Because we are using FLUX-schnell (4 steps),
-    # the 4-minute-per-step penalty is fine (4 * 4 = 16 minutes total).
-    logger.info("[shakker] Setting up safe sequential offload for L4 24GB GPU...")
-    pipe.enable_sequential_cpu_offload()
-    logger.info("[shakker] ✅ sequential_cpu_offload active — expected ~16 min generation")
+    # We are now on the massive L40S GPU (48GB VRAM)!
+    # We no longer need the slow sequential_cpu_offload.
+    # We can use model_cpu_offload to drastically speed up generation.
+    logger.info("[shakker] 48GB L40S GPU detected! Setting up high-speed model_cpu_offload...")
+    pipe.enable_model_cpu_offload()
+    logger.info("[shakker] ✅ model_cpu_offload active — generation will take SECONDS, not minutes!")
 
     logger.info("[shakker] All models loaded safely.")
 
