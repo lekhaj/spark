@@ -483,6 +483,12 @@ fastapi_app.add_middleware(
 if os.path.isdir(_static_dir):
     fastapi_app.mount("/static", StaticFiles(directory=_static_dir, html=True), name="static")
 
-fastapi_app = gr.mount_gradio_app(fastapi_app, demo, path="/")
+fastapi_app = gr.mount_gradio_app(fastapi_app, demo, path="/app")
+
+from fastapi.responses import RedirectResponse
+@fastapi_app.get("/")
+def redirect_root():
+    return RedirectResponse(url="/app/")
+
 
 uvicorn.run(fastapi_app, host="0.0.0.0", port=7860)
