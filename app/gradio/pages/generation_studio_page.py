@@ -147,7 +147,7 @@ def _resolve_run(char: str, stage: str, major, minor) -> tuple[Optional[str], st
         major, minor = int(major), int(minor)
         doc = get_run_for(_db(), char, stage, major, minor)
         if doc:
-            sid = doc["_id"]
+            sid = str(doc["_id"])
             st  = doc.get("status", "idle")
             return sid, f"{sid[:8]}…  v{major}.{minor}  [{st}]"
         return None, f"No run — {char}/{stage} v{major}.{minor}"
@@ -310,7 +310,7 @@ def _prepare_run(char, stage, major, minor, prompt, neg, params):
     if run:
         st = run.get("status", "idle")
         if st in ("queued", "running"):
-            return run["_id"], None, gr.update(), gr.update(), f"⚠️ {stage} is already {st}."
+            return str(run["_id"]), None, gr.update(), gr.update(), f"⚠️ {stage} is already {st}."
         if st == "done":
             # Auto-create next minor — same as error retry so user can keep running
             sid, new_n = auto_retry_run(db, char, stage, major, prompt, neg, params)
@@ -324,7 +324,7 @@ def _prepare_run(char, stage, major, minor, prompt, neg, params):
             info   = f"{sid[:8]}…  v{major}.{new_n}  [idle]"
             return sid, new_n, gr.update(choices=minors, value=new_n), info, None
         # status == "idle"
-        sid = run["_id"]
+        sid = str(run["_id"])
     else:
         sid = create_run(db, char, stage, major, minor, prompt, neg, params)
 
