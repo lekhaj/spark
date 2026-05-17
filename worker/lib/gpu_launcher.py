@@ -133,6 +133,19 @@ def ensure_gpu_ready(timeout: Optional[int] = None) -> tuple[bool, str]:
         iid = new_id
         if _wait_for(ec2, iid, "running", timeout):
             _maybe_attach_eip(ec2, iid)
+            # Flag that this instance needs prewarm — cleared by CPU once
+            # prewarm:ready is confirmed. Drives the status panel display.
+            try:
+                import redis as _redis
+                _r = _redis.Redis(
+                    host=os.getenv("REDIS_HOST", "localhost"),
+                    port=int(os.getenv("REDIS_PORT", 6379)),
+                    password=os.getenv("REDIS_PASSWORD") or None,
+                    db=0, decode_responses=True,
+                )
+                _r.setex(f"prewarm:pending:{iid}", 7200, "1")  # 2h TTL fallback
+            except Exception as _e:
+                logger.warning("Could not set prewarm:pending: %s", _e)
             return True, "launched"
         return False, "timeout-new-spot"
 
@@ -300,8 +313,22 @@ def get_gpu_status(instance_id: str, r=None) -> dict:
             out["phase"]       = "ready"
             out["phase_label"] = "🟢 Ready for inference"
         else:
-            out["phase"]       = "prewarming"
-            out["phase_label"] = "🟠 Prewarming model weights (~15-20 min)"
+            # Only show "Prewarming" if CPU explicitly flagged this instance
+            # as needing a prewarm (i.e. freshly launched from AMI).
+            # On stop/start the key is missing but prewarm was never triggered
+            # by CPU — treat as ready.
+            prewarm_pending = False
+            if r is not None:
+                try:
+                    prewarm_pending = bool(r.get(f"prewarm:pending:{instance_id}"))
+                except Exception:
+                    pass
+            if prewarm_pending:
+                out["phase"]       = "prewarming"
+                out["phase_label"] = "🟠 Prewarming model weights (~15-20 min)"
+            else:
+                out["phase"]       = "ready"
+                out["phase_label"] = "🟢 Ready for inference"
     elif state == "pending":
         out["phase"]       = "booting"
         out["phase_label"] = "🟡 Booting"

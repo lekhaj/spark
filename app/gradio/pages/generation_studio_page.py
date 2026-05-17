@@ -224,6 +224,11 @@ def _push_task(payload: dict, queue: str = None) -> str:
                 ok_warm = wait_for_prewarm(r, target_iid, timeout=1800, poll=10)
                 if not ok_warm:
                     log.warning("Prewarm wait timed out — queueing anyway; first inference may be slow")
+                # Clear the pending flag — status panel now shows Ready
+                try:
+                    r.delete(f"prewarm:pending:{target_iid}")
+                except Exception:
+                    pass
         except Exception as e:
             log.warning("Cold-launch protection failed (continuing without it): %s", e)
 
