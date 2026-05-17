@@ -195,7 +195,10 @@ def _push_task(payload: dict, queue: str = None) -> str:
     # Only applies when the spot was just brought up (launched/started) AND
     # the user is targeting the spot queue. Already-warm path (reason="running")
     # skips everything below and goes straight to rpush.
-    cold = reason in ("launched", "started")
+    # Only wait for prewarm when a brand-new instance was built from AMI.
+    # "started" = was stopped and restarted — EBS preserved, page cache warm,
+    # no need to block on prewarm sentinel.
+    cold = reason == "launched"
     targets_spot = queue.endswith("_spot") or os.getenv("MANUAL_GEN_QUEUE", "") == queue
     was_enabled = False
     disabled_here = False
