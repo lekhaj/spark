@@ -42,7 +42,7 @@ REDIS_PASSWORD     = os.getenv("REDIS_PASSWORD") or None
 # Path to a file that, when missing, suppresses idle counting. spark-prewarm.service
 # touches it once the page cache is warm. Lets a fresh spot finish loading
 # weights without auto-stopping itself mid-warmup.
-PREWARM_SENTINEL   = os.getenv("PREWARM_SENTINEL", "/var/run/spark-prewarm.done")
+PREWARM_SENTINEL   = os.getenv("PREWARM_SENTINEL", "/home/ec2-user/spark-prewarm.done")
 # Redis key used by the CPU orchestrator to block on prewarm completion.
 # Filled in lazily once IMDS resolves the instance-id.
 PREWARM_READY_KEY  = "prewarm:ready:{instance_id}"

@@ -12,7 +12,7 @@
 set -euo pipefail
 
 LOG=/var/log/spark-prewarm.log
-SENTINEL=/var/run/spark-prewarm.done
+SENTINEL=/home/ec2-user/spark-prewarm.done
 HF_HUB="$HOME/.cache/huggingface/hub"
 
 # Idempotency: don't redo if already done this boot.
@@ -70,8 +70,7 @@ fi
 echo "=== spark-prewarm complete — total HF bytes: $total_bytes ==="
 echo "=== spark-prewarm DONE $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
 
-# Sentinel must be root-writable since systemd creates /var/run as tmpfs.
-# Use sudo for the touch — sudoers rule below allows it.
-sudo touch "$SENTINEL"
-sudo chmod 644 "$SENTINEL"
+# Sentinel is on EBS (/home/ec2-user) — writable by ec2-user directly.
+touch "$SENTINEL"
+chmod 644 "$SENTINEL"
 echo "[prewarm] sentinel created at $SENTINEL"
