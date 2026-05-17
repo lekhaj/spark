@@ -12,11 +12,16 @@ Profiles:
 
 Args JSON (positional 4) supports keys:
     ratio_b         (float, default 0.4)
-    ratio_c         (float, default 0.15)
+    target_faces_c  (int,   default 20000)  — PyMeshLab QECD target face count
+    ratio_c         (float, default 0.17)   — fallback Blender ratio if pymeshlab absent
     voxel_size_d    (float, default 0.030)
     quadriflow      (bool,  default False)
     quadriflow_target (int, default 5000)
     bake_resolution (int,   default 1024)
+
+Profile C requires PyMeshLab in the system Python (not Blender's embedded Python).
+Install with:  pip install pymeshlab
+Override interpreter: PYMESHLAB_PYTHON=/path/to/python3
 
 Exits 0 on success. Stats line on stdout:
     MESH_LOD_RESULT: profile=X tris=N seconds=S
@@ -24,7 +29,10 @@ Exits 0 on success. Stats line on stdout:
 
 import json
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import time
 import math
 import traceback
@@ -153,6 +161,59 @@ def _corrective_smooth(obj, iterations=5):
         print(f"[mesh_lod] corrective smooth apply failed: {e}")
 
 
+def _pymeshlab_qecd(in_obj: str, out_obj: str, target_faces: int) -> bool:
+    """
+    Quadric Edge Collapse Decimation via PyMeshLab (system Python subprocess).
+    Blender's embedded Python does not ship PyMeshLab — we call out to the
+    system/conda Python that does.
+
+    Set PYMESHLAB_PYTHON env var to override the interpreter path.
+    Returns True on success, False on any error.
+    """
+    python = os.getenv("PYMESHLAB_PYTHON", "python3")
+    code = "\n".join([
+        "import pymeshlab",
+        "ms = pymeshlab.MeshSet()",
+        f"ms.load_new_mesh({repr(in_obj)})",
+        "m = ms.current_mesh()",
+        "print(f'[pymeshlab] input  faces={m.face_number()} verts={m.vertex_number()}')",
+        "ms.meshing_decimation_quadric_edge_collapse_decimation(",
+        f"    targetfacenum={target_faces},",
+        "    qualitythr=0.5,",
+        "    preserveboundary=True,",
+        "    boundaryweight=2.0,",
+        "    preservenormal=True,",
+        "    preservetopology=True,",
+        "    optimalplacement=True,",
+        "    planarquadric=True,",
+        "    autoremeshing=False,",
+        ")",
+        "m2 = ms.current_mesh()",
+        "print(f'[pymeshlab] output faces={m2.face_number()} verts={m2.vertex_number()}')",
+        f"ms.save_current_mesh({repr(out_obj)})",
+    ])
+    try:
+        result = subprocess.run(
+            [python, "-c", code],
+            capture_output=True, text=True, timeout=120,
+        )
+        for line in result.stdout.splitlines():
+            print(line)
+        if result.returncode != 0:
+            print(f"[mesh_lod] pymeshlab stderr: {result.stderr[-400:]}")
+            return False
+        return True
+    except FileNotFoundError:
+        print(f"[mesh_lod] Python not found: {python!r} — set PYMESHLAB_PYTHON env var")
+        return False
+    except subprocess.TimeoutExpired:
+        print("[mesh_lod] pymeshlab timed out after 120s")
+        return False
+    except Exception as e:
+        print(f"[mesh_lod] pymeshlab subprocess error: {e}")
+        return False
+
+
 def _smart_uv_project(obj, angle_limit_deg=66.0, island_margin=0.005):
     _activate(obj)
     bpy.ops.object.mode_set(mode='EDIT')
@@ -260,28 +321,68 @@ def run_profile_b(obj, args):
 
 
 def run_profile_c(obj, args):
+    """
+    PyMeshLab QECD — ~6:1 reduction (120k → 20k) preserving silhouette,
+    UV seams and normals via Quadric Error Metric.
+
+    Falls back to Blender Decimate COLLAPSE if PyMeshLab is unavailable.
+    Returns the decimated object (may be a new object if PyMeshLab path taken).
+    """
     _merge_by_distance(obj)
     _delete_loose(obj)
 
-    # Keep a reference copy of the original for shrinkwrap snapping
-    bpy.ops.object.select_all(action='DESELECT')
-    obj.select_set(True)
-    bpy.context.view_layer.objects.active = obj
-    bpy.ops.object.duplicate()
-    src_ref = bpy.context.active_object   # original high-poly copy
-    src_ref.hide_set(True)                # keep out of export
+    target_faces = int(args.get("target_faces_c", 20000))
+    tmp_dir = tempfile.mkdtemp(prefix="mesh_lod_c_")
+    tmp_in  = os.path.join(tmp_dir, "in.obj")
+    tmp_out = os.path.join(tmp_dir, "out.obj")
 
-    # Re-activate original obj for decimation
+    # ── Export current mesh to OBJ for PyMeshLab ──────────────────────────
     _activate(obj)
-    _add_decimate_collapse(obj, ratio=float(args.get("ratio_c", 0.15)))
-    _add_decimate_planar(obj, angle_deg=15.0)
+    try:
+        bpy.ops.wm.obj_export(           # Blender 3.6+ exporter
+            filepath=tmp_in,
+            export_selected_objects=True,
+            export_uv=True,
+            export_normals=True,
+            export_materials=True,
+            export_triangulated_mesh=True,
+        )
+    except AttributeError:
+        bpy.ops.export_scene.obj(        # legacy exporter (Blender < 3.6)
+            filepath=tmp_in,
+            use_selection=True,
+            use_normals=True,
+            use_uvs=True,
+            use_materials=True,
+            use_triangles=True,
+        )
 
-    # Snap back to original surface + smooth artifacts
-    _shrinkwrap_snap(obj, src_ref)
-    _corrective_smooth(obj, iterations=int(args.get("smooth_iterations_c", 5)))
+    # ── PyMeshLab QECD ────────────────────────────────────────────────────
+    ok = _pymeshlab_qecd(tmp_in, tmp_out, target_faces)
 
-    # Clean up reference copy
-    bpy.data.objects.remove(src_ref, do_unlink=True)
+    if not ok or not os.path.exists(tmp_out):
+        print("[mesh_lod] profile C: pymeshlab unavailable — falling back to Blender COLLAPSE")
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        _add_decimate_collapse(obj, ratio=float(args.get("ratio_c", 0.17)))
+        _add_decimate_planar(obj, angle_deg=15.0)
+        return None   # obj modified in-place; caller keeps original reference
+
+    # ── Import decimated OBJ back into Blender ────────────────────────────
+    bpy.data.objects.remove(obj, do_unlink=True)
+    try:
+        bpy.ops.wm.obj_import(filepath=tmp_out)   # Blender 3.6+
+    except AttributeError:
+        bpy.ops.import_scene.obj(filepath=tmp_out) # legacy
+
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    new_obj = next(
+        (o for o in bpy.context.selected_objects if o.type == 'MESH'),
+        None,
+    )
+    if new_obj is None:
+        print("[mesh_lod] profile C: OBJ re-import yielded no mesh")
+    return new_obj
 
 
 def run_profile_d(obj, args):
@@ -352,7 +453,8 @@ def main():
     elif profile == "b":
         run_profile_b(obj, args)
     elif profile == "c":
-        run_profile_c(obj, args)
+        new_obj = run_profile_c(obj, args)
+        obj = new_obj if new_obj else obj
     elif profile == "d":
         new_obj = run_profile_d(obj, args)
         obj = new_obj if new_obj else obj
