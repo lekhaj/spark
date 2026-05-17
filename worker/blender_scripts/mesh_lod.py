@@ -104,23 +104,20 @@ def _delete_loose(obj):
     bpy.ops.object.mode_set(mode='OBJECT')
 
 
-def _fill_holes(obj, sides=0):
+def _fill_holes(obj, sides=16):
     """
-    Fill open boundary loops (holes) in the mesh.
-    sides=0 fills holes of any edge count.
-    Also fills non-manifold faces left by Decimate.
+    Fill only *small* open boundary loops — artifact holes from the generation
+    pipeline or decimation, NOT intentional character openings.
+
+    sides=16 means: only fill holes whose boundary loop has ≤ 16 edges.
+    Eyes (~40-150 edges), mouth (~80-200 edges), nostrils stay open.
+    Tiny degenerate holes from mesh generation (usually 3-10 edges) get capped.
+    Increase `sides` if you're still seeing small artifacts.
     """
     _activate(obj)
     bpy.ops.object.mode_set(mode='EDIT')
     bpy.ops.mesh.select_all(action='SELECT')
-    bpy.ops.mesh.fill_holes(sides=sides)
-    # Second pass: select remaining boundary edges and cap them
-    bpy.ops.mesh.select_all(action='DESELECT')
-    bpy.ops.mesh.select_non_manifold(
-        extend=False, use_wire=False, use_boundary=True,
-        use_multi_face=False, use_non_contiguous=False, use_verts=False
-    )
-    bpy.ops.mesh.edge_face_add()
+    bpy.ops.mesh.fill_holes(sides=sides)   # sides > 0 caps only loops ≤ N edges
     bpy.ops.object.mode_set(mode='OBJECT')
 
 
@@ -197,11 +194,11 @@ def _pymeshlab_qecd(in_obj: str, out_obj: str, target_faces: int) -> bool:
         f"ms.load_new_mesh({repr(in_obj)})",
         "m = ms.current_mesh()",
         "print(f'[pymeshlab] input  faces={m.face_number()} verts={m.vertex_number()}')",
-        # Close holes before decimation so QECD doesn't collapse boundary edges
-        # into non-manifold geometry. maxholesize=200 covers typical character
-        # eye/mouth holes (usually <100 boundary edges).
+        # Close only tiny artifact holes before decimation — NOT intentional
+        # character openings (eyes/mouth are typically 40-200 boundary edges).
+        # maxholesize=16 matches the Blender _fill_holes(sides=16) threshold.
         "try:",
-        "    ms.meshing_close_holes(maxholesize=200, newfaceselected=False, selfintersection=True)",
+        "    ms.meshing_close_holes(maxholesize=16, newfaceselected=False, selfintersection=True)",
         "    m_h = ms.current_mesh()",
         "    print(f'[pymeshlab] after hole-close faces={m_h.face_number()}')",
         "except Exception as _he:",
