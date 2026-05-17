@@ -126,6 +126,33 @@ def _voxel_remesh(obj, voxel_size=0.03):
     bpy.ops.object.voxel_remesh()
 
 
+def _shrinkwrap_snap(dst_obj, src_obj):
+    """Snap dst_obj surface back onto src_obj to undo voxel/decimate inflation."""
+    _activate(dst_obj)
+    mod = dst_obj.modifiers.new(name="Shrinkwrap", type='SHRINKWRAP')
+    mod.target = src_obj
+    mod.wrap_method = 'PROJECT'
+    mod.use_negative_direction = True
+    mod.use_positive_direction = True
+    mod.offset = 0.0
+    try:
+        bpy.ops.object.modifier_apply(modifier=mod.name)
+    except Exception as e:
+        print(f"[mesh_lod] shrinkwrap apply failed: {e}")
+
+
+def _corrective_smooth(obj, iterations=5):
+    """Corrective smooth to remove voxel/decimate stairstepping artifacts."""
+    _activate(obj)
+    mod = obj.modifiers.new(name="CorrectiveSmooth", type='CORRECTIVE_SMOOTH')
+    mod.iterations = iterations
+    mod.smooth_type = 'LENGTH_WEIGHTED'
+    try:
+        bpy.ops.object.modifier_apply(modifier=mod.name)
+    except Exception as e:
+        print(f"[mesh_lod] corrective smooth apply failed: {e}")
+
+
 def _smart_uv_project(obj, angle_limit_deg=66.0, island_margin=0.005):
     _activate(obj)
     bpy.ops.object.mode_set(mode='EDIT')
@@ -235,8 +262,26 @@ def run_profile_b(obj, args):
 def run_profile_c(obj, args):
     _merge_by_distance(obj)
     _delete_loose(obj)
+
+    # Keep a reference copy of the original for shrinkwrap snapping
+    bpy.ops.object.select_all(action='DESELECT')
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.object.duplicate()
+    src_ref = bpy.context.active_object   # original high-poly copy
+    src_ref.hide_set(True)                # keep out of export
+
+    # Re-activate original obj for decimation
+    _activate(obj)
     _add_decimate_collapse(obj, ratio=float(args.get("ratio_c", 0.15)))
     _add_decimate_planar(obj, angle_deg=15.0)
+
+    # Snap back to original surface + smooth artifacts
+    _shrinkwrap_snap(obj, src_ref)
+    _corrective_smooth(obj, iterations=int(args.get("smooth_iterations_c", 5)))
+
+    # Clean up reference copy
+    bpy.data.objects.remove(src_ref, do_unlink=True)
 
 
 def run_profile_d(obj, args):
@@ -254,6 +299,10 @@ def run_profile_d(obj, args):
     # Voxel remesh on dst
     voxel = float(args.get("voxel_size_d", 0.030))
     _voxel_remesh(dst, voxel_size=voxel)
+
+    # Snap remeshed surface back to original to prevent voxel inflation
+    _shrinkwrap_snap(dst, obj)
+    _corrective_smooth(dst, iterations=int(args.get("smooth_iterations_d", 5)))
 
     # Optional QuadriFlow
     if bool(args.get("quadriflow", False)):
