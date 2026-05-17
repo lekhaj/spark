@@ -104,6 +104,26 @@ def _delete_loose(obj):
     bpy.ops.object.mode_set(mode='OBJECT')
 
 
+def _fill_holes(obj, sides=0):
+    """
+    Fill open boundary loops (holes) in the mesh.
+    sides=0 fills holes of any edge count.
+    Also fills non-manifold faces left by Decimate.
+    """
+    _activate(obj)
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.mesh.select_all(action='SELECT')
+    bpy.ops.mesh.fill_holes(sides=sides)
+    # Second pass: select remaining boundary edges and cap them
+    bpy.ops.mesh.select_all(action='DESELECT')
+    bpy.ops.mesh.select_non_manifold(
+        extend=False, use_wire=False, use_boundary=True,
+        use_multi_face=False, use_non_contiguous=False, use_verts=False
+    )
+    bpy.ops.mesh.edge_face_add()
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+
 def _add_decimate_collapse(obj, ratio, name="Decimate"):
     _activate(obj)
     mod = obj.modifiers.new(name=name, type='DECIMATE')
@@ -177,6 +197,15 @@ def _pymeshlab_qecd(in_obj: str, out_obj: str, target_faces: int) -> bool:
         f"ms.load_new_mesh({repr(in_obj)})",
         "m = ms.current_mesh()",
         "print(f'[pymeshlab] input  faces={m.face_number()} verts={m.vertex_number()}')",
+        # Close holes before decimation so QECD doesn't collapse boundary edges
+        # into non-manifold geometry. maxholesize=200 covers typical character
+        # eye/mouth holes (usually <100 boundary edges).
+        "try:",
+        "    ms.meshing_close_holes(maxholesize=200, newfaceselected=False, selfintersection=True)",
+        "    m_h = ms.current_mesh()",
+        "    print(f'[pymeshlab] after hole-close faces={m_h.face_number()}')",
+        "except Exception as _he:",
+        "    print(f'[pymeshlab] close_holes skipped: {_he}')",
         "ms.meshing_decimation_quadric_edge_collapse_decimation(",
         f"    targetfacenum={target_faces},",
         "    qualitythr=0.5,",
@@ -312,11 +341,13 @@ def _tri_count(obj):
 def run_profile_a(obj, args):
     _merge_by_distance(obj)
     _delete_loose(obj)
+    _fill_holes(obj)          # close open boundary loops from generation pipeline
 
 
 def run_profile_b(obj, args):
     _merge_by_distance(obj)
     _delete_loose(obj)
+    _fill_holes(obj)          # close holes before decimation
     _add_decimate_collapse(obj, ratio=float(args.get("ratio_b", 0.4)))
 
 
@@ -330,6 +361,7 @@ def run_profile_c(obj, args):
     """
     _merge_by_distance(obj)
     _delete_loose(obj)
+    _fill_holes(obj)          # seal input holes before exporting to PyMeshLab
 
     target_faces = int(args.get("target_faces_c", 20000))
     tmp_dir = tempfile.mkdtemp(prefix="mesh_lod_c_")
@@ -382,12 +414,18 @@ def run_profile_c(obj, args):
     )
     if new_obj is None:
         print("[mesh_lod] profile C: OBJ re-import yielded no mesh")
+        return new_obj
+
+    # Post-QECD hole fill — QECD at high reduction can leave small boundary
+    # gaps at UV seams and mesh boundaries; close them before export.
+    _fill_holes(new_obj)
     return new_obj
 
 
 def run_profile_d(obj, args):
     _merge_by_distance(obj)
     _delete_loose(obj)
+    _fill_holes(obj)          # watertight input gives cleaner voxel remesh
 
     # Source mesh is `obj`. Duplicate it to receive the voxel remesh.
     bpy.ops.object.select_all(action='DESELECT')
