@@ -622,6 +622,80 @@ def _q_sd(char, major, minor, stage, prompt, neg, params, src_stage, src_url):
     return sid, minor_upd, info, f"queued ✓  v{ver}  task={tid[:8]}…"
 
 
+def _q_flux_pose(char, major, minor,
+                 prompt, neg,
+                 use_control, control_mode, auto_extract, control_image_url,
+                 width, height, steps, guidance_scale, true_cfg_scale,
+                 cn_scale, cn_start, cn_end, seed,
+                 src_stage, src_url):
+    """
+    Queue a FLUX.1-dev + ControlNet-Union-Pro-2.0 task.
+
+    Three modes:
+      use_control=False                 → pure text-to-image (no conditioning)
+      use_control=True, auto_extract=T  → extract control image from src_url
+      use_control=True, auto_extract=F  → control_image_url must be supplied
+    """
+    if not prompt or not prompt.strip():
+        return None, gr.update(), gr.update(), "⚠️ Prompt is empty."
+
+    stage = "flux_pose"
+    use_control = bool(use_control)
+
+    if use_control and auto_extract and not control_image_url:
+        if not src_url:
+            src_url = get_latest_done_image_url(_db(), char, src_stage) or ""
+        if not src_url:
+            return None, gr.update(), gr.update(), \
+                f"Conditioning is ON but no done image in '{src_stage}'. "\
+                "Either turn off conditioning, run that stage first, or supply Control image URL."
+
+    if use_control and not auto_extract and not control_image_url:
+        return None, gr.update(), gr.update(), \
+            "Conditioning is ON with auto-extract off — supply a Control image URL."
+
+    params = {
+        "use_control":                   use_control,
+        "control_mode":                  (control_mode or "pose").lower(),
+        "auto_extract":                  bool(auto_extract),
+        "controlnet_conditioning_scale": float(cn_scale),
+        "control_guidance_start":        float(cn_start),
+        "control_guidance_end":          float(cn_end),
+        "steps":                         int(steps),
+        "guidance_scale":                float(guidance_scale),
+        "true_cfg_scale":                float(true_cfg_scale),
+        "width":                         int(width),
+        "height":                        int(height),
+        "seed":                          int(seed),
+    }
+    if use_control and control_image_url:
+        params["control_image_url"] = control_image_url
+
+    sid, new_n, minor_upd, info_upd, err = _prepare_run(
+        char, stage, major, minor, prompt, neg, params)
+    if err:
+        return sid, minor_upd, gr.update(), err
+
+    db = _db()
+    save_run_params(db, sid, prompt, neg, params, stage=stage)
+    _ver_minor = new_n if new_n is not None else int(minor)
+
+    payload = {"type": "flux_pose", "session_id": sid, "stage": stage,
+               "char_name": char, "major": int(major), "minor": _ver_minor,
+               "prompt": prompt, "negative": neg,
+               "params": params,
+               "input_stage": src_stage if use_control else "",
+               "input_url":   (src_url if use_control else "") or ""}
+    if use_control and control_image_url:
+        payload["control_image_url"] = control_image_url
+
+    tid = _push_task(payload)
+    mark_queued(db, sid, stage=stage, task_id=tid)
+    ver  = f"{major}.{new_n}" if new_n is not None else f"{major}.{minor}"
+    info = f"{sid[:8]}…  v{ver}  [queued]"
+    return sid, minor_upd, info, f"queued ✓  v{ver}  task={tid[:8]}…"
+
+
 def _q_trellis(char, major, minor, char_type, src_stage, src_ver):
     """
     Queue Trellis 3D task.
@@ -1152,6 +1226,79 @@ def generation_studio_ui():
             nm_info2 = gr.Textbox(label="Info", interactive=False)
 
         # ══════════════════════════════════════════════════════════════════════
+        #  STAGE 1b: FLUX POSE — FLUX.1-dev + ControlNet-Union-Pro-2.0
+        # ══════════════════════════════════════════════════════════════════════
+        with gr.Accordion("Stage 1b — Flux Pose (ControlNet-Union-Pro-2.0)", open=False):
+            fp_char, fp_major, fp_minor, fp_new_maj, fp_sid, fp_info = _make_picker(_chars)
+            gr.Markdown("---")
+            gr.Markdown(
+                "**Model**: `Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro-2.0` on top of "
+                "`black-forest-labs/FLUX.1-dev`.  Independent stage — runs with just a "
+                "text prompt, or optionally with a control image (pose / edges / depth / …) "
+                "extracted from a source image or supplied directly."
+            )
+            fp_use_control = gr.Checkbox(
+                value=False,
+                label="Use ControlNet conditioning",
+                info="Off: pure text-to-image. On: condition output on a control image.",
+            )
+            with gr.Group(visible=False) as fp_ctrl_group:
+                fp_src_stage, fp_src_ver, fp_src_url_st, fp_src_info = _make_src_picker(
+                    ["flux", "normalize", "sd_tpose", "flux_pose"], "flux")
+                fp_control_mode = gr.Dropdown(
+                    choices=["pose", "canny", "soft_edge", "depth", "blur", "gray", "low_quality"],
+                    value="pose", label="Control mode",
+                    info="What kind of conditioning to apply. 'pose' = OpenPose skeleton "
+                         "extracted from the source image.",
+                )
+                with gr.Row():
+                    fp_auto_extract = gr.Checkbox(
+                        value=True, label="Auto-extract control image from source",
+                        info="Off: supply a pre-built control image URL below.",
+                    )
+                    fp_control_image_url = gr.Textbox(
+                        label="Control image URL (override — bypasses auto-extract)",
+                        value="", placeholder="https://...png",
+                    )
+            fp_use_control.change(
+                lambda on: gr.update(visible=bool(on)),
+                [fp_use_control], [fp_ctrl_group],
+            )
+            fp_prompt = gr.Textbox(
+                label="Prompt", lines=3,
+                placeholder="A heroic warrior in full plate armor, standing tall, full body, "
+                            "white studio background, sharp focus, 4k",
+            )
+            fp_neg = gr.Textbox(
+                label="Negative prompt (used when True CFG > 1.0)", lines=2,
+                value="deformed, extra limbs, mutated hands, text, watermark, blurry, low quality",
+            )
+            with gr.Row():
+                fp_width  = gr.Slider(512, 1536, value=1024, step=64, label="Width")
+                fp_height = gr.Slider(512, 1536, value=1024, step=64, label="Height")
+                fp_steps  = gr.Slider(8, 50, value=28, step=1, label="Steps")
+            with gr.Row():
+                fp_guid    = gr.Slider(1.0, 10.0, value=3.5, step=0.1,
+                                       label="Guidance scale (distilled)")
+                fp_true_cfg = gr.Slider(1.0, 10.0, value=1.0, step=0.1,
+                                        label="True CFG (>1 enables negative prompt)")
+                fp_seed    = gr.Number(value=-1, precision=0,
+                                       label="Seed (-1 = random)")
+            with gr.Row():
+                fp_cn_scale = gr.Slider(0.0, 1.5, value=0.7, step=0.05,
+                                        label="ControlNet conditioning scale")
+                fp_cn_start = gr.Slider(0.0, 1.0, value=0.0, step=0.05,
+                                        label="Control guidance start")
+                fp_cn_end   = gr.Slider(0.0, 1.0, value=0.8, step=0.05,
+                                        label="Control guidance end")
+            with gr.Row():
+                fp_q_btn  = gr.Button("Queue Flux Pose", variant="primary")
+                fp_status = gr.Textbox(label="Status", value="idle", interactive=False, scale=2)
+                fp_r_btn  = gr.Button("Refresh", size="sm")
+            fp_img = gr.HTML(value=_url_to_img("", 400))
+            fp_url = gr.Textbox(label="URL", interactive=False)
+
+        # ══════════════════════════════════════════════════════════════════════
         #  STAGE 2: SD T-POSE LOCK (IP-Adapter + OpenPose/Canny ControlNet)
         # ══════════════════════════════════════════════════════════════════════
         with gr.Accordion("Stage 2 — SD1.5 T-Pose Lock (IP-Adapter)", open=False):
@@ -1333,25 +1480,25 @@ def generation_studio_ui():
         def _do_refresh():
             chars = _list_chars()
             upd   = gr.update(choices=chars, value=(chars[0] if chars else None))
-            return [upd] * 8
+            return [upd] * 9
 
         g_refresh_btn.click(_do_refresh, [],
-                            [g_char, fx_char, nm_char, s1_char, tr_char, px_char, ml_char, rg_char])
+                            [g_char, fx_char, nm_char, fp_char, s1_char, tr_char, px_char, ml_char, rg_char])
 
         # ── Global: Create New Character ──────────────────────────────────────
         def _do_create(label):
             label = (label or "").strip()
             if not label:
-                return [gr.update()] * 8 + ["Enter a character label first."]
+                return [gr.update()] * 9 + ["Enter a character label first."]
             ok    = create_character(_db(), label)
             if not ok:
-                return [gr.update()] * 8 + [f"❌ Failed to save '{label}' — check MongoDB connection."]
+                return [gr.update()] * 9 + [f"❌ Failed to save '{label}' — check MongoDB connection."]
             chars = _list_chars()
             upd   = gr.update(choices=chars, value=label)
-            return [upd] * 8 + [f"✓ Created '{label}'. Select it in any stage below and click ⬇ Prefill All Stages."]
+            return [upd] * 9 + [f"✓ Created '{label}'. Select it in any stage below and click ⬇ Prefill All Stages."]
 
         g_create_btn.click(_do_create, [g_new_char_input],
-                           [g_char, fx_char, nm_char, s1_char, tr_char, px_char, ml_char, rg_char, g_create_info])
+                           [g_char, fx_char, nm_char, fp_char, s1_char, tr_char, px_char, ml_char, rg_char, g_create_info])
 
         # ── Global: Prefill All Stages ────────────────────────────────────────
         # In Gradio 5, gr.update(value=X) does NOT trigger .change handlers,
@@ -1507,6 +1654,36 @@ def generation_studio_ui():
                       s1_status, s1_url, s1_img],
                      _ex_sd_tpose)
 
+        def _ex_flux_pose(run):
+            p = run.get("params") or {}
+            url = run.get("image_url", "") or ""
+            return [run.get("prompt", ""),
+                    run.get("negative", "deformed, extra limbs, mutated hands, text, "
+                                        "watermark, blurry, low quality"),
+                    bool(p.get("use_control", False)),
+                    p.get("control_mode", "pose"),
+                    bool(p.get("auto_extract", True)),
+                    p.get("control_image_url", ""),
+                    p.get("width", 1024), p.get("height", 1024),
+                    p.get("steps", 28),
+                    p.get("guidance_scale", 3.5),
+                    p.get("true_cfg_scale", 1.0),
+                    p.get("controlnet_conditioning_scale", 0.7),
+                    p.get("control_guidance_start", 0.0),
+                    p.get("control_guidance_end", 0.8),
+                    p.get("seed", -1),
+                    run.get("status", "idle"),
+                    url,
+                    _url_to_img(url, 400)]
+
+        _wire_picker("flux_pose", fp_char, fp_major, fp_minor, fp_new_maj, fp_sid, fp_info,
+                     [fp_prompt, fp_neg,
+                      fp_use_control, fp_control_mode, fp_auto_extract, fp_control_image_url,
+                      fp_width, fp_height, fp_steps, fp_guid, fp_true_cfg,
+                      fp_cn_scale, fp_cn_start, fp_cn_end, fp_seed,
+                      fp_status, fp_url, fp_img],
+                     _ex_flux_pose)
+
         _wire_picker("trellis", tr_char, tr_major, tr_minor, tr_new_maj, tr_sid, tr_info,
                      [tr_char_type, tr_status, tr_url],
                      _ex_trellis)
@@ -1645,6 +1822,30 @@ def generation_studio_ui():
             _q_normalize,
             [nm_char, nm_major, nm_minor, nm_w, nm_h, nm_src_stage, nm_src_ver],
             [nm_sid, nm_minor, nm_info, nm_status, nm_img, nm_info2]
+        )
+
+        # Flux Pose (FLUX.1-dev + ControlNet-Union-Pro-2.0)
+        (fp_q_btn.click(
+            _q_flux_pose,
+            [fp_char, fp_major, fp_minor,
+             fp_prompt, fp_neg,
+             fp_use_control, fp_control_mode, fp_auto_extract, fp_control_image_url,
+             fp_width, fp_height, fp_steps, fp_guid, fp_true_cfg,
+             fp_cn_scale, fp_cn_start, fp_cn_end, fp_seed,
+             fp_src_stage, fp_src_url_st],
+            [fp_sid, fp_minor, fp_info, fp_status],
+        ).then(lambda: gr.Timer(active=True), outputs=[stage_timer]))
+
+        fp_r_btn.click(
+            lambda sid: _refresh_with_img(sid, 400),
+            [fp_sid], [fp_status, fp_url, fp_img]
+        )
+
+        # Flux Pose source-stage picker → refresh available versions
+        fp_src_stage.change(
+            _refresh_src_picker,
+            [fp_char, fp_src_stage],
+            [fp_src_ver, fp_src_url_st, fp_src_info],
         )
 
         # SD T-Pose

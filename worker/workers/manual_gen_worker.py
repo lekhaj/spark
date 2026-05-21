@@ -84,6 +84,7 @@ def _char_s3_key(task: dict, stage: str, ext: str) -> str:
 STAGE_REGISTRY: dict[str, tuple[str | None, str]] = {
     # stage name          model family   handler method name
     "flux":               ("flux",       "_handle_flux"),
+    "flux_pose":          ("flux_cn",    "_handle_flux_pose"),
     "sd_stage1":          ("sd",         "_handle_sd_stage1"),
     "sd_stage2":          ("sd",         "_handle_sd_stage2"),
     "multiview_side":     ("sd",         "_handle_multiview"),
@@ -259,6 +260,66 @@ class ManualGenWorker(BaseWorker):
         url    = self._upload_image(img, s3_key)
         push_done(r, session_id, stage, url, s3_key)
         logger.info(f"[flux] → {url}")
+
+    def _handle_flux_pose(self, task: dict, r) -> None:
+        """
+        FLUX.1-dev + ControlNet-Union-Pro-2.0 — pose-conditioned image gen.
+
+        Task params (all optional except input_url OR control_image_url):
+          input_url             — source image (used for auto-extraction)
+          control_image_url     — pre-built control image (bypasses extraction)
+          prompt, negative      — text conditioning
+          params:
+            control_mode        — canny | soft_edge | depth | blur | pose |
+                                  gray | low_quality
+            auto_extract        — if True (default), build control image from
+                                  input_url using control_mode; else require
+                                  control_image_url
+            controlnet_conditioning_scale, control_guidance_start,
+            control_guidance_end, steps, guidance_scale, true_cfg_scale,
+            width, height, seed
+        """
+        from models.flux_cn_model import run_flux_cn
+
+        session_id          = task["session_id"]
+        stage               = task["stage"]
+        prompt              = task.get("prompt", "")
+        negative            = task.get("negative", "")
+        params              = dict(task.get("params") or {})
+        input_url           = task.get("input_url") or task.get("input_image_url", "")
+        control_image_url   = task.get("control_image_url") or params.get("control_image_url", "")
+        use_control         = bool(params.get("use_control", True))
+        auto_extract        = bool(params.get("auto_extract", True))
+
+        source_img  = None
+        control_img = None
+
+        if not use_control:
+            # Pure text-to-image — force ControlNet off
+            params["controlnet_conditioning_scale"] = 0.0
+            # run_flux_cn will synthesize a blank control image
+        elif control_image_url:
+            control_img = self._download_image(control_image_url)
+        elif auto_extract:
+            if not input_url:
+                raise ValueError("flux_pose: input_url is required when use_control + auto_extract")
+            source_img = self._download_image(input_url)
+        else:
+            raise ValueError("flux_pose: provide control_image_url OR enable auto_extract")
+
+        img = run_flux_cn(
+            self._mgr.get("flux_cn"),
+            prompt,
+            params,
+            source_image=source_img,
+            control_image=control_img,
+            negative_prompt=negative,
+        )
+
+        s3_key = _char_s3_key(task, stage, "png")
+        url    = self._upload_image(img, s3_key)
+        push_done(r, session_id, stage, url, s3_key)
+        logger.info(f"[flux_pose] → {url}")
 
     def _handle_sd_stage1(self, task: dict, r) -> None:
         from models.sd_model import run_stage1  # lazy — avoids flash-attn check at startup

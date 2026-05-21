@@ -48,6 +48,7 @@ CHARACTERS_COLLECTION = "manual_gen_characters"    # parent asset registry
 STAGE_NAMES = (
     "flux",
     "normalize",
+    "flux_pose",        # FLUX.1-dev + ControlNet-Union-Pro-2.0 pose-conditioned gen
     "sd_tpose",         # SD1.5 + ControlNet T-pose with IP-Adapter identity lock
     # "sd_stage1",      # legacy — superseded by sd_tpose
     # "sd_stage2",      # legacy — detail pass removed (handled in T-pose stage)

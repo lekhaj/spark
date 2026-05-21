@@ -64,6 +64,8 @@ logger = logging.getLogger("ModelManager")
 # ── Env config ────────────────────────────────────────────────────────────────
 
 FLUX_MODEL_ID       = os.getenv("FLUX_MODEL_ID",    "black-forest-labs/FLUX.1-schnell")
+FLUX_CN_BASE_ID     = os.getenv("FLUX_CN_BASE_ID",  "black-forest-labs/FLUX.1-dev")
+FLUX_CN_MODEL_ID    = os.getenv("FLUX_CN_MODEL_ID", "Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro-2.0")
 SD_MODEL_ID         = os.getenv("SD_MODEL_ID",      "Lykon/DreamShaper")
 TPOSE_OPENPOSE_PATH = os.getenv("TPOSE_OPENPOSE_PATH", "")
 TRELLIS_MODEL_ID    = os.getenv("TRELLIS_MODEL_ID", "JeffreyXiang/TRELLIS-image-large")
@@ -132,17 +134,22 @@ class ModelManager:
         self.register(
             name   = "flux",
             loader = self._load_flux,
-            evicts = {"sd", "trellis"},
+            evicts = {"sd", "trellis", "flux_cn"},
+        )
+        self.register(
+            name   = "flux_cn",
+            loader = self._load_flux_cn,
+            evicts = {"flux", "sd", "trellis"},
         )
         self.register(
             name   = "sd",
             loader = self._load_sd,
-            evicts = {"flux", "trellis"},
+            evicts = {"flux", "trellis", "flux_cn"},
         )
         self.register(
             name   = "trellis",
             loader = self._load_trellis,
-            evicts = {"flux", "sd"},
+            evicts = {"flux", "sd", "flux_cn"},
         )
         self.register(
             name   = "rig",
@@ -244,6 +251,10 @@ class ModelManager:
     def _load_flux(self):
         from models.flux_model import load_flux
         return load_flux(FLUX_MODEL_ID)
+
+    def _load_flux_cn(self):
+        from models.flux_cn_model import load_flux_cn
+        return load_flux_cn(FLUX_CN_BASE_ID, FLUX_CN_MODEL_ID)
 
     def _load_sd(self):
         from models.sd_model import load_sd
