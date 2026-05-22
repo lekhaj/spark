@@ -1253,17 +1253,18 @@ def generation_studio_ui():
                 _CN_S3 = "https://sparkassets-us.s3.us-east-1.amazonaws.com/controlnet_refs"
                 fp_tpose_preset = gr.Dropdown(
                     choices=[
-                        ("Bundled V2 FBX (recommended — ships with the worker)",  ""),
-                        ("T-Pose V2 — FBX extracted (S3 copy)",                    f"{_CN_S3}/tpose_v2_fbx.png"),
-                        ("T-Pose V1 — Hand-drawn",                                 f"{_CN_S3}/tpose_v1_user.png"),
-                        ("T-Pose — OpenPose default",                              f"{_CN_S3}/tpose_openpose.png"),
-                        ("T-Pose — FBX 512",                                       f"{_CN_S3}/tpose_fbx_512.png"),
+                        ("Canonical (recommended — generated from COCO-18 keypoints)", ""),
+                        ("T-Pose V2 — FBX extracted (S3 copy)",                         f"{_CN_S3}/tpose_v2_fbx.png"),
+                        ("T-Pose V1 — Hand-drawn",                                      f"{_CN_S3}/tpose_v1_user.png"),
+                        ("T-Pose — OpenPose default",                                   f"{_CN_S3}/tpose_openpose.png"),
+                        ("T-Pose — FBX 512",                                            f"{_CN_S3}/tpose_fbx_512.png"),
                     ],
-                    value="",   # empty → worker loads bundled tpose_v2_fbx.png
+                    value="",   # empty → worker loads bundled tpose_canonical.png
                     label="T-Pose skeleton preset",
-                    info="Default is the bundled V2 FBX skeleton (no network fetch, "
-                         "always available). Pick an S3 URL only if you want a "
-                         "different skeleton; that fills Control image URL below.",
+                    info="Default is the canonical OpenPose-format T-pose generated "
+                         "from COCO-18 keypoints (anatomically exact, ships with the "
+                         "worker, no network fetch). Pick an S3 URL only if you want "
+                         "a different curated skeleton.",
                 )
                 fp_src_stage, fp_src_ver, fp_src_url_st, fp_src_info = _make_src_picker(
                     ["flux", "normalize", "sd_tpose", "flux_pose"], "flux")

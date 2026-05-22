@@ -458,11 +458,15 @@ class ManualGenWorker(BaseWorker):
     # ─────────────────────────────────────────────────────────────────────────
 
     # Bundled control images live in the repo so a freshly-launched spot
-    # can do pose-locked generation without any S3 fetch. The V2 FBX-extracted
-    # skeleton is the "best" T-pose per the sd_tpose stage's prior tuning —
-    # cleanest humanoid front view with clear limb separation.
+    # can do pose-locked generation without any S3 fetch. tpose_canonical.png
+    # is generated programmatically from COCO-18 keypoint coordinates with the
+    # standard OpenPose color scheme — anatomically exact (perfectly horizontal
+    # arms, shoulder-width stance) and reproducible (see generate_tpose.py).
+    # This is what an OpenPose detector would emit for a real photo of a person
+    # in T-pose, so a Union Pro ControlNet trained on OpenPose-format
+    # annotations should respond to it most reliably.
     _BUNDLED_CONTROL = {
-        "pose": "tpose_v2_fbx.png",
+        "pose": "tpose_canonical.png",
     }
 
     def _bundled_control_image(self, mode: str) -> str | None:
