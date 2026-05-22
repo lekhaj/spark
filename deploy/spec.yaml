@@ -18,6 +18,7 @@ stages:
   - flux_pose     # FLUX.1-dev + ControlNet-Union-Pro-2.0
   - trellis       # image → 3D mesh
   - pixal3d       # alt image → 3D (isolated conda env)
+  - hunyuan3d     # Hunyuan3D-2.0 image → 3D with PBR textures (isolated conda env)
 
 # Per-stage definitions. Each stage maps to deploy/install/<name>.sh which is
 # called by bootstrap.sh after the sentinel check.
@@ -69,6 +70,18 @@ stage_defs:
       PIXAL3D_REPO:   /home/ec2-user/Pixal3D
       PIXAL3D_ATTN:   flash_attn
       PIXAL3D_LOW_VRAM: "0"          # L40S has 48GB — full residency OK
+
+  hunyuan3d:
+    version: 1
+    conda_env: hunyuan3d
+    extra_installer: install/hunyuan3d.sh # builds CUDA extensions + pulls weights
+    hf_models:
+      - tencent/Hunyuan3D-2
+    env:
+      HUNYUAN3D_PYTHON:    /home/ec2-user/miniconda3/envs/hunyuan3d/bin/python
+      HUNYUAN3D_REPO:      /home/ec2-user/Hunyuan3D-2
+      HUNYUAN3D_MODEL_ID:  tencent/Hunyuan3D-2
+      HUNYUAN3D_TIMEOUT_S: "3600"    # first cold run: model load from EBS ~20-30 min
 
 # Systemd units that bootstrap should keep in sync with the repo.
 # bootstrap.sh copies deploy/systemd/* → /etc/systemd/system/* if checksums differ,

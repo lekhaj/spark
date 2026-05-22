@@ -90,7 +90,8 @@ STAGE_REGISTRY: dict[str, tuple[str | None, str]] = {
     "multiview_side":     ("sd",         "_handle_multiview"),
     "multiview_back":     ("sd",         "_handle_multiview"),
     "trellis":            ("trellis",    "_handle_trellis"),
-    "pixal3d":            (None,         "_handle_pixal3d"),  # subprocess — isolated conda env
+    "pixal3d":            (None,         "_handle_pixal3d"),    # subprocess — isolated conda env
+    "hunyuan3d":          (None,         "_handle_hunyuan3d"),  # subprocess — isolated conda env
     # "rig" tasks go directly to rig_tasks queue from the frontend — not routed here
     # ── Add new experiments here ────────────────────────────────────────────
     # "controlnet_pre":  ("sd",         "_handle_controlnet_pre"),
@@ -451,6 +452,44 @@ class ManualGenWorker(BaseWorker):
         url       = self._upload_bytes(glb_bytes, s3_key, "model/gltf-binary")
         push_glb_done(r, session_id, stage, url, s3_key)
         logger.info(f"[pixal3d] → {url}")
+
+    def _handle_hunyuan3d(self, task: dict, r) -> None:
+        """
+        Hunyuan3D-2.0 image→3D via subprocess in isolated conda env.
+
+        Task params (all optional):
+          input_front             — source image URL
+          params:
+            seed (int)            42
+            steps (int)           50     shape diffusion steps
+            guidance_scale (float) 7.5
+            texture_resolution (int) 2048
+        """
+        from models.hunyuan3d_model import run_hunyuan3d
+
+        session_id = task["session_id"]
+        stage      = task.get("stage", "hunyuan3d")
+        params     = task.get("params") or {}
+
+        front_url = task.get("input_front") or params.get("front_url", "")
+        if not front_url:
+            raise ValueError("hunyuan3d task missing input_front URL")
+
+        front_img = self._download_image(front_url)
+
+        # Evict in-process models — subprocess needs the full 48 GB on L40S
+        for fam in ("flux", "flux_cn", "sd", "trellis"):
+            try:
+                self._mgr.evict(fam)
+            except Exception:
+                pass
+        logger.info(f"[hunyuan3d] pre-subprocess  {self._mgr.vram_summary()}")
+
+        glb_bytes = run_hunyuan3d(front_img, params)
+        s3_key    = _char_s3_key(task, "hunyuan3d", "glb")
+        url       = self._upload_bytes(glb_bytes, s3_key, "model/gltf-binary")
+        push_glb_done(r, session_id, stage, url, s3_key)
+        logger.info(f"[hunyuan3d] → {url}")
 
 
     # ─────────────────────────────────────────────────────────────────────────

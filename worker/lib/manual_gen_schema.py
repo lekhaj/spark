@@ -56,6 +56,7 @@ STAGE_NAMES = (
     # "multiview_back", # future — multi-view generation (not yet active)
     "trellis",
     "pixal3d",          # TencentARC/Pixal3D — alternative image→3D (isolated conda env)
+    "hunyuan3d",        # Tencent Hunyuan3D-2.0 — image→3D with PBR textures (isolated conda env)
     "mesh_lod",         # CPU stage — generates 4 LOD GLBs from a source GLB (Blender + gltfpack)
     "rig",
 )
