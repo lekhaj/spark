@@ -46,15 +46,21 @@ sentinel_write() {
 }
 
 # --- HF model download (idempotent) ---
-# Uses `huggingface-cli download` which skips files already in HF_HOME cache.
+# Uses `huggingface_hub.snapshot_download` — skips files already in HF_HOME cache.
+# Prefer the python API over the CLI because the CLI binary name has changed
+# across versions (huggingface-cli → hf) and isn't always on $PATH.
 hf_pull() {
     local model_id="$1"
     log "HF pull: $model_id"
-    HF_HUB_DISABLE_PROGRESS_BARS=1 \
-        huggingface-cli download "$model_id" \
-        --quiet \
-        2>&1 | tail -5 | while read -r line; do log "  hf: $line"; done || \
-        die "HF download failed: $model_id"
+    HF_HUB_DISABLE_PROGRESS_BARS=1 python - "$model_id" <<'PY' 2>&1 | tail -3 | while read -r line; do log "  hf: $line"; done
+import os, sys
+from huggingface_hub import snapshot_download
+path = snapshot_download(repo_id=sys.argv[1])
+print(f"cached at {path}")
+PY
+    # Bash pipe loses exit status of LHS — re-check by looking for the model dir.
+    local cache="${HF_HOME:-$HOME/.cache/huggingface}/hub/models--${model_id//\//--}"
+    [[ -d "$cache" ]] || die "HF download failed: $model_id (no $cache)"
 }
 
 # --- pip install (idempotent — pip already skips satisfied) ---

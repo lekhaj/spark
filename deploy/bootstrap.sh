@@ -25,7 +25,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib/common.sh"
 
-INSTANCE_ID="$(curl -s --max-time 2 http://169.254.169.254/latest/meta-data/instance-id || echo unknown)"
+_imds_token="$(curl -sS -m 2 -X PUT 'http://169.254.169.254/latest/api/token' -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' 2>/dev/null || echo)"
+INSTANCE_ID="$(curl -sS -m 2 -H "X-aws-ec2-metadata-token: $_imds_token" 'http://169.254.169.254/latest/meta-data/instance-id' 2>/dev/null || echo unknown)"
+[[ -n "$INSTANCE_ID" ]] || INSTANCE_ID="unknown"
 STATUS_KEY="bootstrap:status:${INSTANCE_ID}"
 COMMIT_KEY="bootstrap:commit:${INSTANCE_ID}"
 
