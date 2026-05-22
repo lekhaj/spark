@@ -46,21 +46,35 @@ sentinel_write() {
 }
 
 # --- HF model download (idempotent) ---
-# Uses `huggingface_hub.snapshot_download` — skips files already in HF_HOME cache.
-# Prefer the python API over the CLI because the CLI binary name has changed
-# across versions (huggingface-cli → hf) and isn't always on $PATH.
+# Skips download entirely if the model already exists in the HF cache. This
+# matters because snapshot_download can spill 100s of GB into xet temp space
+# even when the final cache size is small — disastrous on a 256GB root volume.
+#
+# To force re-download: rm -rf ~/.cache/huggingface/hub/models--<org>--<name>
 hf_pull() {
     local model_id="$1"
-    log "HF pull: $model_id"
+    local cache="${HF_HOME:-$HOME/.cache/huggingface}/hub/models--${model_id//\//--}"
+
+    if [[ -d "$cache/snapshots" ]] && [[ -n "$(ls -A "$cache/snapshots" 2>/dev/null)" ]]; then
+        local size; size="$(du -sh "$cache" 2>/dev/null | cut -f1)"
+        log "HF pull: $model_id  → already cached (${size:-?})"
+        return 0
+    fi
+
+    log "HF pull: $model_id  (downloading)"
     HF_HUB_DISABLE_PROGRESS_BARS=1 python - "$model_id" <<'PY' 2>&1 | tail -3 | while read -r line; do log "  hf: $line"; done
-import os, sys
+import sys
 from huggingface_hub import snapshot_download
-path = snapshot_download(repo_id=sys.argv[1])
+path = snapshot_download(
+    repo_id=sys.argv[1],
+    # Skip duplicate format files to keep disk usage sane. Most diffusers
+    # pipelines work from safetensors; .bin is redundant. msgpack/ot are
+    # JAX/Flax weights we never use.
+    ignore_patterns=["*.bin", "*.msgpack", "*.ot", "*.h5", "*.onnx"],
+)
 print(f"cached at {path}")
 PY
-    # Bash pipe loses exit status of LHS — re-check by looking for the model dir.
-    local cache="${HF_HOME:-$HOME/.cache/huggingface}/hub/models--${model_id//\//--}"
-    [[ -d "$cache" ]] || die "HF download failed: $model_id (no $cache)"
+    [[ -d "$cache/snapshots" ]] || die "HF download failed: $model_id (no $cache/snapshots)"
 }
 
 # --- pip install (idempotent — pip already skips satisfied) ---
