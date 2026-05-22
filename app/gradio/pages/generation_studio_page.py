@@ -177,6 +177,14 @@ def _push_task(payload: dict, queue: str = None) -> str:
     if queue is None:
         queue = _active_queue_from_redis()
 
+    # Warn if targeting the default (non-spot) queue — spark_l4 is deleted.
+    if not queue.endswith("_spot"):
+        gr.Warning(
+            "⚠️ spark_l4 instance has been DELETED. "
+            "Switch GPU target to 'L40S Spot' — fixed-instance calls will fail.",
+            duration=10,
+        )
+
     import redis
     r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD,
                     db=0, decode_responses=True)
@@ -777,6 +785,44 @@ def _q_pixal3d(char, major, minor, char_type, src_stage, src_ver):
     save_run_params(db, sid, "", "", params, stage=stage)
     _ver_minor = new_n if new_n is not None else int(minor)
     tid = _push_task({"type": "pixal3d", "session_id": sid, "stage": stage,
+                      "char_name": char, "major": int(major), "minor": _ver_minor,
+                      "char_type": char_type or "humanoid",
+                      "input_front": front_url,
+                      "params": params})
+    mark_queued(db, sid, stage=stage, task_id=tid)
+    ver  = f"{major}.{new_n}" if new_n is not None else f"{major}.{minor}"
+    info = f"{sid[:8]}…  v{ver}  [queued]"
+    return sid, minor_upd, info, f"queued ✓  v{ver}  task={tid[:8]}…"
+
+
+def _q_hunyuan3d(char, major, minor, char_type, src_stage, src_ver):
+    """
+    Queue Hunyuan3D-2.0 task.
+    Single-image input; reads front-view URL from source stage/version.
+    """
+    stage = "hunyuan3d"
+    db    = _db()
+
+    if src_ver:
+        view_urls = _get_view_urls_for_ver(char, src_stage, src_ver)
+    else:
+        latest = get_latest_done_run(db, char, src_stage)
+        view_urls = {"front": (latest or {}).get("image_url") or ""}
+
+    front_url = view_urls.get("front") or ""
+    if not front_url:
+        return None, gr.update(), gr.update(), \
+            f"No front-view image in '{src_stage}' v{src_ver or 'latest'}. Run that stage first."
+
+    params = {"char_type": char_type or "humanoid"}
+    sid, new_n, minor_upd, info_upd, err = _prepare_run(
+        char, stage, major, minor, "", "", params)
+    if err:
+        return sid, minor_upd, gr.update(), err
+
+    save_run_params(db, sid, "", "", params, stage=stage)
+    _ver_minor = new_n if new_n is not None else int(minor)
+    tid = _push_task({"type": "hunyuan3d", "session_id": sid, "stage": stage,
                       "char_name": char, "major": int(major), "minor": _ver_minor,
                       "char_type": char_type or "humanoid",
                       "input_front": front_url,
@@ -1408,9 +1454,28 @@ def generation_studio_ui():
             px_3d_btn = gr.HTML(value="")
 
         # ══════════════════════════════════════════════════════════════════════
-        #  STAGE 3c: MESH LOD (CPU)
+        #  STAGE 3c: HUNYUAN3D (alternative to TRELLIS/Pixal3D)
         # ══════════════════════════════════════════════════════════════════════
-        with gr.Accordion("Stage 3c — Mesh LOD / poly-count optimization (CPU)", open=False):
+        with gr.Accordion("Stage 3c — Hunyuan3D-2.0 3D Mesh (PBR)", open=False):
+            hy_char, hy_major, hy_minor, hy_new_maj, hy_sid, hy_info = _make_picker(_chars)
+            gr.Markdown("---")
+            hy_char_type = gr.Dropdown(
+                choices=["humanoid", "quadruped", "bird", "fish"],
+                value="humanoid", label="Character type")
+            gr.Markdown("**Select source stage + version (single front-view image):**")
+            hy_src_stage, hy_src_ver, hy_src_url_st, hy_src_info = _make_src_picker(
+                ["sd_tpose", "flux", "normalize"], "sd_tpose")
+            with gr.Row():
+                hy_q_btn = gr.Button("Queue Hunyuan3D", variant="primary")
+                hy_status= gr.Textbox(label="Status", value="idle", interactive=False, scale=2)
+                hy_r_btn = gr.Button("Refresh", size="sm")
+            hy_url = gr.Textbox(label="GLB URL (when done)", interactive=False)
+            hy_3d_btn = gr.HTML(value="")
+
+        # ══════════════════════════════════════════════════════════════════════
+        #  STAGE 3d: MESH LOD (CPU)
+        # ══════════════════════════════════════════════════════════════════════
+        with gr.Accordion("Stage 3d — Mesh LOD / poly-count optimization (CPU)", open=False):
             ml_char, ml_major, ml_minor, ml_new_maj, ml_sid, ml_info = _make_picker(_chars)
             gr.Markdown(
                 "_Generates up to 4 LODs from the source GLB:_ \n"
@@ -1421,7 +1486,7 @@ def generation_studio_ui():
             )
             gr.Markdown("**Select source stage + version (must be a finished GLB):**")
             ml_src_stage, ml_src_ver, ml_src_url_st, ml_src_info = _make_src_picker(
-                ["trellis", "pixal3d"], "pixal3d")
+                ["trellis", "pixal3d", "hunyuan3d"], "pixal3d")
             with gr.Row():
                 ml_profiles = gr.CheckboxGroup(
                     choices=[("A — Preserve",     "a"),
@@ -1551,6 +1616,7 @@ def generation_studio_ui():
             s1_src = _refresh_src_picker(char, "flux")     if char else (gr.update(), "", "")
             tr_src = _refresh_src_picker(char, "sd_tpose") if char else (gr.update(), "", "")
             px_src = _refresh_src_picker(char, "sd_tpose") if char else (gr.update(), "", "")
+            hy_src = _refresh_src_picker(char, "sd_tpose") if char else (gr.update(), "", "")
             # Trellis view availability info
             if char:
                 tr_ver_val = tr_src[0].get("value") if hasattr(tr_src[0], "get") else None
@@ -1559,8 +1625,8 @@ def generation_studio_ui():
                 tr_vinfo = ""
 
             return list((
-                # 6 char dropdowns
-                char_upd, char_upd, char_upd, char_upd, char_upd, char_upd,
+                # 7 char dropdowns
+                char_upd, char_upd, char_upd, char_upd, char_upd, char_upd, char_upd,
                 # flux (major, minor, sid, info + 15 data fields = 19)
                 *_load("flux", _ex_flux),
                 # normalize (4+4=8) + source picker (3) = 11
@@ -1575,13 +1641,16 @@ def generation_studio_ui():
                 # pixal3d (4+3=7) + source picker (3) = 10
                 *_load("pixal3d", _ex_pixal3d),
                 *px_src,
+                # hunyuan3d (4+3=7) + source picker (3) = 10
+                *_load("hunyuan3d", _ex_hunyuan3d),
+                *hy_src,
                 # rig (4+3=7) = 7
                 *_load("rig", _ex_rig),
             ))
 
         g_prefill_btn.click(_do_prefill, [g_char], [
-            # char dropdowns (6)
-            fx_char, nm_char, s1_char, tr_char, px_char, rg_char,
+            # char dropdowns (7)
+            fx_char, nm_char, s1_char, tr_char, px_char, hy_char, rg_char,
             # flux (4 picker + 15 data = 19)
             fx_major, fx_minor, fx_sid, fx_info,
             fx_prompt, fx_negative, fx_w, fx_h, fx_steps, fx_guid,
@@ -1603,6 +1672,10 @@ def generation_studio_ui():
             px_major, px_minor, px_sid, px_info,
             px_char_type, px_status, px_url,
             px_src_ver, px_src_url_st, px_src_info,
+            # hunyuan3d (4+3=7) + source picker (3) = 10
+            hy_major, hy_minor, hy_sid, hy_info,
+            hy_char_type, hy_status, hy_url,
+            hy_src_ver, hy_src_url_st, hy_src_info,
             # rig (4+3=7) = 7
             rg_major, rg_minor, rg_sid, rg_info, rg_type, rg_status, rg_url,
         ])
@@ -1650,6 +1723,12 @@ def generation_studio_ui():
                     run.get("image_url", "") or ""]
 
         def _ex_pixal3d(run):
+            p = run.get("params") or {}
+            return [p.get("char_type", "humanoid"),
+                    run.get("status", "idle"),
+                    run.get("image_url", "") or ""]
+
+        def _ex_hunyuan3d(run):
             p = run.get("params") or {}
             return [p.get("char_type", "humanoid"),
                     run.get("status", "idle"),
@@ -1716,6 +1795,10 @@ def generation_studio_ui():
                      [px_char_type, px_status, px_url],
                      _ex_pixal3d)
 
+        _wire_picker("hunyuan3d", hy_char, hy_major, hy_minor, hy_new_maj, hy_sid, hy_info,
+                     [hy_char_type, hy_status, hy_url],
+                     _ex_hunyuan3d)
+
         def _ex_mesh_lod(run):
             st = run.get("status", "idle")
             results = []
@@ -1767,6 +1850,7 @@ def generation_studio_ui():
         _make_src_wiring(s1_char, s1_src_stage, s1_src_ver, s1_src_url_st, s1_src_info)
         _make_src_wiring(tr_char, tr_src_stage,  tr_src_ver,  tr_src_url_st,  tr_src_info)
         _make_src_wiring(px_char, px_src_stage,  px_src_ver,  px_src_url_st,  px_src_info)
+        _make_src_wiring(hy_char, hy_src_stage,  hy_src_ver,  hy_src_url_st,  hy_src_info)
         _make_src_wiring(ml_char, ml_src_stage,  ml_src_ver,  ml_src_url_st,  ml_src_info)
 
         # Trellis: also update view availability info when ver or stage changes
@@ -1919,6 +2003,19 @@ def generation_studio_ui():
         px_r_btn.click(
             lambda sid: _refresh_run(sid),
             [px_sid], [px_status, px_url]
+        )
+
+        # Hunyuan3D
+        (hy_q_btn.click(
+            _q_hunyuan3d,
+            [hy_char, hy_major, hy_minor,
+             hy_char_type, hy_src_stage, hy_src_ver],
+            [hy_sid, hy_minor, hy_info, hy_status],
+        ).then(lambda: gr.Timer(active=True), outputs=[stage_timer]))
+
+        hy_r_btn.click(
+            lambda sid: _refresh_run(sid),
+            [hy_sid], [hy_status, hy_url]
         )
 
         # Mesh LOD
