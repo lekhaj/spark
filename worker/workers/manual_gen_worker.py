@@ -300,12 +300,23 @@ class ManualGenWorker(BaseWorker):
             # run_flux_cn will synthesize a blank control image
         elif control_image_url:
             control_img = self._download_image(control_image_url)
-        elif auto_extract:
-            if not input_url:
-                raise ValueError("flux_pose: input_url is required when use_control + auto_extract")
+        elif auto_extract and input_url:
             source_img = self._download_image(input_url)
         else:
-            raise ValueError("flux_pose: provide control_image_url OR enable auto_extract")
+            # No URL, no source image → fall back to the bundled T-pose skeleton
+            # that ships in the repo (worker/controlnet_refs/). Lets a user enable
+            # "Use ControlNet conditioning" → mode=pose with no extra inputs and
+            # get a guaranteed T-pose lock right away.
+            mode = (params.get("control_mode") or "").lower()
+            bundled = self._bundled_control_image(mode)
+            if bundled is None:
+                raise ValueError(
+                    "flux_pose: use_control=True but no control_image_url, no source "
+                    f"image, and no bundled fallback for mode={mode!r}. Provide one."
+                )
+            from PIL import Image
+            control_img = Image.open(bundled).convert("RGB")
+            logger.info(f"[flux_pose] using bundled control image: {bundled}")
 
         img = run_flux_cn(
             self._mgr.get("flux_cn"),
@@ -445,6 +456,21 @@ class ManualGenWorker(BaseWorker):
     # ─────────────────────────────────────────────────────────────────────────
     # Upload helpers
     # ─────────────────────────────────────────────────────────────────────────
+
+    # Bundled control images live in the repo so a freshly-launched spot
+    # can do pose-locked generation without any S3 fetch. The V2 FBX-extracted
+    # skeleton is the "best" T-pose per the sd_tpose stage's prior tuning —
+    # cleanest humanoid front view with clear limb separation.
+    _BUNDLED_CONTROL = {
+        "pose": "tpose_v2_fbx.png",
+    }
+
+    def _bundled_control_image(self, mode: str) -> str | None:
+        fname = self._BUNDLED_CONTROL.get(mode)
+        if not fname:
+            return None
+        path = os.path.join(_WORKER_ROOT, "controlnet_refs", fname)
+        return path if os.path.exists(path) else None
 
     def _download_image(self, url: str) -> Image.Image:
         if not url:

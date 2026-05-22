@@ -1253,16 +1253,17 @@ def generation_studio_ui():
                 _CN_S3 = "https://sparkassets-us.s3.us-east-1.amazonaws.com/controlnet_refs"
                 fp_tpose_preset = gr.Dropdown(
                     choices=[
-                        ("(none — use auto-extract or custom URL below)", ""),
-                        ("T-Pose V2 — FBX extracted (recommended)",        f"{_CN_S3}/tpose_v2_fbx.png"),
-                        ("T-Pose V1 — Hand-drawn",                          f"{_CN_S3}/tpose_v1_user.png"),
-                        ("T-Pose — OpenPose default",                       f"{_CN_S3}/tpose_openpose.png"),
-                        ("T-Pose — FBX 512",                                f"{_CN_S3}/tpose_fbx_512.png"),
+                        ("Bundled V2 FBX (recommended — ships with the worker)",  ""),
+                        ("T-Pose V2 — FBX extracted (S3 copy)",                    f"{_CN_S3}/tpose_v2_fbx.png"),
+                        ("T-Pose V1 — Hand-drawn",                                 f"{_CN_S3}/tpose_v1_user.png"),
+                        ("T-Pose — OpenPose default",                              f"{_CN_S3}/tpose_openpose.png"),
+                        ("T-Pose — FBX 512",                                       f"{_CN_S3}/tpose_fbx_512.png"),
                     ],
-                    value=f"{_CN_S3}/tpose_v2_fbx.png",
-                    label="T-Pose skeleton preset (fills Control image URL)",
-                    info="Pick a pre-built T-pose skeleton. Default = V2 FBX — best for "
-                         "humanoid front view with clear limb separation.",
+                    value="",   # empty → worker loads bundled tpose_v2_fbx.png
+                    label="T-Pose skeleton preset",
+                    info="Default is the bundled V2 FBX skeleton (no network fetch, "
+                         "always available). Pick an S3 URL only if you want a "
+                         "different skeleton; that fills Control image URL below.",
                 )
                 fp_src_stage, fp_src_ver, fp_src_url_st, fp_src_info = _make_src_picker(
                     ["flux", "normalize", "sd_tpose", "flux_pose"], "flux")
@@ -1273,8 +1274,8 @@ def generation_studio_ui():
                              "On: extract control map from the source-stage image.",
                     )
                     fp_control_image_url = gr.Textbox(
-                        label="Control image URL (T-pose preset fills this; you can override)",
-                        value=f"{_CN_S3}/tpose_v2_fbx.png",
+                        label="Control image URL (leave blank to use bundled skeleton)",
+                        value="",
                         placeholder="https://...png",
                     )
                 # Preset → URL textbox
