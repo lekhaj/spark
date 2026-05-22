@@ -34,7 +34,10 @@ logger = logging.getLogger("AutoShutdown")
 # off from GPU egress and AWS-throttled during abuse-case mitigations.
 IDLE_THRESHOLD_MIN = int(os.getenv("IDLE_SHUTDOWN_MINUTES", "15"))
 CHECK_INTERVAL_SEC = int(os.getenv("IDLE_CHECK_INTERVAL_SEC", "60"))
-INSTANCE_ID        = os.getenv("AWS_GPU_INSTANCE_ID", "i-0d6b9d6d34ccc053d")
+# NOTE: do NOT default AWS_GPU_INSTANCE_ID — it's host-specific (different
+# per GPU box). .env.gpu is shared across spark_l4 and spark_gpu_spot, so the
+# value must come from IMDS at runtime. A hardcoded default here previously
+# caused the spot to send a stop-instance for spark_l4 instead of itself.
 AWS_REGION         = os.getenv("AWS_REGION", "us-east-1")
 REDIS_HOST         = os.getenv("REDIS_HOST", "172.31.26.6")   # CPU private IP
 REDIS_PORT         = int(os.getenv("REDIS_PORT", "6379"))
@@ -154,9 +157,16 @@ class AutoShutdown:
             return False   # fail-safe: don't shutdown if we can't check
 
     def _stop_instance(self):
+        # Always resolve THIS instance's id at call time (env var if set,
+        # else IMDS). Never use a module-level constant — it'd be wrong on
+        # any host that doesn't match the constant's default.
+        iid = self._this_iid()
+        if not iid:
+            logger.error("Cannot stop — instance-id unknown (env unset, IMDS unreachable)")
+            return
         logger.warning(
             f"All queues empty for >{IDLE_THRESHOLD_MIN} min — "
-            f"stopping EC2 instance {INSTANCE_ID}"
+            f"stopping EC2 instance {iid}"
         )
         try:
             ec2 = boto3.client(
@@ -165,8 +175,8 @@ class AutoShutdown:
                 aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
                 aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
             )
-            ec2.stop_instances(InstanceIds=[INSTANCE_ID])
-            logger.warning(f"Stop request sent for {INSTANCE_ID}")
+            ec2.stop_instances(InstanceIds=[iid])
+            logger.warning(f"Stop request sent for {iid}")
         except Exception as e:
             logger.error(f"Failed to stop instance: {e}")
 
