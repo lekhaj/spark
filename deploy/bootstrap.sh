@@ -128,8 +128,10 @@ done
 # Drop-ins (per-service overrides)
 if [[ -d "$UNITS_REPO/dropins" ]]; then
     for dropin_dir in "$UNITS_REPO/dropins"/*/; do
+        # Directories under dropins/ are named exactly like the systemd target,
+        # e.g. dropins/manual_gen_worker.service.d/ → /etc/systemd/system/manual_gen_worker.service.d/
         svc="$(basename "$dropin_dir")"
-        target_dir="$UNITS_SYS/${svc}.d"
+        target_dir="$UNITS_SYS/${svc}"
         sudo -n mkdir -p "$target_dir"
         for f in "$dropin_dir"*.conf; do
             [[ -e "$f" ]] || continue
