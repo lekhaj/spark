@@ -1240,26 +1240,48 @@ def generation_studio_ui():
             fp_use_control = gr.Checkbox(
                 value=False,
                 label="Use ControlNet conditioning",
-                info="Off: pure text-to-image. On: condition output on a control image.",
+                info="Off: pure text-to-image (free pose). On: lock pose/structure "
+                     "via a control image — required for reliable T-pose.",
             )
             with gr.Group(visible=False) as fp_ctrl_group:
-                fp_src_stage, fp_src_ver, fp_src_url_st, fp_src_info = _make_src_picker(
-                    ["flux", "normalize", "sd_tpose", "flux_pose"], "flux")
                 fp_control_mode = gr.Dropdown(
                     choices=["pose", "canny", "soft_edge", "depth", "blur", "gray", "low_quality"],
                     value="pose", label="Control mode",
-                    info="What kind of conditioning to apply. 'pose' = OpenPose skeleton "
-                         "extracted from the source image.",
+                    info="'pose' = OpenPose skeleton. Use it with a T-pose preset below "
+                         "for clean front-facing limb separation.",
                 )
+                _CN_S3 = "https://sparkassets-us.s3.us-east-1.amazonaws.com/controlnet_refs"
+                fp_tpose_preset = gr.Dropdown(
+                    choices=[
+                        ("(none — use auto-extract or custom URL below)", ""),
+                        ("T-Pose V2 — FBX extracted (recommended)",        f"{_CN_S3}/tpose_v2_fbx.png"),
+                        ("T-Pose V1 — Hand-drawn",                          f"{_CN_S3}/tpose_v1_user.png"),
+                        ("T-Pose — OpenPose default",                       f"{_CN_S3}/tpose_openpose.png"),
+                        ("T-Pose — FBX 512",                                f"{_CN_S3}/tpose_fbx_512.png"),
+                    ],
+                    value=f"{_CN_S3}/tpose_v2_fbx.png",
+                    label="T-Pose skeleton preset (fills Control image URL)",
+                    info="Pick a pre-built T-pose skeleton. Default = V2 FBX — best for "
+                         "humanoid front view with clear limb separation.",
+                )
+                fp_src_stage, fp_src_ver, fp_src_url_st, fp_src_info = _make_src_picker(
+                    ["flux", "normalize", "sd_tpose", "flux_pose"], "flux")
                 with gr.Row():
                     fp_auto_extract = gr.Checkbox(
-                        value=True, label="Auto-extract control image from source",
-                        info="Off: supply a pre-built control image URL below.",
+                        value=False, label="Auto-extract control image from source",
+                        info="Off (default): use the T-pose preset or URL below. "
+                             "On: extract control map from the source-stage image.",
                     )
                     fp_control_image_url = gr.Textbox(
-                        label="Control image URL (override — bypasses auto-extract)",
-                        value="", placeholder="https://...png",
+                        label="Control image URL (T-pose preset fills this; you can override)",
+                        value=f"{_CN_S3}/tpose_v2_fbx.png",
+                        placeholder="https://...png",
                     )
+                # Preset → URL textbox
+                fp_tpose_preset.change(
+                    lambda v: v if v else gr.update(),
+                    [fp_tpose_preset], [fp_control_image_url],
+                )
             fp_use_control.change(
                 lambda on: gr.update(visible=bool(on)),
                 [fp_use_control], [fp_ctrl_group],
