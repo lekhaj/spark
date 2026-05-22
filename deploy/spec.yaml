@@ -1,0 +1,87 @@
+# =============================================================================
+# Spark deployment spec — single source of truth for what the L40S spot needs.
+#
+# Update this file whenever you add a new stage, model, or dependency. The
+# next time the spot boots (or `spark-bootstrap.service` is restarted), it
+# diffs this against the local sentinels and installs only the delta.
+#
+# Bump the `version:` of a stage to force re-install on the next boot.
+# =============================================================================
+
+role: gpu_l40s
+
+# Stages the L40S spot is responsible for. Order matters — bootstrap installs
+# in this order so that shared base deps land first.
+stages:
+  - flux          # FLUX.1-schnell text-to-image
+  - sd_tpose      # SD1.5 + IP-Adapter + ControlNet (T-pose lock)
+  - flux_pose     # FLUX.1-dev + ControlNet-Union-Pro-2.0
+  - trellis       # image → 3D mesh
+  - pixal3d       # alt image → 3D (isolated conda env)
+
+# Per-stage definitions. Each stage maps to deploy/install/<name>.sh which is
+# called by bootstrap.sh after the sentinel check.
+stage_defs:
+
+  flux:
+    version: 1
+    conda_env: spark
+    hf_models:
+      - black-forest-labs/FLUX.1-schnell
+
+  sd_tpose:
+    version: 1
+    conda_env: spark
+    hf_models:
+      - Lykon/DreamShaper
+      - lllyasviel/control_v11p_sd15_openpose
+      - lllyasviel/control_v11p_sd15_canny
+      - h94/IP-Adapter
+      - lllyasviel/Annotators       # for controlnet_aux (OpenPose, Canny detector deps)
+
+  flux_pose:
+    version: 1
+    conda_env: spark
+    pip:
+      - "diffusers>=0.30"
+      - "controlnet-aux>=0.0.7"
+    hf_models:
+      - black-forest-labs/FLUX.1-dev
+      - Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro-2.0
+    env:
+      FLUX_CN_OFFLOAD: none
+
+  trellis:
+    version: 1
+    conda_env: spark
+    hf_models:
+      - JeffreyXiang/TRELLIS-image-large
+
+  pixal3d:
+    version: 3                       # bump → re-runs installer; v3 matches current setup
+    conda_env: pixal3d
+    extra_installer: install/pixal3d.sh   # full bespoke installer (env build, patches, etc.)
+    hf_models:
+      - TencentARC/Pixal3D
+      - ZhengPeng7/BiRefNet          # ungated rembg replacement
+    env:
+      PIXAL3D_PYTHON: /home/ec2-user/miniconda3/envs/pixal3d/bin/python
+      PIXAL3D_REPO:   /home/ec2-user/Pixal3D
+      PIXAL3D_ATTN:   flash_attn
+      PIXAL3D_LOW_VRAM: "0"          # L40S has 48GB — full residency OK
+
+# Systemd units that bootstrap should keep in sync with the repo.
+# bootstrap.sh copies deploy/systemd/* → /etc/systemd/system/* if checksums differ,
+# then `systemctl daemon-reload`. Services listed here are enabled+started.
+systemd_units:
+  - name: spark-bootstrap.service    # self-managed; install only, don't restart from itself
+    enable: true
+    start:  false
+  - name: manual_gen_worker.service
+    enable: true
+    start:  true
+
+# Where to publish status. bootstrap.sh writes:
+#   bootstrap:status:<instance_id>  →  installing:<stage> | ready | failed:<reason>
+#   bootstrap:commit:<instance_id>  →  current git SHA
+status_redis_key_prefix: "bootstrap"

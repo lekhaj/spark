@@ -1,0 +1,20 @@
+[Unit]
+Description=Spark — pull git + install missing stages on every boot
+After=network-online.target
+Wants=network-online.target
+Before=manual_gen_worker.service
+ConditionPathExists=!/home/ec2-user/.spark/skip_bootstrap
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=ec2-user
+WorkingDirectory=/home/ec2-user/spark
+EnvironmentFile=-/home/ec2-user/spark/.env.gpu
+ExecStart=/home/ec2-user/spark/deploy/bootstrap.sh
+TimeoutStartSec=45min
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
