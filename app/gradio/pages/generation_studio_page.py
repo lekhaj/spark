@@ -190,12 +190,34 @@ def _push_task(payload: dict, queue: str = None) -> str:
                     db=0, decode_responses=True)
 
     # ── 1. ensure GPU is at least running ─────────────────────────────────
+    # On capacity failures (typical for spot), retry up to 5 times at 60s
+    # intervals (~5 min total) before giving up and warning the user.
     reason = "disabled"
     try:
         from lib.gpu_launcher import ensure_gpu_ready
         ok, reason = ensure_gpu_ready()
         if not ok and reason != "disabled":
-            log.warning("GPU not ready before queueing (reason=%s) — task will wait.", reason)
+            capacity_err = "capacity" in reason.lower() or "insufficient" in reason.lower()
+            if capacity_err:
+                gr.Info("⏳ Spot capacity unavailable — retrying for up to 5 min...", duration=8)
+                import time as _time
+                for attempt in range(2, 7):  # attempts 2..6 → 5 retries
+                    _time.sleep(60)
+                    log.info("GPU start retry %d/5 (prev reason=%s)", attempt - 1, reason)
+                    ok, reason = ensure_gpu_ready()
+                    if ok:
+                        gr.Info(f"✅ GPU started on retry {attempt - 1}/5", duration=6)
+                        break
+                if not ok:
+                    gr.Warning(
+                        "⚠️ GPU spot capacity unavailable after 5 retries (~5 min). "
+                        "AWS has no g6e.2xlarge capacity in us-east-1d right now. "
+                        "Task queued — will run when capacity returns, or switch to on-demand.",
+                        duration=20,
+                    )
+                    log.warning("GPU not ready after capacity retries (reason=%s)", reason)
+            else:
+                log.warning("GPU not ready before queueing (reason=%s) — task will wait.", reason)
     except Exception as _e:
         log.debug("gpu_launcher unavailable: %s", _e)
 
