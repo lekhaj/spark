@@ -291,6 +291,8 @@ class ManualGenWorker(BaseWorker):
         control_image_url   = task.get("control_image_url") or params.get("control_image_url", "")
         use_control         = bool(params.get("use_control", True))
         auto_extract        = bool(params.get("auto_extract", True))
+        morphology          = (params.get("morphology") or "B1_humanoid").strip()
+        view                = (params.get("view") or "primary").strip()
 
         source_img  = None
         control_img = None
@@ -304,20 +306,23 @@ class ManualGenWorker(BaseWorker):
         elif auto_extract and input_url:
             source_img = self._download_image(input_url)
         else:
-            # No URL, no source image → fall back to the bundled T-pose skeleton
-            # that ships in the repo (worker/controlnet_refs/). Lets a user enable
-            # "Use ControlNet conditioning" → mode=pose with no extra inputs and
-            # get a guaranteed T-pose lock right away.
+            # No URL, no source image → fall back to the bundled proxy for the
+            # requested morphology + view. Lets a user enable "Use ControlNet
+            # conditioning" with no extra inputs and get a guaranteed pose lock.
             mode = (params.get("control_mode") or "").lower()
-            bundled = self._bundled_control_image(mode)
+            bundled = self._bundled_control_image(mode, morphology=morphology, view=view)
             if bundled is None:
                 raise ValueError(
                     "flux_pose: use_control=True but no control_image_url, no source "
-                    f"image, and no bundled fallback for mode={mode!r}. Provide one."
+                    f"image, and no bundled fallback for mode={mode!r} "
+                    f"morphology={morphology!r} view={view!r}. Provide one."
                 )
             from PIL import Image
             control_img = Image.open(bundled).convert("RGB")
-            logger.info(f"[flux_pose] using bundled control image: {bundled}")
+            logger.info(
+                f"[flux_pose] bundled control: {bundled}  "
+                f"(morphology={morphology}, view={view}, mode={mode})"
+            )
 
         img = run_flux_cn(
             self._mgr.get("flux_cn"),
@@ -499,25 +504,49 @@ class ManualGenWorker(BaseWorker):
     # Bundled control images live in the repo so a freshly-launched spot
     # can do pose-locked generation without any S3 fetch.
     #
-    # apose_canonical.png — arms angled 35° below horizontal. FLUX is trained
-    # on far more A-poses than T-poses (character sheets, fashion, portraits),
-    # so A-pose gives much better aesthetic quality under ControlNet at moderate
-    # strength while still providing the clean limb separation required for
-    # image-to-3D + auto-rigging. Both Auto-Rig Pro and Mixamo accept A-pose
-    # natively. Generated from COCO-18 keypoints — see generate_apose.py.
+    # B1_humanoid → apose_canonical.png — COCO-18 OpenPose A-pose skeleton
+    #   (see worker/controlnet_refs/generate_apose.py). Used with mode="pose".
+    #
+    # B2..B7 → <morphology>_<view>.png — white-line skeletons rendered by
+    #   worker/controlnet_refs/proxy_generators.py. Designed for mode="soft_edge"
+    #   since OpenPose's "pose" mode is humanoid-only. See bake_proxies.py.
     #
     # tpose_canonical.png is retained for callers that explicitly want it
     # (curated S3 preset or hand-supplied control_image_url).
-    _BUNDLED_CONTROL = {
+    _BUNDLED_HUMANOID = {
         "pose": "apose_canonical.png",
     }
 
-    def _bundled_control_image(self, mode: str) -> str | None:
-        fname = self._BUNDLED_CONTROL.get(mode)
-        if not fname:
-            return None
-        path = os.path.join(_WORKER_ROOT, "controlnet_refs", fname)
-        return path if os.path.exists(path) else None
+    def _bundled_control_image(
+        self, mode: str,
+        morphology: str = "B1_humanoid",
+        view: str = "primary",
+    ) -> str | None:
+        """
+        Resolve the bundled control image path for a (mode, morphology, view) tuple.
+
+        B1_humanoid is the legacy humanoid path — keyed by ControlNet mode.
+        B2..B7 use morphology-specific proxies regardless of ``mode`` (since
+        only ``soft_edge`` makes sense for non-humanoid line skeletons).
+        Returns None if nothing applicable is bundled.
+        """
+        refs_dir = os.path.join(_WORKER_ROOT, "controlnet_refs")
+
+        if morphology == "B1_humanoid":
+            fname = self._BUNDLED_HUMANOID.get((mode or "").lower())
+            if not fname:
+                return None
+            path = os.path.join(refs_dir, fname)
+            return path if os.path.exists(path) else None
+
+        # Non-humanoid morphologies — look up <morphology>_<view>.png
+        fname = f"{morphology}_{view or 'primary'}.png"
+        path = os.path.join(refs_dir, fname)
+        if os.path.exists(path):
+            return path
+        # Fallback: try the primary view if the requested view is missing.
+        primary = os.path.join(refs_dir, f"{morphology}_primary.png")
+        return primary if os.path.exists(primary) else None
 
     def _download_image(self, url: str) -> Image.Image:
         if not url:

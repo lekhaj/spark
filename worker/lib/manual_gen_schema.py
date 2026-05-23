@@ -44,6 +44,24 @@ COLLECTION            = "manual_gen_stage_runs"    # all stages except sd_tpose
 TPOSE_COLLECTION      = "manual_gen_tpose_runs"    # sd_tpose stage only
 CHARACTERS_COLLECTION = "manual_gen_characters"    # parent asset registry
 
+# ── Morphology buckets (used by flux_pose stage) ──────────────────────────────
+# The flux_pose stage uses the same FLUX + ControlNet-Union-Pro model regardless
+# of creature type. What varies is (a) the bundled control proxy image and
+# (b) the prompt stance suffix. Both are keyed off `params["morphology"]`.
+#
+# Renderer source for B2..B7: worker/controlnet_refs/proxy_generators.py
+# B1 uses worker/controlnet_refs/apose_canonical.png (OpenPose A-pose).
+MORPHOLOGIES = (
+    "B1_humanoid",      # orc, goblin, minotaur — A-pose, mode=pose
+    "B2_centaur",       # humanoid torso + quadruped lower
+    "B3_naga",          # humanoid torso + serpent tail
+    "B4_quadruped",     # horse, tiger, raccoon, rabbit
+    "B5_winged_quad",   # dragon, pegasus
+    "B6_hydra",         # quadruped + fan of necks
+    "B7_arthropod",     # spider (8 legs), ant (6 legs)
+)
+
+
 # ── Valid stage names ─────────────────────────────────────────────────────────
 STAGE_NAMES = (
     "flux",

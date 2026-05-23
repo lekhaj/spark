@@ -59,7 +59,11 @@ from lib.manual_gen_schema import (
     next_stage_major,
     version_str, save_run_params, mark_queued,
     get_latest_done_image_url, get_latest_done_run, get_run_any,
-    STAGE_NAMES, COLLECTION,
+    STAGE_NAMES, COLLECTION, MORPHOLOGIES,
+)
+from controlnet_refs.proxy_generators import (
+    MORPHOLOGY_VIEWS, RECOMMENDED_MODE,
+    STANCE_PHRASE, LIMB_SEPARATION_SUFFIX,
 )
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -658,7 +662,9 @@ def _q_flux_pose(char, major, minor,
                  width, height, steps, guidance_scale, true_cfg_scale,
                  cn_scale, cn_start, cn_end, seed,
                  src_stage, src_url,
-                 tpose_scaffold):
+                 tpose_scaffold,
+                 morphology="B1_humanoid", view="primary",
+                 auto_stance=True):
     """
     Queue a FLUX.1-dev + ControlNet-Union-Pro-2.0 task.
 
@@ -675,6 +681,24 @@ def _q_flux_pose(char, major, minor,
 
     stage = "flux_pose"
     use_control = bool(use_control)
+    morphology = (morphology or "B1_humanoid").strip()
+    view = (view or "primary").strip()
+
+    # Morphology-aware control-mode override: B2..B7 ship soft_edge proxies, not
+    # OpenPose. If the user left mode at default "pose" and switched to a
+    # non-humanoid morphology, silently promote to the recommended mode.
+    if morphology != "B1_humanoid" and (control_mode or "pose").lower() == "pose":
+        control_mode = RECOMMENDED_MODE.get(morphology, "soft_edge")
+
+    # Auto-stance suffix: for B2..B7, append the bucket-specific stance phrase
+    # + limb-separation suffix so prompt and proxy agree. B1 keeps the older
+    # tpose_scaffold checkbox (off by default) since most users write their own
+    # A-pose phrasing.
+    if auto_stance and morphology != "B1_humanoid":
+        stance = STANCE_PHRASE.get(morphology, "")
+        if stance:
+            prompt = (prompt.rstrip().rstrip(".,")
+                      + ", " + stance + ", " + LIMB_SEPARATION_SUFFIX)
 
     # Pose scaffold: auto-append A-pose / framing constraints so the user only
     # has to write the character description. Applied regardless of whether
@@ -713,6 +737,8 @@ def _q_flux_pose(char, major, minor,
         "width":                         int(width),
         "height":                        int(height),
         "seed":                          int(seed),
+        "morphology":                    morphology,
+        "view":                          view,
     }
     if use_control and control_image_url:
         params["control_image_url"] = control_image_url
@@ -1340,8 +1366,111 @@ def generation_studio_ui():
                 info="Off (default): trust your own prompt. "
                      "On: auto-appends 'relaxed A-pose, arms angled down and away, "
                      "clear silhouette gap, legs shoulder-width…' — use only if your "
-                     "prompt doesn't already describe the pose and framing.",
+                     "prompt doesn't already describe the pose and framing. "
+                     "Only relevant for B1_humanoid; B2..B7 use their own auto-stance.",
             )
+            # ── Creature selector ─────────────────────────────────────────────
+            # User-facing dropdown of concrete creatures. Picking one auto-fills
+            # the morphology bucket, view, and recommended control mode below.
+            # Pick "Custom / other" to drive the morphology dropdown directly.
+            _CREATURE_TO_MORPH: dict[str, str] = {
+                # Humanoid (B1)
+                "Generic Human": "B1_humanoid",
+                "Orc":       "B1_humanoid",
+                "Goblin":    "B1_humanoid",
+                "Minotaur":  "B1_humanoid",
+                # Centaur (B2)
+                "Centaur":   "B2_centaur",
+                # Naga (B3)
+                "Naga":      "B3_naga",
+                # Quadruped (B4)
+                "Horse":     "B4_quadruped",
+                "Tiger":     "B4_quadruped",
+                "Raccoon":   "B4_quadruped",
+                "Rabbit":    "B4_quadruped",
+                # Winged quadruped (B5)
+                "Dragon":    "B5_winged_quad",
+                "Pegasus":   "B5_winged_quad",
+                # Hydra (B6)
+                "Hydra":     "B6_hydra",
+                # Arthropod (B7)
+                "Spider":    "B7_arthropod",
+                "Ant":       "B7_arthropod",
+            }
+            _CREATURE_PROMPT_HINT: dict[str, str] = {
+                "Generic Human": "a human character, full body, standing in A-pose",
+                "Orc":      "a hulking orc warrior",
+                "Goblin":   "a wiry goblin scout",
+                "Minotaur": "a hulking minotaur with bull head, horns, hooves, broad shoulders",
+                "Centaur":  "a noble centaur, human upper body and equine lower body",
+                "Naga":     "a regal naga with human torso and long serpentine tail",
+                "Horse":    "a powerful horse, full body in profile, mane and tail flowing",
+                "Tiger":    "a muscular tiger, striped fur, full body in profile",
+                "Raccoon":  "a raccoon, masked face, ringed tail, full body in profile",
+                "Rabbit":   "a rabbit, long ears, full body in profile",
+                "Dragon":   "a fearsome dragon with leathery wings extended, scaled body, long tail",
+                "Pegasus":  "a majestic pegasus, feathered wings extended, equine body",
+                "Hydra":    "a multi-headed hydra, several necks fanned out, reptilian quadruped body",
+                "Spider":   "a giant spider, eight legs splayed radially, segmented body",
+                "Ant":      "a giant ant, six legs, three-segment body, antennae",
+            }
+
+            with gr.Row():
+                fp_creature = gr.Dropdown(
+                    choices=["Custom / other"] + sorted(_CREATURE_TO_MORPH.keys()),
+                    value="Custom / other",
+                    label="Creature (auto-fills morphology + view + mode)",
+                    info="Pick a creature to auto-fill the bucket and prompt seed. "
+                         "Use 'Custom / other' to set morphology manually.",
+                )
+                fp_seed_prompt_btn = gr.Button(
+                    "Seed prompt from creature", size="sm",
+                    variant="secondary",
+                )
+
+            # ── Morphology bucket selector ────────────────────────────────────
+            # Controls which bundled control proxy + stance phrasing is used.
+            # B1 = the original humanoid A-pose path. B2..B7 = non-humanoid
+            # buckets shipped via worker/controlnet_refs/proxy_generators.py.
+            with gr.Row():
+                fp_morphology = gr.Dropdown(
+                    choices=[
+                        ("B1 — Humanoid (orc, goblin, minotaur)",        "B1_humanoid"),
+                        ("B2 — Centaur",                                  "B2_centaur"),
+                        ("B3 — Naga",                                     "B3_naga"),
+                        ("B4 — Quadruped (horse, tiger, raccoon, rabbit)", "B4_quadruped"),
+                        ("B5 — Winged quadruped (dragon, pegasus)",       "B5_winged_quad"),
+                        ("B6 — Hydra (multi-necked)",                     "B6_hydra"),
+                        ("B7 — Arthropod (spider, ant)",                  "B7_arthropod"),
+                    ],
+                    value="B1_humanoid",
+                    label="Morphology bucket",
+                    info="Selects the bundled control proxy and auto-stance phrasing. "
+                         "B1 uses OpenPose A-pose (control mode 'pose'); "
+                         "B2..B7 use white-line skeletons in 'soft_edge' mode.",
+                )
+                fp_view = gr.Dropdown(
+                    choices=list(MORPHOLOGY_VIEWS["B1_humanoid"]),
+                    value="primary",
+                    label="View",
+                    info="Primary = canonical single-best-view for image-to-3D. "
+                         "Alt views are used by the 'Expand to multi-view' button.",
+                )
+            fp_auto_stance = gr.Checkbox(
+                value=True,
+                label="Auto-append stance + limb-separation suffix (B2..B7)",
+                info="On (recommended): appends per-bucket stance phrasing so the prompt "
+                     "agrees with the bundled proxy. Off: pass your prompt verbatim.",
+            )
+
+            def _on_morphology_change(m: str):
+                """Update view dropdown choices + nudge control_mode for non-humanoids."""
+                views = list(MORPHOLOGY_VIEWS.get(m, ("primary",)))
+                mode_default = RECOMMENDED_MODE.get(m, "pose")
+                return (
+                    gr.update(choices=views, value=views[0]),
+                    gr.update(value=mode_default),
+                )
             with gr.Group(visible=True) as fp_ctrl_group:
                 fp_control_mode = gr.Dropdown(
                     choices=["pose", "canny", "soft_edge", "depth", "blur", "gray", "low_quality"],
@@ -1447,8 +1576,62 @@ def generation_studio_ui():
                 fp_q_btn  = gr.Button("Queue Flux Pose", variant="primary")
                 fp_status = gr.Textbox(label="Status", value="idle", interactive=False, scale=2)
                 fp_r_btn  = gr.Button("Refresh", size="sm")
+            # Multi-view expand: re-fire the same prompt + seed across the alt
+            # views defined for the current morphology. Useful once the user
+            # likes the primary view and wants companion angles for image→3D.
+            with gr.Row():
+                fp_mv_btn = gr.Button("Expand to multi-view (alt views)", size="sm")
+                fp_mv_status = gr.Textbox(label="Multi-view status",
+                                          value="idle", interactive=False, scale=2)
             fp_img = gr.HTML(value=_url_to_img("", 400))
             fp_url = gr.Textbox(label="URL", interactive=False)
+
+            # Morphology dropdown drives view-choice + recommended mode
+            fp_morphology.change(
+                _on_morphology_change,
+                [fp_morphology],
+                [fp_view, fp_control_mode],
+            )
+
+            def _on_creature_change(creature: str):
+                """Map creature → morphology + view + recommended mode in one shot.
+
+                'Custom / other' leaves the morphology dropdown alone so the
+                user can drive it manually.
+                """
+                if not creature or creature == "Custom / other":
+                    return gr.update(), gr.update(), gr.update()
+                morph = _CREATURE_TO_MORPH.get(creature, "B1_humanoid")
+                views = list(MORPHOLOGY_VIEWS.get(morph, ("primary",)))
+                mode = RECOMMENDED_MODE.get(morph, "pose")
+                return (
+                    gr.update(value=morph),
+                    gr.update(choices=views, value=views[0]),
+                    gr.update(value=mode),
+                )
+
+            fp_creature.change(
+                _on_creature_change,
+                [fp_creature],
+                [fp_morphology, fp_view, fp_control_mode],
+            )
+
+            def _seed_prompt_from_creature(creature: str, current_prompt: str):
+                """Append the creature's canonical hint to the prompt if empty
+                or if user explicitly wants a starting template. Non-destructive
+                when prompt already has content — appends to it."""
+                hint = _CREATURE_PROMPT_HINT.get(creature, "")
+                if not hint:
+                    return gr.update()
+                if not current_prompt or not current_prompt.strip():
+                    return gr.update(value=hint)
+                return gr.update(value=current_prompt.rstrip().rstrip(".,") + ", " + hint)
+
+            fp_seed_prompt_btn.click(
+                _seed_prompt_from_creature,
+                [fp_creature, fp_prompt],
+                [fp_prompt],
+            )
 
         # ══════════════════════════════════════════════════════════════════════
         #  STAGE 2: SD T-POSE LOCK (IP-Adapter + OpenPose/Canny ControlNet)
@@ -1842,6 +2025,9 @@ def generation_studio_ui():
         def _ex_flux_pose(run):
             p = run.get("params") or {}
             url = run.get("image_url", "") or ""
+            morph = p.get("morphology", "B1_humanoid")
+            view = p.get("view", "primary")
+            views_for_morph = list(MORPHOLOGY_VIEWS.get(morph, ("primary",)))
             # Defaults aligned with new strong-T-pose UI defaults.
             return [run.get("prompt", ""),
                     run.get("negative", "deformed, extra limbs, mutated hands, text, "
@@ -1858,6 +2044,8 @@ def generation_studio_ui():
                     p.get("control_guidance_start", 0.0),
                     p.get("control_guidance_end", 0.5),
                     p.get("seed", -1),
+                    morph,
+                    gr.update(choices=views_for_morph, value=view),
                     run.get("status", "idle"),
                     url,
                     _url_to_img(url, 400)]
@@ -1867,6 +2055,7 @@ def generation_studio_ui():
                       fp_use_control, fp_control_mode, fp_auto_extract, fp_control_image_url,
                       fp_width, fp_height, fp_steps, fp_guid, fp_true_cfg,
                       fp_cn_scale, fp_cn_start, fp_cn_end, fp_seed,
+                      fp_morphology, fp_view,
                       fp_status, fp_url, fp_img],
                      _ex_flux_pose)
 
@@ -2025,13 +2214,63 @@ def generation_studio_ui():
              fp_width, fp_height, fp_steps, fp_guid, fp_true_cfg,
              fp_cn_scale, fp_cn_start, fp_cn_end, fp_seed,
              fp_src_stage, fp_src_url_st,
-             fp_tpose_scaffold],
+             fp_tpose_scaffold,
+             fp_morphology, fp_view, fp_auto_stance],
             [fp_sid, fp_minor, fp_info, fp_status],
         ).then(lambda: gr.Timer(active=True), outputs=[stage_timer]))
 
         fp_r_btn.click(
             lambda sid: _refresh_with_img(sid, 400),
             [fp_sid], [fp_status, fp_url, fp_img]
+        )
+
+        # Multi-view expand: enqueue one flux_pose task per alt view defined for
+        # the current morphology, reusing the same prompt + seed. Skips
+        # the primary view (assumed already queued). Each alt-view run gets a
+        # fresh minor version under the same major.
+        def _q_flux_pose_multiview(
+                char, major, minor,
+                prompt, neg,
+                use_control, control_mode, auto_extract, control_image_url,
+                width, height, steps, guidance_scale, true_cfg_scale,
+                cn_scale, cn_start, cn_end, seed,
+                src_stage, src_url, tpose_scaffold,
+                morphology, view, auto_stance):
+            if not prompt or not prompt.strip():
+                return "Prompt is empty — fill the prompt first."
+            views = [v for v in MORPHOLOGY_VIEWS.get(morphology, ("primary",))
+                     if v != "primary"]
+            if not views:
+                return f"No alt views defined for morphology {morphology}."
+            queued = []
+            errors = []
+            for v in views:
+                try:
+                    _sid, _new_minor, _info, status = _q_flux_pose(
+                        char, major, minor,
+                        prompt, neg,
+                        use_control, control_mode, auto_extract, control_image_url,
+                        width, height, steps, guidance_scale, true_cfg_scale,
+                        cn_scale, cn_start, cn_end, seed,
+                        src_stage, src_url, tpose_scaffold,
+                        morphology=morphology, view=v, auto_stance=auto_stance,
+                    )
+                    queued.append(f"{v}={status}")
+                except Exception as exc:
+                    errors.append(f"{v}: {exc}")
+            tail = ("; errors: " + " | ".join(errors)) if errors else ""
+            return f"queued {len(queued)} alt view(s): " + " | ".join(queued) + tail
+
+        fp_mv_btn.click(
+            _q_flux_pose_multiview,
+            [fp_char, fp_major, fp_minor,
+             fp_prompt, fp_neg,
+             fp_use_control, fp_control_mode, fp_auto_extract, fp_control_image_url,
+             fp_width, fp_height, fp_steps, fp_guid, fp_true_cfg,
+             fp_cn_scale, fp_cn_start, fp_cn_end, fp_seed,
+             fp_src_stage, fp_src_url_st, fp_tpose_scaffold,
+             fp_morphology, fp_view, fp_auto_stance],
+            [fp_mv_status],
         )
 
         # Flux Pose source-stage picker → refresh available versions
