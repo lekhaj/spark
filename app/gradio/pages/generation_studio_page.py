@@ -1339,42 +1339,68 @@ def generation_studio_ui():
                 fp_control_mode = gr.Dropdown(
                     choices=["pose", "canny", "soft_edge", "depth", "blur", "gray", "low_quality"],
                     value="pose", label="Control mode",
-                    info="'pose' = OpenPose skeleton. Use it with a T-pose preset below "
-                         "for clean front-facing limb separation.",
+                    info="'pose' = OpenPose skeleton. Recommended.",
+                )
+                # ── Mode selector — exposes ONLY the inputs the chosen mode uses ────
+                fp_ctrl_source = gr.Radio(
+                    choices=[
+                        ("Bundled T-pose skeleton (text-only, recommended)", "bundled"),
+                        ("Curated T-pose preset URL",                         "preset"),
+                        ("Extract from a source-stage image",                 "source"),
+                    ],
+                    value="bundled",
+                    label="Where does the control image come from?",
+                    info="Bundled = worker uses tpose_canonical.png (no network, no source needed). "
+                         "Preset = pick a curated T-pose URL on S3. "
+                         "Source = pull from another stage's image and auto-extract a skeleton.",
                 )
                 _CN_S3 = "https://sparkassets-us.s3.us-east-1.amazonaws.com/controlnet_refs"
-                fp_tpose_preset = gr.Dropdown(
-                    choices=[
-                        ("Canonical (recommended — generated from COCO-18 keypoints)", ""),
-                        ("T-Pose V2 — FBX extracted (S3 copy)",                         f"{_CN_S3}/tpose_v2_fbx.png"),
-                        ("T-Pose V1 — Hand-drawn",                                      f"{_CN_S3}/tpose_v1_user.png"),
-                        ("T-Pose — OpenPose default",                                   f"{_CN_S3}/tpose_openpose.png"),
-                        ("T-Pose — FBX 512",                                            f"{_CN_S3}/tpose_fbx_512.png"),
-                    ],
-                    value="",   # empty → worker loads bundled tpose_canonical.png
-                    label="T-Pose skeleton preset",
-                    info="Default is the canonical OpenPose-format T-pose generated "
-                         "from COCO-18 keypoints (anatomically exact, ships with the "
-                         "worker, no network fetch). Pick an S3 URL only if you want "
-                         "a different curated skeleton.",
-                )
-                fp_src_stage, fp_src_ver, fp_src_url_st, fp_src_info = _make_src_picker(
-                    ["flux", "normalize", "sd_tpose", "flux_pose"], "flux")
-                with gr.Row():
-                    fp_auto_extract = gr.Checkbox(
-                        value=False, label="Auto-extract control image from source",
-                        info="Off (default): use the T-pose preset or URL below. "
-                             "On: extract control map from the source-stage image.",
+                with gr.Group(visible=False) as fp_preset_group:
+                    fp_tpose_preset = gr.Dropdown(
+                        choices=[
+                            ("T-Pose V2 — FBX extracted (S3 copy)", f"{_CN_S3}/tpose_v2_fbx.png"),
+                            ("T-Pose V1 — Hand-drawn",              f"{_CN_S3}/tpose_v1_user.png"),
+                            ("T-Pose — OpenPose default",           f"{_CN_S3}/tpose_openpose.png"),
+                            ("T-Pose — FBX 512",                    f"{_CN_S3}/tpose_fbx_512.png"),
+                        ],
+                        value=f"{_CN_S3}/tpose_v2_fbx.png",
+                        label="T-Pose skeleton preset",
                     )
                     fp_control_image_url = gr.Textbox(
-                        label="Control image URL (leave blank to use bundled skeleton)",
+                        label="Control image URL (auto-filled from preset; override if needed)",
                         value="",
                         placeholder="https://...png",
                     )
-                # Preset → URL textbox
-                fp_tpose_preset.change(
-                    lambda v: v if v else gr.update(),
-                    [fp_tpose_preset], [fp_control_image_url],
+                    fp_tpose_preset.change(
+                        lambda v: v if v else gr.update(),
+                        [fp_tpose_preset], [fp_control_image_url],
+                    )
+                with gr.Group(visible=False) as fp_source_group:
+                    fp_src_stage, fp_src_ver, fp_src_url_st, fp_src_info = _make_src_picker(
+                        ["flux", "normalize", "sd_tpose", "flux_pose"], "flux")
+                # Hidden mirrors so the existing click handler signature doesn't break.
+                # Driven by fp_ctrl_source mode below.
+                fp_auto_extract = gr.Checkbox(value=False, visible=False)
+
+                def _on_ctrl_source(mode: str):
+                    """Toggle visibility + sync auto_extract / control_image_url to the chosen mode."""
+                    is_preset = (mode == "preset")
+                    is_source = (mode == "source")
+                    # Clear control_image_url for bundled/source; let preset's
+                    # dropdown.change fill it. Default the preset URL on entry.
+                    url_update = (gr.update() if is_preset
+                                  else gr.update(value=""))
+                    return (
+                        gr.update(visible=is_preset),   # fp_preset_group
+                        gr.update(visible=is_source),   # fp_source_group
+                        gr.update(value=is_source),     # fp_auto_extract (hidden)
+                        url_update,                     # fp_control_image_url
+                    )
+
+                fp_ctrl_source.change(
+                    _on_ctrl_source,
+                    [fp_ctrl_source],
+                    [fp_preset_group, fp_source_group, fp_auto_extract, fp_control_image_url],
                 )
             fp_use_control.change(
                 lambda on: gr.update(visible=bool(on)),
@@ -1808,20 +1834,21 @@ def generation_studio_ui():
         def _ex_flux_pose(run):
             p = run.get("params") or {}
             url = run.get("image_url", "") or ""
+            # Defaults aligned with new strong-T-pose UI defaults.
             return [run.get("prompt", ""),
                     run.get("negative", "deformed, extra limbs, mutated hands, text, "
                                         "watermark, blurry, low quality"),
-                    bool(p.get("use_control", False)),
+                    bool(p.get("use_control", True)),
                     p.get("control_mode", "pose"),
-                    bool(p.get("auto_extract", True)),
+                    bool(p.get("auto_extract", False)),
                     p.get("control_image_url", ""),
                     p.get("width", 1024), p.get("height", 1024),
                     p.get("steps", 28),
                     p.get("guidance_scale", 3.5),
                     p.get("true_cfg_scale", 1.0),
-                    p.get("controlnet_conditioning_scale", 0.7),
+                    p.get("controlnet_conditioning_scale", 0.95),
                     p.get("control_guidance_start", 0.0),
-                    p.get("control_guidance_end", 0.8),
+                    p.get("control_guidance_end", 1.0),
                     p.get("seed", -1),
                     run.get("status", "idle"),
                     url,
