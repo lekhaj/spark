@@ -657,14 +657,18 @@ def _q_flux_pose(char, major, minor,
                  use_control, control_mode, auto_extract, control_image_url,
                  width, height, steps, guidance_scale, true_cfg_scale,
                  cn_scale, cn_start, cn_end, seed,
-                 src_stage, src_url):
+                 src_stage, src_url,
+                 tpose_scaffold):
     """
     Queue a FLUX.1-dev + ControlNet-Union-Pro-2.0 task.
 
-    Three modes:
-      use_control=False                 → pure text-to-image (no conditioning)
-      use_control=True, auto_extract=T  → extract control image from src_url
-      use_control=True, auto_extract=F  → control_image_url must be supplied
+    Four modes (worker resolves in this priority order):
+      use_control=False                                     → pure text-to-image
+      use_control=True + control_image_url                  → use that URL as control
+      use_control=True + auto_extract=T + src_url           → extract control from src_url
+      use_control=True + (none of the above)                → worker loads bundled
+                                                              tpose_canonical.png (default
+                                                              T-pose lock — text-only flow)
     """
     if not prompt or not prompt.strip():
         return None, gr.update(), gr.update(), "⚠️ Prompt is empty."
@@ -672,17 +676,29 @@ def _q_flux_pose(char, major, minor,
     stage = "flux_pose"
     use_control = bool(use_control)
 
-    if use_control and auto_extract and not control_image_url:
-        if not src_url:
-            src_url = get_latest_done_image_url(_db(), char, src_stage) or ""
-        if not src_url:
-            return None, gr.update(), gr.update(), \
-                f"Conditioning is ON but no done image in '{src_stage}'. "\
-                "Either turn off conditioning, run that stage first, or supply Control image URL."
+    # T-pose scaffold: auto-append pose/framing constraints so the user only
+    # has to write the character description. Applied regardless of whether
+    # ControlNet is on — even prompt-only benefits from explicit framing.
+    if tpose_scaffold:
+        scaffold = (
+            ", T-pose, arms fully extended horizontally, legs shoulder-width apart, "
+            "front view, perfectly symmetrical, centered composition, full body visible, "
+            "fingers relaxed and separated, neutral gray background, no shadows, "
+            "no dramatic lighting, flat studio lighting"
+        )
+        prompt = prompt.rstrip().rstrip(".,") + scaffold
 
+    # If user enabled ControlNet but didn't pick a source or supply a control URL,
+    # let it fall through to the worker's bundled tpose_canonical.png — that's
+    # the canonical T-pose-lock flow for humanoids with text prompt only.
+    # We deliberately do NOT auto-grab the latest done image here — that was
+    # the old buggy behaviour that silently extracted a non-T-pose skeleton.
+    if use_control and auto_extract and not control_image_url and not src_url:
+        # Empty src_url → worker hits bundled fallback. No error.
+        pass
     if use_control and not auto_extract and not control_image_url:
-        return None, gr.update(), gr.update(), \
-            "Conditioning is ON with auto-extract off — supply a Control image URL."
+        # No URL, no extraction → worker hits bundled fallback. No error.
+        pass
 
     params = {
         "use_control":                   use_control,
@@ -1306,12 +1322,20 @@ def generation_studio_ui():
                 "extracted from a source image or supplied directly."
             )
             fp_use_control = gr.Checkbox(
-                value=False,
-                label="Use ControlNet conditioning",
-                info="Off: pure text-to-image (free pose). On: lock pose/structure "
-                     "via a control image — required for reliable T-pose.",
+                value=True,
+                label="Use ControlNet conditioning  (required for reliable T-pose)",
+                info="Off: pure text-to-image (FLUX often ignores T-pose prompts). "
+                     "On + no source/URL: uses bundled tpose_canonical.png skeleton "
+                     "automatically. ← default flow for text-only T-pose lock.",
             )
-            with gr.Group(visible=False) as fp_ctrl_group:
+            fp_tpose_scaffold = gr.Checkbox(
+                value=True,
+                label="Append T-pose scaffold to prompt",
+                info="Auto-appends: 'T-pose, arms fully extended horizontally, "
+                     "legs shoulder-width apart, front view, neutral background, "
+                     "no shadows…'. Write only the character description above.",
+            )
+            with gr.Group(visible=True) as fp_ctrl_group:
                 fp_control_mode = gr.Dropdown(
                     choices=["pose", "canny", "soft_edge", "depth", "blur", "gray", "low_quality"],
                     value="pose", label="Control mode",
@@ -1377,12 +1401,14 @@ def generation_studio_ui():
                 fp_seed    = gr.Number(value=-1, precision=0,
                                        label="Seed (-1 = random)")
             with gr.Row():
-                fp_cn_scale = gr.Slider(0.0, 1.5, value=0.7, step=0.05,
-                                        label="ControlNet conditioning scale")
+                fp_cn_scale = gr.Slider(0.0, 1.5, value=0.95, step=0.05,
+                                        label="ControlNet conditioning scale "
+                                              "(0.95 = strong T-pose lock)")
                 fp_cn_start = gr.Slider(0.0, 1.0, value=0.0, step=0.05,
                                         label="Control guidance start")
-                fp_cn_end   = gr.Slider(0.0, 1.0, value=0.8, step=0.05,
-                                        label="Control guidance end")
+                fp_cn_end   = gr.Slider(0.0, 1.0, value=1.0, step=0.05,
+                                        label="Control guidance end "
+                                              "(1.0 = stay on through full denoise)")
             with gr.Row():
                 fp_q_btn  = gr.Button("Queue Flux Pose", variant="primary")
                 fp_status = gr.Textbox(label="Status", value="idle", interactive=False, scale=2)
@@ -1963,7 +1989,8 @@ def generation_studio_ui():
              fp_use_control, fp_control_mode, fp_auto_extract, fp_control_image_url,
              fp_width, fp_height, fp_steps, fp_guid, fp_true_cfg,
              fp_cn_scale, fp_cn_start, fp_cn_end, fp_seed,
-             fp_src_stage, fp_src_url_st],
+             fp_src_stage, fp_src_url_st,
+             fp_tpose_scaffold],
             [fp_sid, fp_minor, fp_info, fp_status],
         ).then(lambda: gr.Timer(active=True), outputs=[stage_timer]))
 
