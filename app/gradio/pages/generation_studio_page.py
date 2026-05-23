@@ -1137,8 +1137,14 @@ def generation_studio_ui():
                     return f"⚠ status error: {e}"
 
             def _render_all():
-                return [_render_one(iid, meta.get("prewarm", True))
-                        for iid, meta, _md in _status_rows]
+                results = [_render_one(iid, meta.get("prewarm", True))
+                           for iid, meta, _md in _status_rows]
+                # Gradio quirk: with a single output bound, returning a 1-element
+                # list passes the list itself to the Markdown component (→
+                # cleandoc gets a list → AttributeError). Unwrap explicitly.
+                if len(results) == 1:
+                    return results[0]
+                return results
 
             status_refresh_btn = gr.Button("🔄 Refresh now", size="sm")
             status_refresh_btn.click(
