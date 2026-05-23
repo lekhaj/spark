@@ -1869,6 +1869,7 @@ def generation_studio_ui():
             )
 
         _make_src_wiring(nm_char, nm_src_stage, nm_src_ver, nm_src_url_st, nm_src_info)
+        _make_src_wiring(fp_char, fp_src_stage, fp_src_ver, fp_src_url_st, fp_src_info)
         _make_src_wiring(s1_char, s1_src_stage, s1_src_ver, s1_src_url_st, s1_src_info)
         _make_src_wiring(tr_char, tr_src_stage,  tr_src_ver,  tr_src_url_st,  tr_src_info)
         _make_src_wiring(px_char, px_src_stage,  px_src_ver,  px_src_url_st,  px_src_info)
@@ -1972,11 +1973,8 @@ def generation_studio_ui():
         )
 
         # Flux Pose source-stage picker → refresh available versions
-        fp_src_stage.change(
-            _refresh_src_picker,
-            [fp_char, fp_src_stage],
-            [fp_src_ver, fp_src_url_st, fp_src_info],
-        )
+        # flux_pose source picker wiring is handled by _make_src_wiring above
+        # (covers src_stage.change, src_ver.change, and char.change).
 
         # SD T-Pose
         def _do_q_tp(char, major, minor, p, n, dn, cfg, st, opw, cnw, ipw, cat, ref_url, src_stage, src_url):
