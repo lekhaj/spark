@@ -676,15 +676,15 @@ def _q_flux_pose(char, major, minor,
     stage = "flux_pose"
     use_control = bool(use_control)
 
-    # T-pose scaffold: auto-append pose/framing constraints so the user only
+    # Pose scaffold: auto-append A-pose / framing constraints so the user only
     # has to write the character description. Applied regardless of whether
     # ControlNet is on — even prompt-only benefits from explicit framing.
     if tpose_scaffold:
         scaffold = (
-            ", T-pose, arms fully extended horizontally, legs shoulder-width apart, "
-            "front view, perfectly symmetrical, centered composition, full body visible, "
-            "fingers relaxed and separated, neutral gray background, no shadows, "
-            "no dramatic lighting, flat studio lighting"
+            ", relaxed A-pose, arms angled slightly down and away from the body, "
+            "clear silhouette gap between arms and torso, legs shoulder-width apart, "
+            "front view, full body visible, fingers relaxed and separated, "
+            "neutral gray background, no shadows, flat studio lighting"
         )
         prompt = prompt.rstrip().rstrip(".,") + scaffold
 
@@ -1323,17 +1323,18 @@ def generation_studio_ui():
             )
             fp_use_control = gr.Checkbox(
                 value=True,
-                label="Use ControlNet conditioning  (required for reliable T-pose)",
-                info="Off: pure text-to-image (FLUX often ignores T-pose prompts). "
-                     "On + no source/URL: uses bundled tpose_canonical.png skeleton "
-                     "automatically. ← default flow for text-only T-pose lock.",
+                label="Use ControlNet conditioning  (recommended for clean limb separation)",
+                info="Off: pure FLUX text-to-image (best aesthetics, unreliable pose). "
+                     "On + no source/URL: uses bundled A-pose skeleton automatically. "
+                     "Default flow gives FLUX-quality aesthetics + rig-ready limb separation.",
             )
             fp_tpose_scaffold = gr.Checkbox(
-                value=True,
-                label="Append T-pose scaffold to prompt",
-                info="Auto-appends: 'T-pose, arms fully extended horizontally, "
-                     "legs shoulder-width apart, front view, neutral background, "
-                     "no shadows…'. Write only the character description above.",
+                value=False,
+                label="Append A-pose scaffold to prompt",
+                info="Off (default): trust your own prompt. "
+                     "On: auto-appends 'relaxed A-pose, arms angled down and away, "
+                     "clear silhouette gap, legs shoulder-width…' — use only if your "
+                     "prompt doesn't already describe the pose and framing.",
             )
             with gr.Group(visible=True) as fp_ctrl_group:
                 fp_control_mode = gr.Dropdown(
@@ -1344,14 +1345,14 @@ def generation_studio_ui():
                 # ── Mode selector — exposes ONLY the inputs the chosen mode uses ────
                 fp_ctrl_source = gr.Radio(
                     choices=[
-                        ("Bundled T-pose skeleton (text-only, recommended)", "bundled"),
-                        ("Curated T-pose preset URL",                         "preset"),
+                        ("Bundled A-pose skeleton (text-only, recommended)", "bundled"),
+                        ("Curated T-pose / A-pose preset URL",                "preset"),
                         ("Extract from a source-stage image",                 "source"),
                     ],
                     value="bundled",
                     label="Where does the control image come from?",
-                    info="Bundled = worker uses tpose_canonical.png (no network, no source needed). "
-                         "Preset = pick a curated T-pose URL on S3. "
+                    info="Bundled = worker uses apose_canonical.png (no network, no source needed). "
+                         "Preset = pick a curated skeleton URL on S3. "
                          "Source = pull from another stage's image and auto-extract a skeleton.",
                 )
                 _CN_S3 = "https://sparkassets-us.s3.us-east-1.amazonaws.com/controlnet_refs"
@@ -1420,21 +1421,22 @@ def generation_studio_ui():
                 fp_height = gr.Slider(512, 1536, value=1024, step=64, label="Height")
                 fp_steps  = gr.Slider(8, 50, value=28, step=1, label="Steps")
             with gr.Row():
-                fp_guid    = gr.Slider(1.0, 10.0, value=3.5, step=0.1,
-                                       label="Guidance scale (distilled)")
+                fp_guid    = gr.Slider(1.0, 10.0, value=4.5, step=0.1,
+                                       label="Guidance scale (distilled) "
+                                             "— 4.5 = stronger prompt adherence")
                 fp_true_cfg = gr.Slider(1.0, 10.0, value=1.0, step=0.1,
                                         label="True CFG (>1 enables negative prompt)")
                 fp_seed    = gr.Number(value=-1, precision=0,
                                        label="Seed (-1 = random)")
             with gr.Row():
-                fp_cn_scale = gr.Slider(0.0, 1.5, value=0.95, step=0.05,
+                fp_cn_scale = gr.Slider(0.0, 1.5, value=0.55, step=0.05,
                                         label="ControlNet conditioning scale "
-                                              "(0.95 = strong T-pose lock)")
+                                              "(0.55 = relaxed — skeleton guides, FLUX renders)")
                 fp_cn_start = gr.Slider(0.0, 1.0, value=0.0, step=0.05,
                                         label="Control guidance start")
-                fp_cn_end   = gr.Slider(0.0, 1.0, value=1.0, step=0.05,
+                fp_cn_end   = gr.Slider(0.0, 1.0, value=0.5, step=0.05,
                                         label="Control guidance end "
-                                              "(1.0 = stay on through full denoise)")
+                                              "(0.5 = lock pose early, then FLUX details freely)")
             with gr.Row():
                 fp_q_btn  = gr.Button("Queue Flux Pose", variant="primary")
                 fp_status = gr.Textbox(label="Status", value="idle", interactive=False, scale=2)
@@ -1844,11 +1846,11 @@ def generation_studio_ui():
                     p.get("control_image_url", ""),
                     p.get("width", 1024), p.get("height", 1024),
                     p.get("steps", 28),
-                    p.get("guidance_scale", 3.5),
+                    p.get("guidance_scale", 4.5),
                     p.get("true_cfg_scale", 1.0),
-                    p.get("controlnet_conditioning_scale", 0.95),
+                    p.get("controlnet_conditioning_scale", 0.55),
                     p.get("control_guidance_start", 0.0),
-                    p.get("control_guidance_end", 1.0),
+                    p.get("control_guidance_end", 0.5),
                     p.get("seed", -1),
                     run.get("status", "idle"),
                     url,
