@@ -1,9 +1,11 @@
 import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, Optional, List
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -19,6 +21,7 @@ from app.config import settings
 from app.routes.mongo_routes import router as mongo_router
 from app.routes.aws_routes import router as aws_router
 from app.routes.orchestrator_router import router as orchestrator_router
+from app.routes.manual_gen_routes import router as manual_gen_router
 
 # Bring in the generator and DB helpers from the biome package
 from app.src_biome_gen import database as db_module
@@ -100,6 +103,26 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# CORS — allow the spark_studio front-end (Netlify + local dev) to call us.
+# Extend MANUAL_GEN_CORS_ORIGINS (comma-separated env) for additional origins
+# (e.g. a custom domain) without code changes.
+_default_cors_origins = [
+    "https://sparkaistudio.netlify.app",
+    "http://localhost:5173",   # vite dev
+    "http://localhost:4173",   # vite preview
+    "http://127.0.0.1:5173",
+]
+_extra_origins = [
+    o.strip() for o in os.getenv("MANUAL_GEN_CORS_ORIGINS", "").split(",") if o.strip()
+] if os.getenv("MANUAL_GEN_CORS_ORIGINS") else []
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_default_cors_origins + _extra_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Mount routers for Mongo and AWS
 app.include_router(mongo_router, prefix="/mongo", tags=["MongoDB"])
 app.include_router(aws_router, prefix="/aws", tags=["AWS"])
@@ -109,6 +132,8 @@ app.include_router(mongo_routes.router, prefix="")
 app.include_router(orchestrator_router, prefix="/orchestrate", tags=["Orchestrator"])
 # Also expose the same orchestrator router at root so legacy clients can POST to /submit_image_tasks/
 app.include_router(orchestrator_router, prefix="", tags=["Orchestrator"])
+# Manual generation pipeline — CRUD + queue (consumed by spark_studio)
+app.include_router(manual_gen_router, prefix="/manual-gen", tags=["ManualGen"])
 
 class TaskType(str, Enum):
     IMAGE = "image"
