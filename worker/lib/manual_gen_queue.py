@@ -372,6 +372,320 @@ def queue_hunyuan3d(
     )
 
 
+def queue_flux_pose(
+    db,
+    char_label: str,
+    major: int,
+    minor: int,
+    prompt: str,
+    negative: str = "",
+    *,
+    use_control: bool = True,
+    control_mode: str = "pose",
+    auto_extract: bool = True,
+    control_image_url: str = "",
+    width: int = 1024,
+    height: int = 1024,
+    steps: int = 30,
+    guidance_scale: float = 3.5,
+    true_cfg_scale: float = 1.0,
+    cn_scale: float = 0.85,
+    cn_start: float = 0.0,
+    cn_end: float = 0.85,
+    seed: int = 0,
+    src_stage: str = "flux",
+    src_ver: str = "",
+    morphology: str = "B1_humanoid",
+    view: str = "primary",
+    queue: Optional[str] = None,
+    on_status: StatusCallback = None,
+) -> QueueResult:
+    """
+    Queue a FLUX.1-dev + ControlNet-Union-Pro-2.0 (pose-conditioned) job.
+
+    Mirrors the gradio ``_q_flux_pose`` minus the prompt-scaffolding helpers
+    (auto_stance / tpose_scaffold) — the REST caller should send the final
+    prompt already assembled. The morphology/view/control_mode params still
+    pass through to the worker.
+    """
+    stage = "flux_pose"
+    if not prompt.strip():
+        raise ValueError("prompt is empty")
+
+    src_url = _resolve_source_image_url(db, char_label, src_stage, src_ver) if use_control else ""
+
+    params = {
+        "use_control": bool(use_control),
+        "control_mode": (control_mode or "pose").lower(),
+        "auto_extract": bool(auto_extract),
+        "controlnet_conditioning_scale": float(cn_scale),
+        "control_guidance_start": float(cn_start),
+        "control_guidance_end": float(cn_end),
+        "steps": int(steps),
+        "guidance_scale": float(guidance_scale),
+        "true_cfg_scale": float(true_cfg_scale),
+        "width": int(width),
+        "height": int(height),
+        "seed": int(seed),
+        "morphology": morphology,
+        "view": view,
+    }
+    if use_control and control_image_url:
+        params["control_image_url"] = control_image_url
+
+    prep = prepare_run(db, char_label, stage, major, minor,
+                       prompt=prompt, negative=negative, params=params)
+    mgs.save_run_params(db, prep.run_id, prompt, negative, params, stage=stage)
+
+    payload: Dict[str, Any] = {
+        "type": "flux_pose", "session_id": prep.run_id, "stage": stage,
+        "char_name": char_label, "major": prep.major, "minor": prep.minor,
+        "prompt": prompt, "negative": negative,
+        "params": params,
+        "input_stage": src_stage if use_control else "",
+        "input_url": (src_url if use_control else "") or "",
+    }
+    if use_control and control_image_url:
+        payload["control_image_url"] = control_image_url
+
+    r = _redis_client()
+    queue_name = queue or resolve_active_queue(r)
+    task_id = push_task_minimal(payload=payload, queue=queue_name, r=r, on_status=on_status)
+    mgs.mark_queued(db, prep.run_id, stage=stage, task_id=task_id)
+
+    return QueueResult(
+        run_id=prep.run_id, task_id=task_id, stage=stage,
+        char_label=char_label, major=prep.major, minor=prep.minor,
+        version=f"{prep.major}.{prep.minor}", status="queued", queue=queue_name,
+    )
+
+
+def queue_sd_tpose(
+    db,
+    char_label: str,
+    major: int,
+    minor: int,
+    prompt: str,
+    negative: str = "",
+    *,
+    params: Optional[Dict[str, Any]] = None,
+    src_stage: str = "flux",
+    src_ver: str = "",
+    queue: Optional[str] = None,
+    on_status: StatusCallback = None,
+) -> QueueResult:
+    """
+    Queue an SD1.5 + ControlNet T-pose job with IP-Adapter identity lock.
+
+    Routes to ``manual_gen_tpose_runs`` automatically via ``_coll_for_stage``.
+    """
+    stage = "sd_tpose"
+    if not prompt.strip():
+        raise ValueError("prompt is empty")
+
+    src_url = _resolve_source_image_url(db, char_label, src_stage, src_ver)
+    if not src_url:
+        raise ValueError(
+            f"No 'done' image for {char_label} stage={src_stage} version={src_ver or 'latest'}"
+        )
+
+    params = dict(params or {})
+    prep = prepare_run(db, char_label, stage, major, minor,
+                       prompt=prompt, negative=negative, params=params)
+    mgs.save_run_params(db, prep.run_id, prompt, negative, params, stage=stage)
+
+    r = _redis_client()
+    queue_name = queue or resolve_active_queue(r)
+    task_id = push_task_minimal(
+        payload={
+            "type": "sd_stage", "session_id": prep.run_id, "stage": stage,
+            "char_name": char_label, "major": prep.major, "minor": prep.minor,
+            "prompt": prompt, "negative": negative,
+            "params": params,
+            "input_stage": src_stage, "input_url": src_url,
+        },
+        queue=queue_name, r=r, on_status=on_status,
+    )
+    mgs.mark_queued(db, prep.run_id, stage=stage, task_id=task_id)
+
+    return QueueResult(
+        run_id=prep.run_id, task_id=task_id, stage=stage,
+        char_label=char_label, major=prep.major, minor=prep.minor,
+        version=f"{prep.major}.{prep.minor}", status="queued", queue=queue_name,
+    )
+
+
+def queue_trellis(
+    db,
+    char_label: str,
+    major: int,
+    minor: int,
+    char_type: str = "humanoid",
+    src_stage: str = "flux",
+    src_ver: str = "",
+    queue: Optional[str] = None,
+    on_status: StatusCallback = None,
+) -> QueueResult:
+    """
+    Queue a TRELLIS image→3D job. Pulls front/side/back URLs from the source
+    run if all three exist; otherwise side/back are empty (front is required).
+    """
+    stage = "trellis"
+    if src_ver:
+        try:
+            major_s, minor_s = src_ver.split(".")
+            views = mgs.get_view_urls(db, char_label, src_stage, int(major_s), int(minor_s))
+        except (ValueError, KeyError):
+            views = {"front": "", "side": "", "back": ""}
+    else:
+        latest = mgs.get_latest_done_run(db, char_label, src_stage) or {}
+        views = {
+            "front": latest.get("image_url") or "",
+            "side": latest.get("side_url") or "",
+            "back": latest.get("back_url") or "",
+        }
+
+    if not views.get("front"):
+        raise ValueError(
+            f"No front-view image for {char_label} {src_stage}/{src_ver or 'latest'}"
+        )
+
+    params = {"char_type": char_type or "humanoid"}
+    prep = prepare_run(db, char_label, stage, major, minor, params=params)
+    mgs.save_run_params(db, prep.run_id, "", "", params, stage=stage)
+
+    r = _redis_client()
+    queue_name = queue or resolve_active_queue(r)
+    task_id = push_task_minimal(
+        payload={
+            "type": "trellis", "session_id": prep.run_id, "stage": stage,
+            "char_name": char_label, "major": prep.major, "minor": prep.minor,
+            "char_type": char_type or "humanoid",
+            "input_front": views["front"],
+            "input_side": views.get("side", ""),
+            "input_back": views.get("back", ""),
+            "params": params,
+        },
+        queue=queue_name, r=r, on_status=on_status,
+    )
+    mgs.mark_queued(db, prep.run_id, stage=stage, task_id=task_id)
+
+    return QueueResult(
+        run_id=prep.run_id, task_id=task_id, stage=stage,
+        char_label=char_label, major=prep.major, minor=prep.minor,
+        version=f"{prep.major}.{prep.minor}", status="queued", queue=queue_name,
+    )
+
+
+def queue_pixal3d(
+    db,
+    char_label: str,
+    major: int,
+    minor: int,
+    char_type: str = "humanoid",
+    src_stage: str = "flux",
+    src_ver: str = "",
+    queue: Optional[str] = None,
+    on_status: StatusCallback = None,
+) -> QueueResult:
+    """Queue a Pixal3D image→3D job. Single-image input."""
+    stage = "pixal3d"
+    src_url = _resolve_source_image_url(db, char_label, src_stage, src_ver)
+    if not src_url:
+        raise ValueError(
+            f"No 'done' image for {char_label} {src_stage}/{src_ver or 'latest'}"
+        )
+
+    params = {"char_type": char_type or "humanoid"}
+    prep = prepare_run(db, char_label, stage, major, minor, params=params)
+    mgs.save_run_params(db, prep.run_id, "", "", params, stage=stage)
+
+    r = _redis_client()
+    queue_name = queue or resolve_active_queue(r)
+    task_id = push_task_minimal(
+        payload={
+            "type": "pixal3d", "session_id": prep.run_id, "stage": stage,
+            "char_name": char_label, "major": prep.major, "minor": prep.minor,
+            "char_type": char_type or "humanoid",
+            "input_front": src_url,
+            "params": params,
+        },
+        queue=queue_name, r=r, on_status=on_status,
+    )
+    mgs.mark_queued(db, prep.run_id, stage=stage, task_id=task_id)
+
+    return QueueResult(
+        run_id=prep.run_id, task_id=task_id, stage=stage,
+        char_label=char_label, major=prep.major, minor=prep.minor,
+        version=f"{prep.major}.{prep.minor}", status="queued", queue=queue_name,
+    )
+
+
+def queue_mesh_lod(
+    db,
+    char_label: str,
+    major: int,
+    minor: int,
+    *,
+    src_stage: str = "trellis",
+    src_ver: str = "",
+    profiles: Optional[list] = None,
+    ratio_b: float = 0.5,
+    ratio_c: float = 0.2,
+    voxel_size_d: float = 0.02,
+    quadriflow: bool = False,
+    quadriflow_target: int = 4000,
+    bake_resolution: int = 1024,
+    queue: Optional[str] = None,
+    on_status: StatusCallback = None,
+) -> QueueResult:
+    """
+    Queue a Mesh-LOD job on the CPU ``mesh_lod_tasks`` queue (not GPU).
+    Generates LOD GLBs from a source mesh.
+    """
+    stage = "mesh_lod"
+    src_url = _resolve_source_image_url(db, char_label, src_stage, src_ver)
+    if not src_url:
+        raise ValueError(
+            f"No 'done' GLB for {char_label} {src_stage}/{src_ver or 'latest'}"
+        )
+
+    profiles = profiles or ["a", "b", "c", "d"]
+    params = {
+        "ratio_b": float(ratio_b),
+        "ratio_c": float(ratio_c),
+        "voxel_size_d": float(voxel_size_d),
+        "quadriflow": bool(quadriflow),
+        "quadriflow_target": int(quadriflow_target),
+        "bake_resolution": int(bake_resolution),
+    }
+    prep = prepare_run(db, char_label, stage, major, minor, params=params)
+    mgs.save_run_params(db, prep.run_id, "", "", params, stage=stage)
+
+    # mesh_lod has its own dedicated CPU queue.
+    queue_name = queue or "mesh_lod_tasks"
+    r = _redis_client()
+    task_id = push_task_minimal(
+        payload={
+            "type": "mesh_lod", "session_id": prep.run_id, "stage": stage,
+            "char_name": char_label, "major": prep.major, "minor": prep.minor,
+            "source_url": src_url,
+            "profiles": profiles,
+            "params": params,
+        },
+        queue=queue_name, r=r,
+        ensure_gpu=False,  # CPU-only stage
+        on_status=on_status,
+    )
+    mgs.mark_queued(db, prep.run_id, stage=stage, task_id=task_id)
+
+    return QueueResult(
+        run_id=prep.run_id, task_id=task_id, stage=stage,
+        char_label=char_label, major=prep.major, minor=prep.minor,
+        version=f"{prep.major}.{prep.minor}", status="queued", queue=queue_name,
+    )
+
+
 def queue_rig(
     db,
     char_label: str,
@@ -456,6 +770,11 @@ __all__ = [
     "push_task_minimal",
     "resolve_active_queue",
     "queue_flux",
+    "queue_flux_pose",
+    "queue_sd_tpose",
+    "queue_trellis",
+    "queue_pixal3d",
     "queue_hunyuan3d",
+    "queue_mesh_lod",
     "queue_rig",
 ]

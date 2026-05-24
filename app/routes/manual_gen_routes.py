@@ -255,6 +255,175 @@ def queue_hunyuan3d(body: QueueHunyuanBody) -> Dict[str, Any]:
     return result.to_dict()
 
 
+class QueueFluxPoseBody(BaseModel):
+    char: str
+    major: int = 1
+    minor: int = 0
+    prompt: str
+    negative: str = ""
+    use_control: bool = True
+    control_mode: str = "pose"
+    auto_extract: bool = True
+    control_image_url: str = ""
+    width: int = 1024
+    height: int = 1024
+    steps: int = 30
+    guidance_scale: float = 3.5
+    true_cfg_scale: float = 1.0
+    cn_scale: float = 0.85
+    cn_start: float = 0.0
+    cn_end: float = 0.85
+    seed: int = 0
+    src_stage: str = "flux"
+    src_ver: str = ""
+    morphology: str = "B1_humanoid"
+    view: str = "primary"
+    queue: Optional[str] = None
+
+
+@router.post("/queue/flux_pose", summary="Queue FLUX.1-dev + ControlNet-Union-Pro pose")
+def queue_flux_pose(body: QueueFluxPoseBody) -> Dict[str, Any]:
+    try:
+        result = mgq.queue_flux_pose(
+            _db(),
+            char_label=body.char, major=body.major, minor=body.minor,
+            prompt=body.prompt, negative=body.negative,
+            use_control=body.use_control, control_mode=body.control_mode,
+            auto_extract=body.auto_extract, control_image_url=body.control_image_url,
+            width=body.width, height=body.height, steps=body.steps,
+            guidance_scale=body.guidance_scale, true_cfg_scale=body.true_cfg_scale,
+            cn_scale=body.cn_scale, cn_start=body.cn_start, cn_end=body.cn_end,
+            seed=body.seed, src_stage=body.src_stage, src_ver=body.src_ver,
+            morphology=body.morphology, view=body.view, queue=body.queue,
+        )
+    except mgq.StageBusyError as e:
+        raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        log.exception("queue_flux_pose failed")
+        raise HTTPException(500, str(e))
+    return result.to_dict()
+
+
+class QueueSDTposeBody(BaseModel):
+    char: str
+    major: int = 1
+    minor: int = 0
+    prompt: str
+    negative: str = ""
+    params: Dict[str, Any] = Field(default_factory=dict)
+    src_stage: str = "flux"
+    src_ver: str = ""
+    queue: Optional[str] = None
+
+
+@router.post("/queue/sd_tpose", summary="Queue SD1.5 + ControlNet T-pose")
+def queue_sd_tpose(body: QueueSDTposeBody) -> Dict[str, Any]:
+    try:
+        result = mgq.queue_sd_tpose(
+            _db(),
+            char_label=body.char, major=body.major, minor=body.minor,
+            prompt=body.prompt, negative=body.negative, params=body.params,
+            src_stage=body.src_stage, src_ver=body.src_ver, queue=body.queue,
+        )
+    except mgq.StageBusyError as e:
+        raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        log.exception("queue_sd_tpose failed")
+        raise HTTPException(500, str(e))
+    return result.to_dict()
+
+
+class Queue3DBody(BaseModel):
+    """Shared body for trellis / pixal3d (front-image-only image→3D)."""
+    char: str
+    major: int = 1
+    minor: int = 0
+    char_type: str = "humanoid"
+    src_stage: str = "flux"
+    src_ver: str = ""
+    queue: Optional[str] = None
+
+
+@router.post("/queue/trellis", summary="Queue TRELLIS image→3D")
+def queue_trellis(body: Queue3DBody) -> Dict[str, Any]:
+    try:
+        result = mgq.queue_trellis(
+            _db(),
+            char_label=body.char, major=body.major, minor=body.minor,
+            char_type=body.char_type, src_stage=body.src_stage,
+            src_ver=body.src_ver, queue=body.queue,
+        )
+    except mgq.StageBusyError as e:
+        raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        log.exception("queue_trellis failed")
+        raise HTTPException(500, str(e))
+    return result.to_dict()
+
+
+@router.post("/queue/pixal3d", summary="Queue Pixal3D image→3D")
+def queue_pixal3d(body: Queue3DBody) -> Dict[str, Any]:
+    try:
+        result = mgq.queue_pixal3d(
+            _db(),
+            char_label=body.char, major=body.major, minor=body.minor,
+            char_type=body.char_type, src_stage=body.src_stage,
+            src_ver=body.src_ver, queue=body.queue,
+        )
+    except mgq.StageBusyError as e:
+        raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        log.exception("queue_pixal3d failed")
+        raise HTTPException(500, str(e))
+    return result.to_dict()
+
+
+class QueueMeshLodBody(BaseModel):
+    char: str
+    major: int = 1
+    minor: int = 0
+    src_stage: str = "trellis"
+    src_ver: str = ""
+    profiles: list = Field(default_factory=lambda: ["a", "b", "c", "d"])
+    ratio_b: float = 0.5
+    ratio_c: float = 0.2
+    voxel_size_d: float = 0.02
+    quadriflow: bool = False
+    quadriflow_target: int = 4000
+    bake_resolution: int = 1024
+    queue: Optional[str] = None
+
+
+@router.post("/queue/mesh_lod", summary="Queue Mesh-LOD (CPU queue)")
+def queue_mesh_lod(body: QueueMeshLodBody) -> Dict[str, Any]:
+    try:
+        result = mgq.queue_mesh_lod(
+            _db(),
+            char_label=body.char, major=body.major, minor=body.minor,
+            src_stage=body.src_stage, src_ver=body.src_ver,
+            profiles=body.profiles, ratio_b=body.ratio_b, ratio_c=body.ratio_c,
+            voxel_size_d=body.voxel_size_d, quadriflow=body.quadriflow,
+            quadriflow_target=body.quadriflow_target,
+            bake_resolution=body.bake_resolution, queue=body.queue,
+        )
+    except mgq.StageBusyError as e:
+        raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        log.exception("queue_mesh_lod failed")
+        raise HTTPException(500, str(e))
+    return result.to_dict()
+
+
 class QueueRigBody(BaseModel):
     char: str
     major: int = 1

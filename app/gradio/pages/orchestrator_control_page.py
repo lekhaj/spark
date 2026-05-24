@@ -153,6 +153,13 @@ def create_orchestrator_ui():
             return status_text, auto_mode, mode_msg, as_on, as_min
 
         def handle_mode_toggle(auto_mode: bool):
+            if auto_mode:
+                gr.Warning(
+                    "⚠️ spark_l4 instance has been DELETED. "
+                    "GPU management now uses the spot instance only (spark_gpu_spot). "
+                    "Fixed-instance start/stop calls will fail — use the spot flow.",
+                    duration=10,
+                )
             result = set_orchestrator_mode(auto_mode)
             if "error" in result:
                 status_text, current_mode, _, as_on, as_min = update_display()

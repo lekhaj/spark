@@ -32,6 +32,8 @@ lib/
 lib64/
 !deploy/lib/
 !deploy/lib/**
+!worker/lib/
+!worker/lib/**
 parts/
 sdist/
 var/

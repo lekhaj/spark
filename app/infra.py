@@ -10,7 +10,12 @@ All services (orchestrator, aws_service, workers) import from here.
 
 # ── EC2 Instance IDs ─────────────────────────────────────────────────────────
 CPU_INSTANCE_ID  = "i-0f5a6edd3ce343281"             # new instance (AMI launch 2026-05-09)
-GPU_INSTANCE_ID  = "i-0d6b9d6d34ccc053d"   # g6.2xlarge — L4 GPU workers (image + 3D + rig)
+GPU_INSTANCE_ID  = "i-0d6b9d6d34ccc053d"   # ⚠️  DELETED — spark_l4 no longer exists; use spot
+
+# spark_l4 (i-0d6b9d6d34ccc053d) was deleted 2026-05-22.
+# GPU_INSTANCE_ID is kept so the code paths still compile, but any call that
+# resolves to this ID will log a loud warning and redirect you to the spot flow.
+DELETED_L4_INSTANCE_ID = GPU_INSTANCE_ID
 
 # ── Public IPs ───────────────────────────────────────────────────────────────
 CPU_PUBLIC_IP = "18.207.13.85"
