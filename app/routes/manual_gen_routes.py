@@ -31,7 +31,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from worker.lib import manual_gen_schema as mgs
@@ -68,9 +68,29 @@ def _require_stage(stage: str) -> None:
 
 # ─── Read: characters ─────────────────────────────────────────────────────────
 
-@router.get("/characters", summary="List all character labels")
-def list_characters() -> Dict[str, List[str]]:
-    return {"characters": mgs.list_characters(_db())}
+@router.get("/characters", summary="List character labels (filterable + paginated)")
+def list_characters(
+    prefix: Optional[str] = Query(None, description="Only return labels starting with this prefix (e.g. 'VIC_')"),
+    contains: Optional[str] = Query(None, description="Only return labels containing this substring (case-insensitive)"),
+    limit: int = Query(200, ge=1, le=2000, description="Max labels to return"),
+    offset: int = Query(0, ge=0, description="Number of labels to skip"),
+) -> Dict[str, Any]:
+    all_labels = mgs.list_characters(_db())
+    filtered = all_labels
+    if prefix:
+        filtered = [l for l in filtered if l.startswith(prefix)]
+    if contains:
+        needle = contains.lower()
+        filtered = [l for l in filtered if needle in l.lower()]
+    total = len(filtered)
+    page = filtered[offset : offset + limit]
+    return {
+        "characters": page,
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "has_more": (offset + len(page)) < total,
+    }
 
 
 class CreateCharacterBody(BaseModel):
@@ -95,19 +115,35 @@ def list_stages_for_char(char: str) -> Dict[str, Any]:
 # ─── Read: runs / versions ────────────────────────────────────────────────────
 
 @router.get("/characters/{char}/stages/{stage}/versions",
-            summary="List all versions for (char, stage) with status + URL")
-def list_stage_versions(char: str, stage: str) -> Dict[str, Any]:
+            summary="List versions for (char, stage) with status + URL (paginated)")
+def list_stage_versions(
+    char: str,
+    stage: str,
+    status: Optional[str] = Query(None, description="Filter by status: idle|queued|running|done|error"),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+) -> Dict[str, Any]:
     _require_stage(stage)
     db = _db()
     coll = mgs._coll_for_stage(stage)
-    cursor = db[coll].find(
-        {"char_label": char, "stage": stage},
-        {
-            "_id": 1, "major": 1, "minor": 1, "version": 1,
-            "status": 1, "image_url": 1, "s3_key": 1,
-            "prompt": 1, "created_at": 1, "completed_at": 1, "error": 1,
-        },
-    ).sort([("major", 1), ("minor", 1)])
+    query: Dict[str, Any] = {"char_label": char, "stage": stage}
+    if status:
+        query["status"] = status
+    total = db[coll].count_documents(query)
+    cursor = (
+        db[coll]
+        .find(
+            query,
+            {
+                "_id": 1, "major": 1, "minor": 1, "version": 1,
+                "status": 1, "image_url": 1, "s3_key": 1,
+                "prompt": 1, "created_at": 1, "completed_at": 1, "error": 1,
+            },
+        )
+        .sort([("major", 1), ("minor", 1)])
+        .skip(offset)
+        .limit(limit)
+    )
     versions = [
         {
             "run_id": str(d["_id"]),
@@ -124,7 +160,15 @@ def list_stage_versions(char: str, stage: str) -> Dict[str, Any]:
         }
         for d in cursor
     ]
-    return {"char": char, "stage": stage, "versions": versions}
+    return {
+        "char": char,
+        "stage": stage,
+        "versions": versions,
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "has_more": (offset + len(versions)) < total,
+    }
 
 
 @router.get("/characters/{char}/stages/{stage}/latest-done",
