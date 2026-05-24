@@ -32,8 +32,10 @@ lib/
 lib64/
 !deploy/lib/
 !deploy/lib/**
+# worker/lib/ holds tracked Python modules; only un-ignore .py to avoid
+# letting __pycache__ / *.so back in via the lib/ exception.
 !worker/lib/
-!worker/lib/**
+!worker/lib/*.py
 parts/
 sdist/
 var/
@@ -84,3 +86,5 @@ logs/
 
 config.py
 /outputs
+# Local Claude session worktrees
+.claire/
