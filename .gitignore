@@ -88,3 +88,10 @@ config.py
 /outputs
 # Local Claude session worktrees
 .claire/
+
+# Vendored upstream / local-only artifacts (GPU box clones Hunyuan3D from
+# GitHub at bootstrap — see deploy/install/hunyuan3d.sh; never track it here)
+Hunyuan3D-2.1/
+3D_pipeline_compress/
+generated_files/
+.gradio/

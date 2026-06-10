@@ -1,0 +1,18 @@
+[Unit]
+Description=Gradio Application Service (spark - feature/claude-gen-code)
+After=network.target fastapi_app.service
+
+[Service]
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/spark
+EnvironmentFile=/home/ubuntu/spark/.env.cpu
+EnvironmentFile=/home/ubuntu/spark/.env.secrets
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/home/ubuntu/spark:/home/ubuntu/spark/worker
+ExecStart=/home/ubuntu/spark/venv/bin/python app/gradio/web_app.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -9,9 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-import redis, json, uuid
-import time
-from enum import Enum
+import redis
+import uuid
 import asyncio
 from app.routes import mongo_routes 
 from app.services.orchestrator_service import orchestrator_main
@@ -29,36 +28,6 @@ from app.src_biome_gen.biome_generator import create_new_biome
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("app")
-
-## main was edited to make api endpoints as a executable function...
-## core_logic is unchanged. :)
-
-def create_image_task_dict(prompt, negative_prompt="", width=1024, height=1024, num_inference_steps=30):
-    job_id = str(uuid.uuid4())
-    return job_id, {
-        "job_id": job_id,
-        "task_type": TaskType.IMAGE,
-        "prompt": prompt,
-        "negative_prompt": negative_prompt,
-        "width": width,
-        "height": height,
-        "num_inference_steps": num_inference_steps,
-        "timestamp": time.time(),
-        "status": "queued",
-        "output_key": f"generated-images/{job_id}/sdxl_output.png"
-    }
-
-def create_3d_task_dict(image_s3_url, prompt=""):
-    job_id = str(uuid.uuid4())
-    return job_id, {
-        "job_id": job_id,
-        "task_type": TaskType.MODEL_3D,
-        "image_s3_url": image_s3_url,
-        "prompt": prompt,
-        "timestamp": time.time(),
-        "status": "queued",
-        "output_key": f"3d_assets/{job_id}_mesh.obj"
-    }
 
 # Redis client using config
 try:
@@ -134,21 +103,6 @@ app.include_router(orchestrator_router, prefix="/orchestrate", tags=["Orchestrat
 app.include_router(orchestrator_router, prefix="", tags=["Orchestrator"])
 # Manual generation pipeline — CRUD + queue (consumed by spark_studio)
 app.include_router(manual_gen_router, prefix="/manual-gen", tags=["ManualGen"])
-
-class TaskType(str, Enum):
-    IMAGE = "image"
-    MODEL_3D = "3d_model"
-
-class ImagePromptRequest(BaseModel):
-    prompt: str
-    negative_prompt: str = ""
-    width: int = 1024
-    height: int = 1024
-    num_inference_steps: int = 30
-
-class Model3DRequest(BaseModel):
-    image_s3_url: str
-    prompt: str = ""  # Optional prompt for guidance
 
 # --- Biome generation endpoints (moved from c_main.py) ---
 # In-memory background task store for lightweight single-node async tasks
@@ -294,43 +248,6 @@ async def get_biome_endpoint(biome_name: str):
     if biome_data is None:
         raise HTTPException(status_code=404, detail=f"Biome '{biome_name}' not found.")
     return biome_data
-
-# @app.post("/submit_image_task/")
-# async def submit_image_task(image_request: ImagePromptRequest):
-#     """Submit a prompt for SDXL image generation"""
-#     job_id, task_data = create_image_task_dict(
-#         prompt=image_request.prompt,
-#         negative_prompt=image_request.negative_prompt,
-#         width=image_request.width,
-#         height=image_request.height,
-#         num_inference_steps=image_request.num_inference_steps
-#     )
-#     print(task_data)
-#     r.lpush("image_tasks", json.dumps(task_data))
-#     print(task_data)
-#     print(f"[FastAPI] Image task pushed to Redis: {job_id}")
-#     return {
-#         "status": "success",
-#         "message": "Image generation task added to queue",
-#         "job_id": job_id,
-#         "task_type": TaskType.IMAGE
-#     }
-
-# @app.post("/submit_3d_task/")
-# async def submit_3d_task(model_request: Model3DRequest):
-#     """Submit an S3 image URL for 3D model generation"""
-#     job_id, task_data = create_3d_task_dict(
-#         image_s3_url=model_request.image_s3_url,
-#         prompt=model_request.prompt
-#     )
-#     r.lpush("model_tasks", json.dumps(task_data))
-#     print(f"[FastAPI] 3D task pushed to Redis: {job_id}")
-#     return {
-#         "status": "success",
-#         "message": "3D model generation task added to queue",
-#         "job_id": job_id,
-#         "task_type": TaskType.MODEL_3D
-#     }
 
 @app.get("/queue_status/")
 async def queue_status():
