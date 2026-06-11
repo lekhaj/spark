@@ -15,10 +15,19 @@ LOG=/var/log/spark-prewarm.log
 SENTINEL=/home/ec2-user/spark-prewarm.done
 HF_HUB="$HOME/.cache/huggingface/hub"
 
-# Idempotency: don't redo if already done this boot.
+# Idempotency: don't redo if already done THIS BOOT. The sentinel lives on
+# EBS so it survives reboots — but the page cache doesn't. A sentinel older
+# than the current boot is stale and must not skip the warmup (a stale skip
+# made the first post-reboot flux load take ~90 min on 2026-06-11).
 if [ -f "$SENTINEL" ]; then
-    echo "[prewarm] sentinel exists, skipping"
-    exit 0
+    boot_ts=$(date -d "$(uptime -s)" +%s)
+    sent_ts=$(stat -c %Y "$SENTINEL")
+    if [ "$sent_ts" -ge "$boot_ts" ]; then
+        echo "[prewarm] sentinel from this boot exists, skipping"
+        exit 0
+    fi
+    echo "[prewarm] stale sentinel (pre-boot) — re-running warmup"
+    rm -f "$SENTINEL"
 fi
 
 exec > >(tee -a "$LOG") 2>&1
