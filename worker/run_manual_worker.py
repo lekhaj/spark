@@ -23,6 +23,9 @@ from dotenv import load_dotenv
 # Resolve .env relative to this file so the script works regardless of cwd.
 _env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
 load_dotenv(_env_path, override=True)  # override=True ensures stale OS env vars are replaced
+# Secrets (Mongo creds etc.) live in gitignored .env.secrets — loaded after
+# .env so they win over any placeholder values in the tracked file.
+load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env.secrets"), override=True)
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
