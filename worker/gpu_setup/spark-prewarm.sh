@@ -47,11 +47,13 @@ for m in "${HF_MODELS[@]}"; do
     fi
     echo "[prewarm] warming $m"
     # Parallel-cat all weights — 4 streams to saturate EBS lazy-load.
+    # || true: with pipefail, one unreadable file (broken HF-cache symlink)
+    # makes xargs exit 123 and killed the whole unit (seen 2026-06-11).
     bytes=$(find "$dir" \( -name "*.safetensors" -o -name "*.bin" -o -name "*.pt" \
             -o -name "*.json" -o -name "*.txt" \) -size +0c -print0 \
-            | xargs -0 -n4 -P 4 cat 2>/dev/null | wc -c)
-    echo "[prewarm]   $m: ${bytes} bytes"
-    total_bytes=$((total_bytes + bytes))
+            | xargs -0 -n4 -P 4 cat 2>/dev/null | wc -c || true)
+    echo "[prewarm]   $m: ${bytes:-0} bytes"
+    total_bytes=$((total_bytes + ${bytes:-0}))
 done
 
 # ── 2. Conda env shared libraries (avoids slow first import) ──────────────
