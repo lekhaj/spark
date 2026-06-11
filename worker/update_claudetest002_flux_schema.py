@@ -27,7 +27,7 @@ import time
 
 import pymongo
 
-MONGO_URI  = "mongodb://kartik:Kartikg421@18.207.13.85:27017"
+MONGO_URI  = os.getenv("MONGO_URI") or os.getenv("MONGODB_URL") or ""
 MONGO_DB   = "World_builder"
 BIOME_ID   = "claudetest002"
 

@@ -26,7 +26,7 @@ from lib.spec_schema import (
     build_body_desc, build_face_desc, build_clothing_desc, build_creature_desc,
 )
 
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://kartik:Kartikg421@localhost:27017")
+MONGO_URI = os.getenv("MONGO_URI") or os.getenv("MONGODB_URL") or ""
 MONGO_DB  = os.getenv("MONGO_DB",  "World_builder")
 S3_BASE   = "https://sparkassets-us.s3.us-east-1.amazonaws.com"
 

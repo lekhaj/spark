@@ -85,7 +85,7 @@ STAGE2_STRENGTH = 0.35   # img2img denoising strength (0.3–0.4 per spec)
 # ── Infrastructure ────────────────────────────────────────────────────────────
 REDIS_HOST   = os.getenv("REDIS_HOST",   "18.207.13.85")
 REDIS_PORT   = int(os.getenv("REDIS_PORT", 6380))
-MONGO_URI    = os.getenv("MONGO_URI",    "mongodb://kartik:Kartikg421@18.207.13.85:27017")
+MONGO_URI    = (os.getenv("MONGO_URI") or os.getenv("MONGODB_URL") or "")
 MONGO_DB     = "World_builder"
 S3_BUCKET    = os.getenv("AWS_S3_BUCKET", "sparkassets-us")
 S3_REGION    = os.getenv("AWS_REGION",    "us-east-1")

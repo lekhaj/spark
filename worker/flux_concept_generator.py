@@ -40,7 +40,7 @@ if os.path.exists(_ENV_PATH):
     load_dotenv(_ENV_PATH)
 
 REDIS_HOST  = os.getenv("REDIS_HOST",  "18.207.13.85")
-MONGO_URI   = os.getenv("MONGO_URI",   "mongodb://kartik:Kartikg421@18.207.13.85:27017")
+MONGO_URI   = os.getenv("MONGO_URI") or os.getenv("MONGODB_URL") or ""
 MONGO_DB    = os.getenv("MONGO_DB",    "World_builder")
 S3_BUCKET   = os.getenv("AWS_S3_BUCKET", "sparkassets-us")
 AWS_REGION  = os.getenv("AWS_REGION",  "us-east-1")

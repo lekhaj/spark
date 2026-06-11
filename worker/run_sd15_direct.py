@@ -31,7 +31,7 @@ load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 # ── Config ────────────────────────────────────────────────────────────────────
-MONGO_URI  = os.getenv("MONGO_URI",    "mongodb://kartik:Kartikg421@18.207.13.85:27017")
+MONGO_URI  = (os.getenv("MONGO_URI") or os.getenv("MONGODB_URL") or "")
 S3_BUCKET  = os.getenv("AWS_S3_BUCKET","sparkassets-us")
 AWS_REGION = os.getenv("AWS_REGION",   "us-east-1")
 BIOME_ID   = "bhavesh_batch_001"  # batch id for this generation run

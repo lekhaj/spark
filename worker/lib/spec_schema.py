@@ -17,7 +17,7 @@ import pymongo
 
 # ── defaults ─────────────────────────────────────────────────────────────────
 # Reads from env so the same code works from local (public IP) and on-instance (localhost)
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://kartik:Kartikg421@localhost:27017")
+MONGO_URI = os.getenv("MONGO_URI") or os.getenv("MONGODB_URL") or ""
 MONGO_DB  = os.getenv("MONGO_DB",  "World_builder")
 
 

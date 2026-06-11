@@ -115,7 +115,7 @@ MONGO_URL = (
     os.getenv("MONGODB_URL")
     or os.getenv("MONGO_URL")
     or os.getenv("MONGO_URI")
-    or "mongodb://kartik:Kartikg421@localhost:27017"
+    or ""
 )
 
 MONGO_DB_NAME = (

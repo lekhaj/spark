@@ -29,7 +29,7 @@ REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT  = int(os.getenv("REDIS_PORT", "6379"))
 REDIS_QUEUE = "manual_gen_tasks"
 
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://kartik:Kartikg421@localhost:27017")
+MONGO_URI = os.getenv("MONGO_URI") or os.getenv("MONGODB_URL") or ""
 
 CHARACTERS = [
     # (char_id, template_id, width, height, version)

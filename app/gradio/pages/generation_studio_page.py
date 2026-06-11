@@ -68,7 +68,7 @@ from controlnet_refs.proxy_generators import (
 
 # ── Config ────────────────────────────────────────────────────────────────────
 MONGO_URI = (os.getenv("MONGO_URI") or os.getenv("MONGODB_URL")
-             or "mongodb://kartik:Kartikg421@localhost:27017/?authSource=admin")
+             or "")
 MONGO_DB  = os.getenv("MONGO_DB") or os.getenv("MONGODB_DB_NAME") or "World_builder"
 
 def _resolve_redis():

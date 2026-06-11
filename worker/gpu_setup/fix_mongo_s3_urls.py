@@ -30,7 +30,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-MONGO_URI    = os.getenv("MONGO_URI", "mongodb://kartik:Kartikg421@localhost:27017")
+MONGO_URI    = os.getenv("MONGO_URI") or os.getenv("MONGODB_URL") or ""
 DB_NAME      = os.getenv("MONGO_DB",  "World_builder")
 COLLECTION   = "biomes"
 

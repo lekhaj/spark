@@ -62,7 +62,7 @@ REDIS_PORT     = int(os.getenv("REDIS_PORT", "6379"))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD") or None
 QUEUE          = os.getenv("MESH_LOD_QUEUE", "mesh_lod_tasks")
 
-MONGO_URI      = os.getenv("MONGO_URI", "mongodb://kartik:Kartikg421@localhost:27017")
+MONGO_URI      = (os.getenv("MONGO_URI") or os.getenv("MONGODB_URL") or "")
 MONGO_DB       = os.getenv("MONGO_DB",  "World_builder")
 
 S3_BUCKET      = os.getenv("AWS_S3_BUCKET", "sparkassets-us")
