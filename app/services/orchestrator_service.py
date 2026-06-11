@@ -171,6 +171,21 @@ class GPUOrchestrator:
 
         logger.info(f"[GPU] {' '.join(f'{q}={n}' for q,n in queues.items())} instance={gpu_state} ip={infra.GPU_PUBLIC_IP}")
 
+        # GPU-delegated stop: the GPU-side autoshutdown publishes this when it
+        # decided to stop but lacks ec2:StopInstances (S3-only instance profile).
+        # It already verified queues-empty + no in-flight task, so honour it —
+        # unless new work arrived since the request.
+        stop_req_key = f"autoshutdown:stop_requested:{infra.GPU_INSTANCE_ID}"
+        if gpu_running and r.get(stop_req_key):
+            if total == 0:
+                logger.warning(f"[GPU] Stop requested by GPU-side autoshutdown — stopping {infra.GPU_INSTANCE_ID}")
+                r.delete(stop_req_key)
+                aws_service.stop_instance(self._gpu_alias)
+                self.idle_since = None
+                return
+            logger.info("[GPU] Stop request found but new tasks arrived — clearing request")
+            r.delete(stop_req_key)
+
         if total > 0:
             self.idle_since = None          # tasks arrived — reset idle clock
             if not gpu_running:

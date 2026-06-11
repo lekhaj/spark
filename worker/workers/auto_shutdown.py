@@ -179,6 +179,24 @@ class AutoShutdown:
             logger.warning(f"Stop request sent for {iid}")
         except Exception as e:
             logger.error(f"Failed to stop instance: {e}")
+            self._delegate_stop_to_cpu(iid)
+
+    def _delegate_stop_to_cpu(self, iid: str):
+        """
+        Fallback when this box can't call ec2:StopInstances itself (e.g. the
+        instance profile is S3-only). Publish a stop request in Redis; the
+        CPU orchestrator honours it on its next poll — it has the EC2 perms.
+        TTL keeps a stale request from stopping the box hours later.
+        """
+        r = self._get_redis()
+        if r is None:
+            logger.error("Cannot delegate stop — Redis unreachable")
+            return
+        try:
+            r.set(f"autoshutdown:stop_requested:{iid}", str(int(time.time())), ex=900)
+            logger.warning(f"Published autoshutdown:stop_requested:{iid} — CPU orchestrator will stop us")
+        except Exception as e:
+            logger.error(f"Failed to publish stop request: {e}")
 
     def _this_iid(self) -> str | None:
         """Cached lookup of this instance's id (for per-instance Redis keys)."""
