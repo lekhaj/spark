@@ -36,11 +36,8 @@ class WorkerConfig:
     REDIS_PORT     = int(os.getenv("REDIS_PORT", 6379))
     # Redis on the CPU instance now requires auth (post May 2026 abuse incident).
     REDIS_PASSWORD = os.getenv("REDIS_PASSWORD") or None
-    MONGO_URI      = (
-        os.getenv("MONGO_URI") or
-        os.getenv("MONGODB_URL") or
-        "mongodb://kartik:Kartikg421@localhost:27017/?authSource=admin"
-    )
+    # No credential fallback: .env.gpu must provide MONGO_URI/MONGODB_URL.
+    MONGO_URI      = os.getenv("MONGO_URI") or os.getenv("MONGODB_URL") or ""
     MONGO_DB       = (
         os.getenv("MONGO_DB") or
         os.getenv("MONGODB_DB_NAME") or
@@ -49,11 +46,9 @@ class WorkerConfig:
     S3_BUCKET      = os.getenv("AWS_S3_BUCKET", os.getenv("S3_BUCKET", "sparkassets-us"))
     S3_REGION      = os.getenv("AWS_REGION",   "ap-south-1")
     TASK_TTL       = int(os.getenv("TASK_TTL", 14400))   # 4 hours
-    INSTANCE_ID    = (
-        os.getenv("AWS_GPU_INSTANCE_ID") or
-        os.getenv("GPU") or
-        "i-0e029990527fa2b73"
-    )
+    # IMDS is the source of truth for self-identity (autoshutdown_ctl);
+    # env is only a hint. Never hardcode an instance id here.
+    INSTANCE_ID    = os.getenv("AWS_GPU_INSTANCE_ID") or os.getenv("GPU") or ""
 
 
 # ── Base Worker ───────────────────────────────────────────────────────────────
@@ -94,6 +89,8 @@ class BaseWorker(ABC):
 
     def get_mongo(self):
         if self._mongo is None:
+            if not self.cfg.MONGO_URI:
+                raise RuntimeError("MONGO_URI/MONGODB_URL not set — load .env.gpu")
             client = MongoClient(self.cfg.MONGO_URI, serverSelectionTimeoutMS=10000)
             self._mongo = client[self.cfg.MONGO_DB]
         return self._mongo
@@ -170,10 +167,17 @@ class BaseWorker(ABC):
     # ── TTL Guard ─────────────────────────────────────────────────────────────
 
     def is_expired(self, task: dict) -> bool:
-        age = time.time() - task.get("timestamp", 0)
+        # Producers stamp either "timestamp" (push_task) or "queued_at" (the
+        # manual_gen REST path). A missing stamp must NOT read as ancient —
+        # treating it as 0 silently dropped every REST-queued task.
+        ts = task.get("timestamp") or task.get("queued_at") or 0
+        if not ts:
+            return False
+        age = time.time() - ts
         if age > self.cfg.TASK_TTL:
             self.logger.warning(
-                f"Task expired ({age:.0f}s old), skipping: {task.get('character_name')}"
+                f"Task expired ({age:.0f}s old), skipping: "
+                f"{task.get('character_name') or task.get('char_label') or task.get('task_id')}"
             )
             return True
         return False
