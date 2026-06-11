@@ -198,10 +198,21 @@ class GPUOrchestrator:
                         if not self._autoshutdown_enabled():
                             logger.info("[GPU] Idle threshold reached but autoshutdown is disabled — skipping stop")
                             self.idle_since = None
+                        elif self._any_worker_active():
+                            # Primary shutdown is GPU-side (auto_shutdown.py),
+                            # which tracks in-flight tasks. The CPU stop is only
+                            # a backstop for a crashed worker — never kill a box
+                            # whose worker service is alive (it may be mid-job
+                            # on a long stage with an empty queue).
+                            logger.info(
+                                "[GPU] Idle threshold reached but worker service is "
+                                "active — deferring to GPU-side autoshutdown"
+                            )
+                            self.idle_since = None
                         else:
                             logger.warning(
-                                f"[GPU] Idle threshold reached ({self.idle_shutdown // 60} min) "
-                                f"— stopping instance {infra.GPU_INSTANCE_ID}"
+                                f"[GPU] Idle threshold reached ({self.idle_shutdown // 60} min), "
+                                f"worker not active — backstop-stopping {infra.GPU_INSTANCE_ID}"
                             )
                             aws_service.stop_instance(self._gpu_alias)
                             self.idle_since = None

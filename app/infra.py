@@ -10,18 +10,21 @@ All services (orchestrator, aws_service, workers) import from here.
 
 # ── EC2 Instance IDs ─────────────────────────────────────────────────────────
 CPU_INSTANCE_ID  = "i-0f5a6edd3ce343281"             # new instance (AMI launch 2026-05-09)
-GPU_INSTANCE_ID  = "i-0d6b9d6d34ccc053d"   # ⚠️  DELETED — spark_l4 no longer exists; use spot
+# Active GPU = on-demand g6e.2xlarge in us-east-1b, booted from the relocated
+# models volume (2026-06-11). env AWS_GPU_INSTANCE_ID overrides in aws_service.
+GPU_INSTANCE_ID  = "i-089872baa8e109ca3"
 
-# spark_l4 (i-0d6b9d6d34ccc053d) was deleted 2026-05-22.
-# GPU_INSTANCE_ID is kept so the code paths still compile, but any call that
-# resolves to this ID will log a loud warning and redirect you to the spot flow.
-DELETED_L4_INSTANCE_ID = GPU_INSTANCE_ID
+# spark_l4 (i-0d6b9d6d34ccc053d) was deleted 2026-05-22 — kept only so the
+# loud-warning path in aws_service still recognises the old id.
+DELETED_L4_INSTANCE_ID = "i-0d6b9d6d34ccc053d"
 
 # ── Public IPs ───────────────────────────────────────────────────────────────
 CPU_PUBLIC_IP = "18.207.13.85"
-GPU_PUBLIC_IP = "3.215.211.192"
-GPU_PUBLIC_DNS = "ec2-3-215-211-192.compute-1.amazonaws.com"
-GPU_PRIVATE_IP = "172.31.42.124"   # updated after instance restart 2026-05-10
+# Elastic IP — rides with whichever GPU instance is active (see
+# deploy/gpu_failover/). Stable across spot/on-demand switches.
+GPU_PUBLIC_IP = "52.91.128.47"
+GPU_PUBLIC_DNS = "ec2-52-91-128-47.compute-1.amazonaws.com"
+GPU_PRIVATE_IP = "172.31.81.46"   # on-demand i-089872baa8e109ca3 (us-east-1b)
 
 # ── Private VPC IP (CPU side) ────────────────────────────────────────────────
 # GPU→CPU Redis/MongoDB traffic uses this. GPU's own private IP is not
@@ -84,23 +87,27 @@ GPU_CONFIG: dict[str, dict] = {
 
 # ── Redis Queue → Worker Service mapping ──────────────────────────────────────
 QUEUE_WORKER_MAP: dict[str, str] = {
-    "sd15_tasks":       "manual_gen_worker",
-    "image_tasks":      "manual_gen_worker",
-    "model_tasks":      "manual_gen_worker",
-    "rig_model":        "manual_gen_worker",
-    "manual_gen_tasks": "manual_gen_worker",
+    "sd15_tasks":            "manual_gen_worker",
+    "image_tasks":           "manual_gen_worker",
+    "model_tasks":           "manual_gen_worker",
+    "rig_model":             "manual_gen_worker",
+    "manual_gen_tasks":      "manual_gen_worker",
+    "manual_gen_tasks_spot": "manual_gen_worker",
 }
 
 # ── All GPU Redis Queues ──────────────────────────────────────────────────────
 # Orchestrator polls every queue listed here when deciding whether the GPU
 # has work or is idle. Adding a queue here is required for the GPU to be
 # auto-started when work arrives and auto-stopped when idle.
+# NOTE: manual_gen_tasks_spot is the ACTIVE queue (see GPU_INSTANCE_MAP in
+# .env.cpu) — omitting it made the orchestrator blind to real work.
 GPU_QUEUES = (
     "sd15_tasks",
     "image_tasks",
     "model_tasks",
     "rig_model",
     "manual_gen_tasks",
+    "manual_gen_tasks_spot",
 )
 
 # ── Orchestrator Tuning ───────────────────────────────────────────────────────
