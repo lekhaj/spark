@@ -52,3 +52,30 @@ after every attach.
 
 Both scripts are **idempotent-ish and gated**: they print the plan and require
 `--yes` to mutate. Destructive deletes are never automatic.
+
+## Post-switch checklist (learned 2026-06-11, the 1d→1b relocation)
+
+A new/changed instance is NOT done when it boots. Verify each of these — every
+one bit us during the first relocation:
+
+1. **Security group**: the CPU SG must allow Redis 6379 + Mongo 27017 from the
+   *new instance's* SG (rules are SG-to-SG, they don't follow the volume).
+2. **CPU private IP pinning**: `.env.gpu` (REDIS_*/MONGO*) and `app/infra.py`
+   pin the CPU's private IP — verify it matches `172.31.26.6` (it changes if
+   the CPU instance is ever replaced).
+3. **`app/infra.py`**: GPU_INSTANCE_ID / GPU_PUBLIC_IP / GPU_PRIVATE_IP and
+   GPU_QUEUES must reflect the active instance + queue, or the orchestrator
+   manages a ghost.
+4. **CPU `.env.cpu`**: AWS_GPU_INSTANCE_ID, AWS_GPU_IS_SPOT_INSTANCE,
+   GPU_INSTANCE_MAP → restart `fastapi_app.service`.
+5. **Retry capacity errors**: `start-instances` can throw
+   InsufficientInstanceCapacity transiently — retry a few times before
+   declaring an AZ dry (1b succeeded on attempt 2).
+6. **spark-prewarm ran?** `systemctl status spark-prewarm` + sentinel
+   `/var/run/spark-prewarm.done`. On a snapshot-restored volume the first
+   model load crawls (~4 MB/s mmap) until prewarm initializes the blocks.
+7. **Exactly one worker service**: `manual_gen_worker.service` only.
+   Legacy units (`trellis_worker`, `spark-gpu-worker`) each carry their own
+   AutoShutdown clock → racing stop_instances. Keep them disabled.
+8. **End-to-end test from the CPU**: queue a flux job via
+   `/manual-gen/queue/flux` and confirm image_url lands in the run doc.
