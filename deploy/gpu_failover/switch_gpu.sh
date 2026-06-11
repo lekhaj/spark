@@ -16,7 +16,7 @@
 set -euo pipefail
 
 REGION="${AWS_REGION:-us-east-1}"
-ROAMING_VOL="${ROAMING_VOL:-vol-0c7bb27c340f01b05}"
+ROAMING_VOL="${ROAMING_VOL:-vol-03e4c94a61881e7b2}"
 EIP_ALLOC="${EIP_ALLOC:-eipalloc-0db12aa4d8be94e92}"
 ROOT_DEV="${ROOT_DEV:-/dev/xvda}"
 START_TIMEOUT="${START_TIMEOUT:-300}"

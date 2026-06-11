@@ -19,7 +19,7 @@ active, so the CPU never has to chase a changing address.
 
 | Thing | ID |
 |---|---|
-| Models volume (roaming root, 256 GB) | `vol-0c7bb27c340f01b05` *(replaced after relocation)* |
+| Models volume (roaming root, 256 GB, us-east-1b) | `vol-03e4c94a61881e7b2` |
 | On-demand g6e (us-east-1b) | `i-089872baa8e109ca3` |
 | Spot g6e (us-east-1d, dead AZ) | `i-0f7766b2b07e8b372` |
 | Elastic IP (52.91.128.47) | `eipalloc-0db12aa4d8be94e92` |
@@ -77,5 +77,12 @@ one bit us during the first relocation:
 7. **Exactly one worker service**: `manual_gen_worker.service` only.
    Legacy units (`trellis_worker`, `spark-gpu-worker`) each carry their own
    AutoShutdown clock → racing stop_instances. Keep them disabled.
-8. **End-to-end test from the CPU**: queue a flux job via
+8. **IAM instance profile**: a NEW instance launches with no profile — the
+   worker then fails S3 uploads with "Unable to locate credentials" *after*
+   a full inference. Attach `ec2_s3` (`aws ec2 associate-iam-instance-profile
+   --instance-id <id> --iam-instance-profile Name=ec2_s3`, works while
+   running) and restart `manual_gen_worker` so boto3 re-resolves credentials.
+9. **End-to-end test from the CPU**: queue a flux job via
    `/manual-gen/queue/flux` and confirm image_url lands in the run doc.
+   If a stale run blocks queueing ("already queued"), mark the orphan
+   `status=error` in `manual_gen_stage_runs` first.
