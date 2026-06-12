@@ -25,6 +25,7 @@ from app.routes.schema_routes import router as schema_router
 from app.routes.spec_gen_routes import router as spec_gen_router
 from app.routes.journey_routes import router as journey_router
 from app.routes.refiner_routes import router as refiner_router
+from app.routes.asset_run_routes import router as asset_run_router
 
 # Bring in the generator and DB helpers from the biome package
 from app.src_biome_gen import database as db_module
@@ -115,6 +116,8 @@ app.include_router(spec_gen_router, prefix="/spec-gen", tags=["SpecGen"])
 app.include_router(journey_router, prefix="", tags=["Journeys"])
 # Refiner chat proxy (CycleZero U02) — keys stay server-side
 app.include_router(refiner_router, prefix="/refiner", tags=["Refiner"])
+# asset_spec -> GPU pipeline bridge (CycleZero U05)
+app.include_router(asset_run_router, prefix="/asset-runs", tags=["AssetRuns"])
 
 # --- Biome generation endpoints (moved from c_main.py) ---
 # In-memory background task store for lightweight single-node async tasks
