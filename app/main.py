@@ -21,6 +21,7 @@ from app.routes.mongo_routes import router as mongo_router
 from app.routes.aws_routes import router as aws_router
 from app.routes.orchestrator_router import router as orchestrator_router
 from app.routes.manual_gen_routes import router as manual_gen_router
+from app.routes.schema_routes import router as schema_router
 
 # Bring in the generator and DB helpers from the biome package
 from app.src_biome_gen import database as db_module
@@ -103,6 +104,8 @@ app.include_router(orchestrator_router, prefix="/orchestrate", tags=["Orchestrat
 app.include_router(orchestrator_router, prefix="", tags=["Orchestrator"])
 # Manual generation pipeline — CRUD + queue (consumed by spark_studio)
 app.include_router(manual_gen_router, prefix="/manual-gen", tags=["ManualGen"])
+# Versioned spec schemas (CycleZero T00) — consumed by spark_studio /studio/schemas
+app.include_router(schema_router, prefix="/schemas", tags=["Schemas"])
 
 # --- Biome generation endpoints (moved from c_main.py) ---
 # In-memory background task store for lightweight single-node async tasks
