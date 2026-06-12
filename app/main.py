@@ -23,6 +23,7 @@ from app.routes.orchestrator_router import router as orchestrator_router
 from app.routes.manual_gen_routes import router as manual_gen_router
 from app.routes.schema_routes import router as schema_router
 from app.routes.spec_gen_routes import router as spec_gen_router
+from app.routes.journey_routes import router as journey_router
 
 # Bring in the generator and DB helpers from the biome package
 from app.src_biome_gen import database as db_module
@@ -109,6 +110,8 @@ app.include_router(manual_gen_router, prefix="/manual-gen", tags=["ManualGen"])
 app.include_router(schema_router, prefix="/schemas", tags=["Schemas"])
 # Versioned JSON-artifact runs (CycleZero T03/T04) — paste-mode spec generation
 app.include_router(spec_gen_router, prefix="/spec-gen", tags=["SpecGen"])
+# Journeys + impact items (CycleZero U01) — hybrid shell persistence
+app.include_router(journey_router, prefix="", tags=["Journeys"])
 
 # --- Biome generation endpoints (moved from c_main.py) ---
 # In-memory background task store for lightweight single-node async tasks
