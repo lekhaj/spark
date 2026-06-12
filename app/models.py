@@ -25,7 +25,7 @@ class SubAssetOutput(BaseModel):
     s3_3d_uri: str
     
 class Assets(BaseModel):
-    _id : str = Field(alias="_id",description="Unique identifier for the asset")
+    id : str = Field(alias="_id",description="Unique identifier for the asset")
     Asset_name : Dict[str,Dict[str, SubAssetOutput]] =Field(
         default_factory=dict,
         description="A nested dictionary mapping: { asset_type -> { sub_asset_id -> output } }"

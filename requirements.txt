@@ -131,3 +131,4 @@ pathlib2>=2.3.7
 scikit-image>=0.20.0
 scipy>=1.10.0
 opencv-python>=4.8.0
+anthropic>=0.40.0
