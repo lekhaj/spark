@@ -147,6 +147,32 @@ def post_version(key: str, body: SchemaCreate) -> Dict[str, Any]:
     out = _serialize(doc)
     if engine_bound:
         out["engine_sync_required"] = True
+        # T10 auto-draft: a bump (v2+) of an engine-bound schema drafts a
+        # code_change_prompt run with the old-vs-new contract. v1 is the
+        # initial implementation, owned by the engine scaffold tasks.
+        if prev is not None:
+            from app.lib.code_prompt_template import render_schema_bump_prompt
+            from app.routes import spec_gen_routes
+
+            try:
+                draft = spec_gen_routes.draft_code_change_prompt(
+                    col.database if hasattr(col, "database") else _db(),
+                    title=f"{title} schema bump v{prev['version']}→v{version}",
+                    source_kind="schema_bump",
+                    source_ref=f"{key}@{version}",
+                    prompt_text=render_schema_bump_prompt(
+                        schema_key=key,
+                        title=title,
+                        old_version=prev["version"],
+                        old_schema=prev["json_schema"],
+                        new_version=version,
+                        new_schema=body.json_schema,
+                        changelog=body.changelog,
+                    ),
+                )
+                out["code_change_prompt_run_id"] = draft["run_id"]
+            except Exception:  # pragma: no cover — drafting must never block the schema write
+                log.exception("T10 auto-draft failed for %s v%s", key, version)
     return out
 
 

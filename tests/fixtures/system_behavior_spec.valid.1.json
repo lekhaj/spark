@@ -1,0 +1,38 @@
+{
+  "system_id": "vitality",
+  "summary": "Presence tax + combat drain with settlement recovery.",
+  "module_path": "src/systems/vitality.ts",
+  "interface_name": "VitalitySystem",
+  "config": {
+    "base_drain_per_min": 5,
+    "hit_drain": 4,
+    "settlement_recovery": 20,
+    "death_threshold": 0
+  },
+  "behavior_rules": [
+    {
+      "when": "player is inside an active zone",
+      "then": "drain base_drain_per_min, visible on HUD from minute one"
+    },
+    {
+      "when": "player takes a hit",
+      "then": "drain hit_drain immediately"
+    },
+    {
+      "when": "vitality reaches death_threshold",
+      "then": "end run, log cycle_death event"
+    }
+  ],
+  "acceptance_tests": [
+    {
+      "name": "presence tax ticks",
+      "given": "60s in zone, no hits",
+      "expect": "vitality reduced by exactly base_drain_per_min"
+    },
+    {
+      "name": "death ends run",
+      "given": "vitality 3, hit for 4",
+      "expect": "cycle_death emitted once"
+    }
+  ]
+}

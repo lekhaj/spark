@@ -34,6 +34,7 @@ from pydantic import BaseModel, Field
 from jsonschema import Draft202012Validator
 
 from worker.lib import manual_gen_schema as mgs
+from app.lib.code_prompt_template import CODE_CHANGE_PROMPT_SCHEMA
 
 log = logging.getLogger("spec_gen_routes")
 
@@ -95,20 +96,24 @@ def _validate_output(db, stage: str, schema_version: int, output: Dict[str, Any]
 
 # ─── Create + reads (T03) ─────────────────────────────────────────────────────
 
-@router.post("/runs")
-def create_run(body: SpecGenCreate) -> Dict[str, Any]:
-    if body.mode == "agent":
-        raise HTTPException(501, "agent mode not enabled")
-
-    db = _db()
-
-    active_schema = db[SCHEMAS_COLLECTION].find_one(
-        {"schema_key": body.stage, "active": True}
-    )
+def _insert_run(
+    db,
+    *,
+    project_id: str,
+    entity_id: str,
+    stage: str,
+    output: Dict[str, Any],
+    mode: str = "paste",
+    input_ref: Optional[str] = None,
+    prompt_text: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Versioning + pinned validation + insert. Shared by the route and the
+    T10 auto-draft hook (which runs inside schema_routes' request)."""
+    active_schema = db[SCHEMAS_COLLECTION].find_one({"schema_key": stage, "active": True})
     if not active_schema:
-        raise HTTPException(404, f"no active schema for stage '{body.stage}' — seed it via /schemas first")
+        raise HTTPException(404, f"no active schema for stage '{stage}' — seed it via /schemas first")
 
-    scope = {"project_id": body.project_id, "entity_id": body.entity_id, "stage": body.stage}
+    scope = {"project_id": project_id, "entity_id": entity_id, "stage": stage}
     latest = db[COLLECTION].find_one(scope, sort=[("major", -1), ("minor", -1)])
     if latest is None:
         major, minor = 1, 0
@@ -123,20 +128,20 @@ def create_run(body: SpecGenCreate) -> Dict[str, Any]:
             major, minor = latest["major"], latest["minor"] + 1
 
     schema_version = active_schema["version"]
-    errors = _validate_output(db, body.stage, schema_version, body.output)
+    errors = _validate_output(db, stage, schema_version, output)
 
     doc = {
         "run_id":            uuid.uuid4().hex,
-        "project_id":        body.project_id,
-        "entity_id":         body.entity_id,
-        "stage":             body.stage,
+        "project_id":        project_id,
+        "entity_id":         entity_id,
+        "stage":             stage,
         "schema_version":    schema_version,
         "major":             major,
         "minor":             minor,
-        "mode":              body.mode,
-        "input_ref":         body.input_ref,
-        "prompt_text":       body.prompt_text,
-        "output":            body.output,
+        "mode":              mode,
+        "input_ref":         input_ref,
+        "prompt_text":       prompt_text,
+        "output":            output,
         "status":            "valid" if not errors else "invalid",
         "validation_errors": errors,
         "feedback":          [],
@@ -144,6 +149,67 @@ def create_run(body: SpecGenCreate) -> Dict[str, Any]:
     }
     db[COLLECTION].insert_one(doc)
     return _serialize(doc)
+
+
+@router.post("/runs")
+def create_run(body: SpecGenCreate) -> Dict[str, Any]:
+    if body.mode == "agent":
+        raise HTTPException(501, "agent mode not enabled")
+    return _insert_run(
+        _db(),
+        project_id=body.project_id,
+        entity_id=body.entity_id,
+        stage=body.stage,
+        output=body.output,
+        mode=body.mode,
+        input_ref=body.input_ref,
+        prompt_text=body.prompt_text,
+    )
+
+
+def draft_code_change_prompt(
+    db,
+    *,
+    title: str,
+    source_kind: str,
+    source_ref: str,
+    prompt_text: str,
+    project_id: str = "cyclezero",
+    entity_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """T10 auto-draft: store a code_change_prompt run (valid, NOT accepted).
+
+    Auto-seeds the code_change_prompt schema on first use so the draft never
+    404s in a fresh database.
+    """
+    if not db[SCHEMAS_COLLECTION].find_one({"schema_key": "code_change_prompt", "active": True}):
+        db[SCHEMAS_COLLECTION].insert_one({
+            "schema_key":   "code_change_prompt",
+            "version":      1,
+            "title":        "Code Change Prompt",
+            "engine_bound": False,
+            "json_schema":  CODE_CHANGE_PROMPT_SCHEMA,
+            "changelog":    "auto-seed on first T10 draft",
+            "created_at":   datetime.now(timezone.utc),
+            "active":       True,
+        })
+    output = {
+        "prompt_id":      uuid.uuid4().hex,
+        "title":          title,
+        "target_repo":    "cyclezero",
+        "source_kind":    source_kind,
+        "source_ref":     source_ref,
+        "prompt_text":    prompt_text,
+        "applied":        False,
+        "applied_commit": None,
+    }
+    return _insert_run(
+        db,
+        project_id=project_id,
+        entity_id=entity_id or f"engine:{source_ref}",
+        stage="code_change_prompt",
+        output=output,
+    )
 
 
 def _get_run(db, run_id: str) -> Dict[str, Any]:
@@ -263,6 +329,26 @@ def reject_run(run_id: str) -> Dict[str, Any]:
     if doc["status"] == "accepted":
         raise HTTPException(409, "accepted runs cannot be rejected — accept a different run instead")
     db[COLLECTION].update_one({"run_id": run_id}, {"$set": {"status": "rejected"}})
+    return _serialize(_get_run(db, run_id))
+
+
+class AppliedBody(BaseModel):
+    commit: str = Field(min_length=1)
+
+
+@router.post("/runs/{run_id}/applied")
+def mark_applied(run_id: str, body: AppliedBody) -> Dict[str, Any]:
+    """T10: record that an accepted code_change_prompt was applied to the engine."""
+    db = _db()
+    doc = _get_run(db, run_id)
+    if doc["stage"] != "code_change_prompt":
+        raise HTTPException(409, f"applied only exists for code_change_prompt runs (stage={doc['stage']})")
+    if doc["status"] != "accepted":
+        raise HTTPException(409, f"only accepted prompts can be marked applied (status={doc['status']})")
+    db[COLLECTION].update_one(
+        {"run_id": run_id},
+        {"$set": {"output.applied": True, "output.applied_commit": body.commit}},
+    )
     return _serialize(_get_run(db, run_id))
 
 

@@ -36,6 +36,8 @@ lib64/
 # letting __pycache__ / *.so back in via the lib/ exception.
 !worker/lib/
 !worker/lib/*.py
+!app/lib/
+!app/lib/*.py
 parts/
 sdist/
 var/
