@@ -203,8 +203,13 @@ def create_asset_run(body: AssetRunCreate) -> Dict[str, Any]:
 
 
 def _poll_run(db, asset_id: str, stage: str, after: datetime) -> Optional[Dict[str, Any]]:
+    """Latest manual-gen run for (char_label, stage). We intentionally do NOT
+    filter on created_at: the pipeline stores it as a float epoch while the
+    asset-run doc uses a datetime, so a ``$gte`` comparison silently matches
+    nothing in production. The stage machine only polls a stage AFTER it has
+    queued that stage, so the most-recent run for the stage is always ours."""
     return db[mgs.COLLECTION].find_one(
-        {"char_label": asset_id, "stage": stage, "created_at": {"$gte": after}},
+        {"char_label": asset_id, "stage": stage},
         sort=[("created_at", pymongo.DESCENDING)],
     )
 
