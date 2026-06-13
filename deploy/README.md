@@ -1,12 +1,17 @@
-# Spark spot-bootstrap
+# Spark GPU bootstrap
 
-Auto-installs missing stages, models, and pip deps on the L40S spot instance
+Auto-installs missing stages, models, and pip deps on the L40S GPU instance
 at every boot. **The git repo is the only source of truth** — never edit code
 on the live instance.
 
+> The GPU (`spark_gpu` `i-089872baa8e109ca3`, 52.91.128.47) is now an
+> **on-demand** instance, normally **stopped** — start it before a run, stop it
+> after. It was a spot box historically; this bootstrap workflow is identical
+> either way (it runs at every boot regardless of lifecycle).
+
 ## What it does
 
-On every boot of the spot instance, `spark-bootstrap.service` runs **before**
+On every boot of the GPU instance, `spark-bootstrap.service` runs **before**
 `manual_gen_worker.service` and:
 
 1. `git fetch && git reset --hard origin/main` in `/home/ec2-user/spark`

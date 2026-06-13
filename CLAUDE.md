@@ -15,7 +15,7 @@ Env files: source as `set -a && source .env.cpu && source .env.secrets && set +a
 
 ## Deploy & infra (READ BEFORE SSH)
 
-See `LOCAL_INFRA.md` for the authoritative SSH/host table (CPU `18.207.13.85`, GPU spot `52.91.128.47`, key at `/Users/lekhaj/Documents/us_cpu_key.pem`). `deploy/README.md` documents the **spot bootstrap** workflow — the git repo is the only source of truth on the GPU spot instance; **never edit code on the live instance**.
+See `LOCAL_INFRA.md` for the authoritative SSH/host table (CPU `18.207.13.85`, GPU on-demand `spark_gpu` `52.91.128.47` `i-089872baa8e109ca3`, normally **stopped** — start before a GPU run; key at `/Users/lekhaj/Documents/us_cpu_key.pem`). `deploy/README.md` documents the **bootstrap** workflow — the git repo is the only source of truth on the on-demand GPU instance; **never edit code on the live instance**. (The GPU was a spot box historically; it is now on-demand. The bootstrap mechanics are unchanged — only the lifecycle differs.)
 
 **Adding a new GPU stage** is a 7-step workflow (model → handler → schema → UI → installer → spec.yaml → push). The full sequence is in `deploy/README.md` — follow it exactly, including adding the stage name to `worker/lib/manual_gen_schema.py:STAGE_NAMES` and writing `deploy/install/<stage>.sh`. The bootstrap service auto-installs on next boot.
 
@@ -36,7 +36,7 @@ FastAPI + Gradio. Owns orchestration, persistence, REST surface; no GPU work.
 - **`app/src_biome_gen/`** — biome generator + DB module used by the Gradio biome flows.
 
 ### GPU tier (`worker/`)
-Pulls tasks from Redis queues, runs models, writes results back. Runs on the spot instance.
+Pulls tasks from Redis queues, runs models, writes results back. Runs on the on-demand GPU instance (`spark_gpu`).
 
 - **`worker/run_manual_worker.py`** — main entry point for the manual-gen worker (started by `manual_gen_worker.service`).
 - **`worker/workers/manual_gen_worker.py`** — dispatch by stage to model handlers.
