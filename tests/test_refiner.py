@@ -30,7 +30,8 @@ def client():
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch):
     for var in ("ANTHROPIC_API_KEY", "REFINER_ANTHROPIC_MODEL",
-                "REFINER_OPENAI_BASE", "REFINER_OPENAI_MODEL", "REFINER_OPENAI_KEY"):
+                "REFINER_OPENAI_BASE", "REFINER_OPENAI_MODEL", "REFINER_OPENAI_KEY",
+                "REFINER_BEDROCK", "REFINER_BEDROCK_MODEL"):
         monkeypatch.delenv(var, raising=False)
 
 
@@ -45,6 +46,51 @@ def test_registry_env_driven(client, monkeypatch):
     monkeypatch.setenv("REFINER_OPENAI_MODEL", "qwen2.5")
     ids = [p["id"] for p in client.get("/refiner/providers").json()]
     assert ids == ["anthropic", "openai_compat"]
+
+
+def test_bedrock_is_default_no_key(client, monkeypatch):
+    monkeypatch.setenv("REFINER_BEDROCK", "1")
+    out = client.get("/refiner/providers").json()
+    assert out == [{"id": "bedrock", "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0"}]
+
+    # When both Bedrock and a direct key are set, Bedrock wins as default (first).
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    ids = [p["id"] for p in client.get("/refiner/providers").json()]
+    assert ids[0] == "bedrock"
+
+
+def test_bedrock_provider_passthrough(client, monkeypatch):
+    monkeypatch.setenv("REFINER_BEDROCK", "1")
+    monkeypatch.setenv("REFINER_BEDROCK_MODEL", "us.anthropic.claude-haiku-4-5-20251001-v1:0")
+    captured = {}
+
+    class FakeBlock:
+        type = "text"
+        text = "hello from bedrock"
+
+    class FakeMessages:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            class R:
+                content = [FakeBlock()]
+            return R()
+
+    class FakeClient:
+        messages = FakeMessages()
+
+    monkeypatch.setattr(
+        refiner_providers.AnthropicBedrockProvider, "_client", lambda self: FakeClient()
+    )
+
+    r = client.post("/refiner/chat", json={
+        "messages": [{"role": "user", "content": "add a stamina system"}],
+        "context": {"project_id": "cyclezero", "schemas": ["zone_spec"], "entities": []},
+    })
+    assert r.status_code == 200
+    assert r.json()["reply"] == "hello from bedrock"
+    assert captured["model"] == "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+    assert captured["max_tokens"] == 2000
+    assert "journey_plan" in captured["system"]
 
 
 def test_anthropic_provider_passthrough(client, monkeypatch):

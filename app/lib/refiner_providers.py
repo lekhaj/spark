@@ -8,7 +8,12 @@ Providers are swappable via env config — Anthropic (Haiku 4.5) today, any
 OpenAI-compatible local model (Ollama / LM Studio on the L40S) later.
 
 Env:
-  ANTHROPIC_API_KEY        — enables AnthropicProvider
+  REFINER_BEDROCK          — "1"/"true" enables AnthropicBedrockProvider (no key;
+                             uses the instance IAM role / standard AWS cred chain)
+  REFINER_BEDROCK_MODEL    — Bedrock model id or inference-profile id
+                             (default "us.anthropic.claude-haiku-4-5-20251001-v1:0")
+  AWS_REGION / AWS_DEFAULT_REGION — region for Bedrock (default "us-east-1")
+  ANTHROPIC_API_KEY        — enables AnthropicProvider (direct API, alternative to Bedrock)
   REFINER_ANTHROPIC_MODEL  — default "claude-haiku-4-5"
   REFINER_OPENAI_BASE      — e.g. http://localhost:11434/v1 — enables OpenAICompatProvider
   REFINER_OPENAI_MODEL     — model name for the compat endpoint
@@ -27,6 +32,34 @@ class RefinerProvider(Protocol):
     model: str
 
     def chat(self, system: str, messages: List[Dict[str, str]]) -> str: ...
+
+
+class AnthropicBedrockProvider:
+    """Anthropic via AWS Bedrock — no API key; uses the CPU box's IAM role
+    (standard boto3 credential chain). Same Messages API shape as the direct SDK."""
+
+    id = "bedrock"
+
+    def __init__(self, model: str, region: str):
+        self.model = model
+        self._region = region
+
+    def _client(self):
+        import anthropic  # lazy — only needed when this provider is configured
+
+        return anthropic.AnthropicBedrock(aws_region=self._region)
+
+    def chat(self, system: str, messages: List[Dict[str, str]]) -> str:
+        response = self._client().messages.create(
+            model=self.model,
+            max_tokens=MAX_TOKENS,
+            system=system,
+            messages=messages,
+        )
+        return "".join(
+            block.text for block in response.content
+            if getattr(block, "type", "") == "text"
+        )
 
 
 class AnthropicProvider:
@@ -85,6 +118,16 @@ class OpenAICompatProvider:
 def get_providers() -> Dict[str, RefinerProvider]:
     """Env-driven registry. Order matters: first configured = default."""
     providers: Dict[str, RefinerProvider] = {}
+    if os.environ.get("REFINER_BEDROCK", "").lower() in ("1", "true", "yes"):
+        providers["bedrock"] = AnthropicBedrockProvider(
+            model=os.environ.get(
+                "REFINER_BEDROCK_MODEL",
+                "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+            ),
+            region=os.environ.get("AWS_REGION")
+            or os.environ.get("AWS_DEFAULT_REGION")
+            or "us-east-1",
+        )
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if anthropic_key:
         providers["anthropic"] = AnthropicProvider(
