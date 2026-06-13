@@ -52,6 +52,14 @@ def _apply_result(db, msg: dict) -> None:
                     logger.warning(f"[result_consumer] No run doc for {session_id[:8]} view={view}")
             else:
                 mark_done(db, session_id, stage, image_url, s3_key)
+                # Rig stage carries a second export (FBX) + rig_status
+                # (auto|manual). Persist them alongside the GLB so the asset-run
+                # bridge can build the dual-export manifest entry.
+                extra = {k: msg[k] for k in ("fbx_url", "fbx_s3_key", "rig_status")
+                         if msg.get(k) is not None}
+                if extra:
+                    from worker.lib.manual_gen_schema import update_run, _coll_for_stage
+                    update_run(db, session_id, extra, coll=_coll_for_stage(stage))
 
         elif status == "error":
             mark_error(db, session_id, stage, msg.get("error", "unknown error"))

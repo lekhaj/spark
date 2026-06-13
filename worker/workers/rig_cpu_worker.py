@@ -21,7 +21,7 @@ import time
 import requests
 
 from workers.base_worker import BaseWorker
-from result_channel import push_running, push_glb_done, push_error
+from result_channel import push_running, push_rig_done, push_error
 from models.rig_model import run_rig
 
 logger = logging.getLogger("RigCPUWorker")
@@ -89,14 +89,16 @@ class RigCPUWorker(BaseWorker):
         if not input_glb_url:
             raise ValueError("rig task missing input_glb_url")
 
-        char_type = task.get("char_type") or params.get("char_type", "humanoid")
-        params    = {**params, "char_type": char_type}
+        char_type  = task.get("char_type") or params.get("char_type", "humanoid")
+        morphology = task.get("morphology") or params.get("morphology", "B1_humanoid")
+        params     = {**params, "char_type": char_type, "morphology": morphology}
 
         push_running(r, session_id, stage)
 
         with tempfile.TemporaryDirectory() as tmp:
             input_glb  = os.path.join(tmp, "input.glb")
             output_glb = os.path.join(tmp, "output_rigged.glb")
+            output_fbx = os.path.join(tmp, "output_rigged.fbx")
 
             resp = requests.get(input_glb_url, timeout=60)
             resp.raise_for_status()
@@ -105,16 +107,27 @@ class RigCPUWorker(BaseWorker):
 
             logger.info(
                 f"[rig] session={session_id[:8]}  char_type={char_type}  "
-                f"input={os.path.getsize(input_glb)/1e6:.2f} MB"
+                f"morphology={morphology}  input={os.path.getsize(input_glb)/1e6:.2f} MB"
             )
-            run_rig(input_glb, output_glb, params)
+            result = run_rig(input_glb, output_glb, params, output_fbx_path=output_fbx)
 
             char_slug = (task.get("char_name") or "unknown").replace(" ", "_").lower()
             major     = task.get("major", 1)
             minor     = task.get("minor", 0)
-            s3_key    = f"chars/{char_slug}/v{major}.{minor}/{char_slug}_{major}_{minor}_rigged.glb"
-            self.upload_file(output_glb, s3_key, "model/gltf-binary")
-            url = self.s3_public_url(s3_key)
+            base      = f"chars/{char_slug}/v{major}.{minor}/{char_slug}_{major}_{minor}_rigged"
 
-        push_glb_done(r, session_id, stage, url, s3_key)
-        logger.info(f"[rig] → {url}")
+            glb_key = f"{base}.glb"
+            self.upload_file(output_glb, glb_key, "model/gltf-binary")
+            glb_url = self.s3_public_url(glb_key)
+
+            fbx_url = fbx_key = ""
+            if result.get("fbx"):
+                fbx_key = f"{base}.fbx"
+                self.upload_file(output_fbx, fbx_key, "application/octet-stream")
+                fbx_url = self.s3_public_url(fbx_key)
+
+        push_rig_done(r, session_id, stage, glb_url, glb_key,
+                      fbx_url=fbx_url, fbx_s3_key=fbx_key,
+                      rig_status=result.get("rig_status", "auto"))
+        logger.info(f"[rig] → {glb_url}  rig_status={result.get('rig_status')}"
+                    f"{'  + FBX ' + fbx_url if fbx_url else ''}")

@@ -423,6 +423,14 @@ class ManualGenWorker(BaseWorker):
         s3_key = _char_s3_key(task, "trellis", "glb")
         url    = self._upload_bytes(glb_bytes, s3_key, "model/gltf-binary")
         push_glb_done(r, session_id, stage, url, s3_key)
+        # Free trellis VRAM after upload. In an asset 3D fan-out (trellis +
+        # pixal3d + hunyuan3d queued together, drained sequentially) this keeps
+        # the next generator's headroom clean even though the subprocess
+        # handlers also evict — belt-and-suspenders for the no-fail guarantee.
+        try:
+            self._mgr.evict("trellis")
+        except Exception:
+            pass
         logger.info(f"[trellis] → {url}")
 
     def _handle_pixal3d(self, task: dict, r) -> None:

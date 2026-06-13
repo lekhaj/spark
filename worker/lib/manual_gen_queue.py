@@ -693,22 +693,32 @@ def queue_rig(
     minor: int,
     char_type: str = "humanoid",
     trellis_src_ver: str = "",
+    src_stage: str = "trellis",
+    morphology: str = "B1_humanoid",
     queue: Optional[str] = None,
     on_status: StatusCallback = None,
 ) -> QueueResult:
     """
-    Queue an Auto-Rig Pro rigging job over the most recent (or specified)
-    trellis output. ``trellis_src_ver`` is "M.N"; if empty, uses latest done.
+    Queue an Auto-Rig Pro rigging job over the most recent (or specified) 3D
+    mesh output. ``src_stage`` selects which generator's GLB to rig
+    (``trellis`` | ``pixal3d`` | ``hunyuan3d``); ``trellis_src_ver`` is "M.N"
+    (if empty, uses latest done). ``morphology`` (B1..B7) lets the headless rig
+    script pick the per-morphology strategy and the FBX export rig-type.
     """
     stage = "rig"
-    src_url = _resolve_source_image_url(db, char_label, "trellis", trellis_src_ver)
+    src_url = _resolve_source_image_url(db, char_label, src_stage, trellis_src_ver)
     if not src_url:
         raise ValueError(
-            f"No 'done' trellis output found for {char_label} version="
+            f"No 'done' {src_stage} output found for {char_label} version="
             f"{trellis_src_ver or 'latest'}"
         )
 
-    params = {"char_type": char_type, "trellis_src_ver": trellis_src_ver}
+    params = {
+        "char_type": char_type,
+        "trellis_src_ver": trellis_src_ver,
+        "src_stage": src_stage,
+        "morphology": morphology,
+    }
     prep = prepare_run(db, char_label, stage, major, minor, params=params)
     mgs.save_run_params(db, prep.run_id, "", "", params, stage=stage)
 
@@ -723,9 +733,10 @@ def queue_rig(
             "major": prep.major,
             "minor": prep.minor,
             "params": params,
-            "input_stage": "trellis",
+            "input_stage": src_stage,
             "input_url": src_url,
             "char_type": char_type,
+            "morphology": morphology,
         },
         queue=queue_name,
         r=r,

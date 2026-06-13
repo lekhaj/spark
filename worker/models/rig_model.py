@@ -83,27 +83,35 @@ def run_rig(
     input_glb_path:  str,
     output_glb_path: str,
     params:          dict | None = None,
-) -> None:
+    output_fbx_path: str | None = None,
+) -> dict:
     """
-    Call Blender headlessly to rig *input_glb_path* using Auto-Rig Pro.
+    Call Blender headlessly to rig *input_glb_path* using Auto-Rig Pro and
+    export BOTH a clean deform-only GLB (*output_glb_path*) and, when
+    *output_fbx_path* is given, an engine-ready ARP FBX.
 
-    The rigged GLB is written to *output_glb_path*.  Raises on failure.
+    Returns a dict ``{"glb": path, "fbx": path|None, "rig_status": "auto"|"manual"}``.
+
+    Rigging failure is **non-fatal**: the headless script falls back to exporting
+    the unrigged mesh and prints ``[RIG_RESULT] rig_status=manual``. We only
+    raise if no GLB is produced at all.
 
     Args:
         input_glb_path:  Absolute path to the source (unrigged) GLB file.
         output_glb_path: Absolute path for the output (rigged) GLB file.
-        params:          Override dict — any subset of PARAM_DEFAULTS keys:
-                           char_type (str) — "humanoid" | "quadruped" |
-                                             "bird" | "fish"
+        params:          Override dict — char_type ("humanoid"|"quadruped"|
+                         "bird"|"fish") and morphology (B1_humanoid..B7_arthropod).
+        output_fbx_path: Absolute path for the engine FBX (optional).
 
     Raises:
         FileNotFoundError: If BLENDER_PATH binary is not found.
-        RuntimeError:      If Blender exits non-zero or output not created.
+        RuntimeError:      If Blender produced no GLB at all.
     """
     p = {**PARAM_DEFAULTS, **(params or {})}
 
-    raw_type  = str(p["char_type"])
-    char_type = _CHAR_TYPE_MAP.get(raw_type.lower(), "humanoid")
+    raw_type   = str(p["char_type"])
+    char_type  = _CHAR_TYPE_MAP.get(raw_type.lower(), "humanoid")
+    morphology = str(p.get("morphology") or "B1_humanoid")
 
     if not os.path.isfile(BLENDER_PATH):
         raise FileNotFoundError(
@@ -116,8 +124,9 @@ def run_rig(
         )
 
     logger.info(
-        f"[rig] run  char_type={char_type}  "
+        f"[rig] run  char_type={char_type}  morphology={morphology}  "
         f"input={os.path.basename(input_glb_path)}  "
+        f"fbx={'yes' if output_fbx_path else 'no'}  "
         f"timeout={BLENDER_TIMEOUT_SEC}s"
     )
 
@@ -133,7 +142,10 @@ def run_rig(
         "--input",          input_glb_path,
         "--output",         output_glb_path,
         "--character_type", char_type,
+        "--morphology",     morphology,
     ]
+    if output_fbx_path:
+        cmd += ["--output_fbx", output_fbx_path]
 
     proc = subprocess.run(
         cmd,
@@ -142,27 +154,40 @@ def run_rig(
         timeout=BLENDER_TIMEOUT_SEC,
     )
 
-    # Surface relevant log lines
+    # Surface relevant log lines + parse the rig-result marker.
     blender_out = proc.stdout + proc.stderr
+    rig_status = "auto"
     for line in blender_out.splitlines():
-        if any(tag in line for tag in ("[RIG]", "[ARP]", "Error", "error", "WARNING", "RIGGING")):
+        if "[RIG_RESULT]" in line and "rig_status=manual" in line:
+            rig_status = "manual"
+        if any(tag in line for tag in ("[RIG]", "[ARP]", "[RIG_RESULT]",
+                                       "Error", "error", "WARNING", "RIGGING")):
             logger.info(f"  blender: {line}")
 
-    output_exists = os.path.exists(output_glb_path)
+    glb_ok = os.path.exists(output_glb_path) and os.path.getsize(output_glb_path) > 0
+    fbx_ok = bool(output_fbx_path) and os.path.exists(output_fbx_path) \
+        and os.path.getsize(output_fbx_path) > 0
 
     # Check output file FIRST: Blender can SIGSEGV during Python finalisation
     # (e.g. double quit_blender in atexit) even after a fully successful export.
     # If the GLB is present and non-empty we treat that as success regardless of
     # exit code, and just log a warning about the non-zero code.
-    if output_exists and os.path.getsize(output_glb_path) > 0:
+    if glb_ok:
         if proc.returncode != 0:
             logger.warning(
                 f"[rig] Blender exited {proc.returncode} but output GLB exists "
                 f"— treating as success (likely post-export crash in atexit/GC)"
             )
         size_mb = os.path.getsize(output_glb_path) / 1e6
-        logger.info(f"[rig] done  rigged GLB {size_mb:.2f} MB")
-        return
+        logger.info(
+            f"[rig] done  rig_status={rig_status}  GLB {size_mb:.2f} MB"
+            f"{'  + FBX' if fbx_ok else ''}"
+        )
+        return {
+            "glb": output_glb_path,
+            "fbx": output_fbx_path if fbx_ok else None,
+            "rig_status": rig_status,
+        }
 
     # Output not found — now the exit code matters for the error message
     if proc.returncode != 0:

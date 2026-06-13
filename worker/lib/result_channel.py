@@ -48,6 +48,16 @@ def push_glb_done(r, session_id: str, stage: str, glb_url: str, s3_key: str) -> 
     _push(r, session_id, stage, "done", glb_url=glb_url, s3_key=s3_key)
 
 
+def push_rig_done(r, session_id: str, stage: str, glb_url: str, s3_key: str,
+                  fbx_url: str = "", fbx_s3_key: str = "",
+                  rig_status: str = "auto") -> None:
+    """Rig worker finished — clean deform-only GLB + engine FBX uploaded.
+    rig_status is 'auto' (skeleton bound) or 'manual' (auto-rig fell back; mesh
+    shipped unrigged for an artist to finish)."""
+    _push(r, session_id, stage, "done", glb_url=glb_url, s3_key=s3_key,
+          fbx_url=fbx_url, fbx_s3_key=fbx_s3_key, rig_status=rig_status)
+
+
 def push_error(r, session_id: str, stage: str, error: str) -> None:
     """GPU worker hit an error."""
     _push(r, session_id, stage, "error", error=error)
