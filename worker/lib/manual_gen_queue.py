@@ -722,8 +722,10 @@ def queue_rig(
     prep = prepare_run(db, char_label, stage, major, minor, params=params)
     mgs.save_run_params(db, prep.run_id, "", "", params, stage=stage)
 
+    # Rig is a CPU stage consumed by rig_cpu_worker from the dedicated
+    # ``rig_tasks`` queue (NOT the GPU active queue). It reads ``input_glb_url``.
     r = _redis_client()
-    queue_name = queue or resolve_active_queue(r)
+    queue_name = queue or "rig_tasks"
     task_id = push_task_minimal(
         payload={
             "type": "rig",
@@ -735,6 +737,7 @@ def queue_rig(
             "params": params,
             "input_stage": src_stage,
             "input_url": src_url,
+            "input_glb_url": src_url,   # key rig_cpu_worker actually reads
             "char_type": char_type,
             "morphology": morphology,
         },
