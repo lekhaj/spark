@@ -28,8 +28,11 @@ Routes mounted at ``/asset-runs`` (set in app/main.py).
 from __future__ import annotations
 
 import logging
+import os
+import smtplib
 import uuid
 from datetime import datetime, timezone
+from email.message import EmailMessage
 from typing import Any, Dict, List, Optional
 
 import pymongo
@@ -76,6 +79,45 @@ _CHAR_TYPE = {
 def _db():
     """Open a Mongo connection. Overridden in tests (mongomock)."""
     return mgs.get_db()
+
+
+def _notify_complete(doc: Dict[str, Any]) -> None:
+    """Free email notification via Gmail SMTP (stdlib). Best-effort: silently
+    skips if SMTP_* env is unset and never raises into the request path.
+    Config in .env.secrets: SMTP_HOST/PORT/USER/PASSWORD/SMTP_TO."""
+    host = os.environ.get("SMTP_HOST")
+    user = os.environ.get("SMTP_USER")
+    pw   = os.environ.get("SMTP_PASSWORD")
+    to   = os.environ.get("SMTP_TO") or user
+    if not (host and user and pw and to):
+        return
+    try:
+        m = doc.get("manifest_entry") or {}
+        st = doc["stages"]
+        rs = (st["rigged"].get("rig_status") or "auto")
+        lines = [
+            f"Asset: {doc['asset_id']}  v{doc['spec_version']}  ({doc.get('morphology')})",
+            f"Rig: {rs}    Generator: {st.get('model3d_chosen')}",
+            "",
+            f"Image: {st['image'].get('url') or '-'}",
+            f"GLB:   {st['rigged'].get('url') or '-'}",
+            f"FBX:   {st['rigged'].get('fbx_url') or '-'}",
+            "",
+            "These are public S3 links — open in a browser / 3D viewer.",
+        ]
+        msg = EmailMessage()
+        msg["Subject"] = f"✅ Asset ready: {doc['asset_id']} v{doc['spec_version']} (rig {rs})"
+        msg["From"] = user
+        msg["To"] = to
+        msg.set_content("\n".join(lines))
+        port = int(os.environ.get("SMTP_PORT", "587"))
+        with smtplib.SMTP(host, port, timeout=20) as s:
+            s.starttls()
+            s.login(user, pw)
+            s.send_message(msg)
+        log.info("asset-run %s completion email sent to %s", doc["asset_run_id"], to)
+    except Exception:
+        log.exception("completion email failed (non-fatal) for %s", doc.get("asset_run_id"))
 
 
 # ── Stage submitters (patched out in tests) ───────────────────────────────────
@@ -310,6 +352,7 @@ def _refresh(db, doc: Dict[str, Any]) -> Dict[str, Any]:
         doc["status"] = "complete"
         doc["completed_at"] = datetime.now(timezone.utc)
         changed = True
+        _notify_complete(doc)
 
     if changed:
         db[COLLECTION].update_one(
