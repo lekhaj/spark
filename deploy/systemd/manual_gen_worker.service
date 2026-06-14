@@ -1,0 +1,22 @@
+[Unit]
+# manual_gen_worker — the g7e/Blackwell manual-gen GPU worker.
+# Self-contained (no git-reset bootstrap dependency): the golden AMI ships the
+# validated code + conda envs, so this unit just runs the worker on boot. Code
+# updates happen by re-baking or an explicit deploy, never a surprise git reset.
+Description=Spark manual-gen GPU worker (g7e/Blackwell)
+After=network-online.target spark-prewarm.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ec2-user
+Group=ec2-user
+WorkingDirectory=/home/ec2-user/spark
+ExecStart=/home/ec2-user/spark/worker/gpu_setup/start_manual_worker.sh
+Restart=on-failure
+RestartSec=10
+# Generous start window — first model touch can lazy-load from EBS.
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
