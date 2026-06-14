@@ -136,6 +136,30 @@ class ManualGenWorker(BaseWorker):
         r          = self.get_redis()
         idle_since = time.time()
 
+        # Spot-reclaim safety: blpop atomically removes the task, so if AWS
+        # reclaims this (spot) box mid-job, systemd sends SIGTERM and the
+        # in-flight task would be lost. Catch SIGTERM/SIGINT and push the
+        # current task back to the FRONT of the queue so it's retried first
+        # when a worker (spot-relaunched or the on-demand) comes back.
+        import signal
+        self._current_task = None
+
+        def _on_term(signum, _frame):
+            t = getattr(self, "_current_task", None)
+            if t is not None:
+                try:
+                    self.get_redis().lpush(self.input_queue, _json.dumps(t))
+                    logger.warning(
+                        f"Signal {signum} — re-queued in-flight task "
+                        f"(stage={t.get('stage','?')}) to front of {self.input_queue}"
+                    )
+                except Exception as exc:
+                    logger.error(f"Failed to re-queue task on signal {signum}: {exc}")
+            raise SystemExit(0)
+
+        signal.signal(signal.SIGTERM, _on_term)
+        signal.signal(signal.SIGINT, _on_term)
+
         while True:
             try:
                 raw = r.blpop(self.input_queue, timeout=30)
@@ -165,6 +189,9 @@ class ManualGenWorker(BaseWorker):
             if active_callback:
                 active_callback()
 
+            # Track the in-flight task so a SIGTERM (spot reclaim) can re-queue it.
+            self._current_task = task
+
             logger.info(
                 f"Task → session={task.get('session_id','?')[:8]}  "
                 f"stage={task.get('stage','?')}  char={task.get('char_label','?')}"
@@ -178,6 +205,7 @@ class ManualGenWorker(BaseWorker):
                 except Exception:
                     pass
             finally:
+                self._current_task = None   # completed — no longer re-queueable
                 if done_callback:
                     done_callback()
 
@@ -486,9 +514,12 @@ class ManualGenWorker(BaseWorker):
         stage      = task.get("stage", "hunyuan3d")
         params     = task.get("params") or {}
 
-        front_url = task.get("input_front") or params.get("front_url", "")
+        # queue_hunyuan3d sends the source image as 'input_url' (the other 3D
+        # stages use 'input_front'); accept either so the contract is forgiving.
+        front_url = (task.get("input_front") or task.get("input_url")
+                     or params.get("front_url", ""))
         if not front_url:
-            raise ValueError("hunyuan3d task missing input_front URL")
+            raise ValueError("hunyuan3d task missing input_front/input_url URL")
 
         front_img = self._download_image(front_url)
 

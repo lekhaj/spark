@@ -15,24 +15,79 @@ CPU_INSTANCE_ID  = "i-0f5a6edd3ce343281"             # new instance (AMI launch 
 # ONE online at a time via the spot-first / on-demand-fallback ladder
 # (worker/lib/gpu_launcher.py). The Elastic IP rides whichever is active, so the
 # CPU always talks to GPU_PUBLIC_IP regardless of which box is up.
-SPOT_GPU_INSTANCE_ID     = "i-083d0209a8615302e"     # spark_gpu_spot_high (preferred)
+SPOT_GPU_INSTANCE_ID     = "i-09fca0acb4cc429f7"     # spark_gpu_spot_high (preferred, relaunched 2026-06-14)
 ONDEMAND_GPU_INSTANCE_ID = "i-05e8570023728c112"     # spark_gpu_high (fallback)
 # Back-compat default for callers that need a single static GPU id. env
 # AWS_GPU_INSTANCE_ID (= on-demand) overrides in aws_service.
 GPU_INSTANCE_ID  = ONDEMAND_GPU_INSTANCE_ID
 
-# ── EIP / placement (us-east-1d) ─────────────────────────────────────────────
-GPU_EIP_ALLOC_ID = "eipalloc-0db12aa4d8be94e92"      # 52.91.128.47 — rides active GPU
+# ── Placement (all GPU in us-east-1d) ────────────────────────────────────────
 GPU_SUBNET_ID    = "subnet-0c5b465f9ede9e6ce"        # us-east-1d
+GPU_AZ           = "us-east-1d"
+
+# ── Two persistent stack root volumes (one per box, no migration) ─────────────
+# Each GPU box keeps its OWN 256GB root in us-east-1d: conda envs + code +
+# ~150GB model cache. They are independent duplicates — there is NO volume
+# migration and NO AMI/snapshot backup (per 2026-06-14 directive). Each is
+# protected from AWS deletion: the spot request is persistent with
+# interruption=stop (reclaim STOPS, never terminates → volume survives), and both
+# volumes have DeleteOnTermination=false (survive an explicit terminate → go
+# 'available' in GPU_AZ, reattachable). Failover = just start the other box.
+SPOT_STACK_VOLUME_ID     = "vol-0507d56e4766e06f6"   # root of spot box
+ONDEMAND_STACK_VOLUME_ID = "vol-06a8484234613a987"   # root of on-demand box (dup of spot's)
+STACK_VOLUME_ID  = SPOT_STACK_VOLUME_ID              # back-compat alias
+GPU_ROOT_DEVICE  = "/dev/xvda"
+
+# ── Two-pinned Elastic IPs (one per box) ─────────────────────────────────────
+# Each box keeps its OWN EIP permanently. The CPU resolves the GPU host IP from
+# whichever box is currently active (see active_gpu_ip()). A box NEVER steals the
+# other's EIP. On a relaunch-from-AMI the box's own EIP is (re)attached.
+SPOT_EIP_ALLOC_ID     = "eipalloc-0d50a0d05c513666a"  # 54.162.11.161 → spot
+ONDEMAND_EIP_ALLOC_ID = "eipalloc-0db12aa4d8be94e92"  # 52.91.128.47  → on-demand
+
+# Per-box descriptor: instance id → its pinned EIP + public IP + lifecycle.
+GPU_BOXES: dict[str, dict] = {
+    SPOT_GPU_INSTANCE_ID: {
+        "lifecycle": "spot",
+        "eip_alloc": SPOT_EIP_ALLOC_ID,
+        "public_ip": "54.162.11.161",
+    },
+    ONDEMAND_GPU_INSTANCE_ID: {
+        "lifecycle": "ondemand",
+        "eip_alloc": ONDEMAND_EIP_ALLOC_ID,
+        "public_ip": "52.91.128.47",
+    },
+}
 
 # ── Public IPs ───────────────────────────────────────────────────────────────
 CPU_PUBLIC_IP = "18.207.13.85"
-# Elastic IP — rides with whichever GPU instance is active (gpu_launcher attaches
-# it on start). Stable across spot/on-demand switches.
-GPU_PUBLIC_IP = "52.91.128.47"
-GPU_PUBLIC_DNS = "ec2-52-91-128-47.compute-1.amazonaws.com"
+# Back-compat constant: the spot is the steady-state active box, so callers that
+# still read a single GPU_PUBLIC_IP get the spot. Prefer active_gpu_ip() which
+# follows the *currently active* box (spot OR on-demand) at runtime.
+GPU_PUBLIC_IP = GPU_BOXES[SPOT_GPU_INSTANCE_ID]["public_ip"]
+GPU_PUBLIC_DNS = "ec2-54-162-11-161.compute-1.amazonaws.com"
 # GPU private IP is AZ/instance-specific and resolved at runtime via IMDS on the
 # GPU side — not pinned here.
+
+
+def active_gpu_ip() -> str:
+    """Public IP of the GPU box the orchestrator currently considers active.
+
+    Reads gpu:active_instance_id from Redis (set by gpu_launcher) and maps it to
+    that box's pinned EIP IP. Falls back to the spot's IP (steady-state primary)
+    if Redis is unavailable or the id is unknown. This is what ssh_to_gpu must
+    use under the two-pinned-EIP model — a single static IP would SSH the wrong
+    box whenever the on-demand is the active one.
+    """
+    try:
+        import redis as _r
+        c = _r.Redis.from_url(REDIS_URL, decode_responses=True)
+        iid = c.get("gpu:active_instance_id")
+        if iid and iid in GPU_BOXES:
+            return GPU_BOXES[iid]["public_ip"]
+    except Exception:
+        pass
+    return GPU_BOXES[SPOT_GPU_INSTANCE_ID]["public_ip"]
 
 # ── Private VPC IP (CPU side) ────────────────────────────────────────────────
 # GPU→CPU Redis/MongoDB traffic uses this. GPU's own private IP is not

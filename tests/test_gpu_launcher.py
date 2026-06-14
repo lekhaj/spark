@@ -6,7 +6,7 @@ boto3 + redis are faked in-process (no AWS, no Redis server). Covers:
   - stick to an already-running active box (no EIP flip mid-job)
   - spot running / spot stopped→started
   - spot can't start (capacity) → on-demand fallback
-  - spot deleted → parallel new-spot launch + on-demand fallback now
+  - spot deleted → on-demand fallback + manual-recovery flag (no AMI auto-relaunch)
 """
 
 import pytest
@@ -155,8 +155,10 @@ def test_spot_capacity_falls_back_to_ondemand(env, monkeypatch):
     assert ec2.launched == []                # no relaunch — spot still exists
 
 
-def test_spot_deleted_launches_parallel_and_uses_ondemand(env, monkeypatch):
-    monkeypatch.setenv("AWS_GPU_AMI_ID", "ami-1")
+def test_spot_deleted_uses_ondemand_and_flags_manual_recovery(env, monkeypatch):
+    """No-AMI / 2-root-volume model: a terminated spot can't be auto-relaunched
+    (no AMI). Serve work on the on-demand now and flag the spot for MANUAL
+    recovery — never launch a new instance automatically."""
     ec2 = FakeEc2({
         "i-spot": {"state": "terminated", "lifecycle": "spot"},
         "i-ondemand": {"state": "stopped"},
@@ -164,23 +166,11 @@ def test_spot_deleted_launches_parallel_and_uses_ondemand(env, monkeypatch):
     rds = FakeRedis()
     _wire(monkeypatch, ec2, rds)
     ok, reason = gl.ensure_gpu_ready()
-    # current work served by on-demand…
     assert ok and reason == "ondemand-started"
     assert ec2.start_calls == ["i-ondemand"]
     assert ("i-ondemand", "eip-1") in ec2.associated
-    # …and a fresh spot was launched in the background, its new id persisted.
-    assert len(ec2.launched) == 1
-    assert rds.get(gl.REDIS_SPOT_KEY) == "i-newspot01"
-
-
-def test_spot_deleted_no_ami_still_uses_ondemand(env, monkeypatch):
-    monkeypatch.delenv("AWS_GPU_AMI_ID", raising=False)
-    ec2 = FakeEc2({
-        "i-spot": {"state": "terminated", "lifecycle": "spot"},
-        "i-ondemand": {"state": "stopped"},
-    })
-    rds = FakeRedis()
-    _wire(monkeypatch, ec2, rds)
-    ok, reason = gl.ensure_gpu_ready()
-    assert ok and reason == "ondemand-started"
-    assert ec2.launched == []                # couldn't relaunch (no AMI), that's fine
+    assert rds.get(gl.REDIS_ACTIVE_KEY) == "i-ondemand"
+    # No automatic instance launch under the no-backup model.
+    assert ec2.launched == []
+    # Spot flagged for manual recovery.
+    assert rds.get(gl.REDIS_SPOT_RECOVER_KEY) == "1"

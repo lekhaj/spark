@@ -128,7 +128,9 @@ def ssh_to_gpu(gpu_type: str, command: str, timeout: int = 60) -> tuple[bool, st
         print(f"[SSH ERROR] Unknown GPU type: {gpu_type}")
         return False, ""
 
-    public_ip   = cfg["public_ip"]
+    # Two-pinned EIPs: the GPU host IP depends on WHICH box is active (spot vs
+    # on-demand), not a single static IP. Resolve it from the active instance.
+    public_ip   = infra.active_gpu_ip()
     ssh_user    = cfg["ssh_user"]
     key_path    = settings.GPU_SSH_KEY_PATH or infra.SSH_KEY_PATH
 

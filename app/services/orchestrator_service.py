@@ -94,14 +94,24 @@ class GPUOrchestrator:
                     continue
                 try:
                     task = json.loads(raw)
-                    ts = task.get("timestamp", 0)
+                    # manual_gen payloads timestamp as 'queued_at'; older/other
+                    # producers use 'timestamp' or 'created_at'. Default to None
+                    # (undateable) — NEVER treat a missing timestamp as age 0, or
+                    # every fresh task gets expired within one poll cycle while the
+                    # GPU is still cold-starting (the goblin-task loss bug).
+                    ts = task.get("queued_at",
+                         task.get("timestamp",
+                         task.get("created_at", None)))
                     if isinstance(ts, str):
                         from datetime import datetime
                         try:
                             dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
                             ts = dt.timestamp()
                         except (ValueError, TypeError):
-                            ts = 0
+                            ts = None
+                    if ts is None:
+                        keep.append(raw)          # can't date it → keep (fail-safe)
+                        continue
                     age = now - ts
                     if age < self.task_ttl:
                         keep.append(raw)
@@ -168,7 +178,7 @@ class GPUOrchestrator:
                 return val
         except Exception:
             pass
-        return infra.ONDEMAND_GPU_INSTANCE_ID
+        return infra.SPOT_GPU_INSTANCE_ID   # spot is the steady-state primary
 
     def _honor_stop_requests(self, total: int):
         """Honour GPU-delegated stop requests from ANY box.
@@ -208,7 +218,7 @@ class GPUOrchestrator:
         gpu_state   = aws_service.get_instance_state(active_iid)
         gpu_running = gpu_state == "running"
 
-        logger.info(f"[GPU] {' '.join(f'{q}={n}' for q,n in queues.items())} active={active_iid} state={gpu_state} ip={infra.GPU_PUBLIC_IP}")
+        logger.info(f"[GPU] {' '.join(f'{q}={n}' for q,n in queues.items())} active={active_iid} state={gpu_state} ip={infra.active_gpu_ip()}")
 
         # Honour GPU-delegated stop requests (any box) before anything else.
         self._honor_stop_requests(total)
@@ -286,7 +296,7 @@ class GPUOrchestrator:
             "gpu_instance": {
                 "instance_id": active_iid,
                 "lifecycle":   lifecycle,
-                "public_ip":   infra.GPU_PUBLIC_IP,
+                "public_ip":   infra.active_gpu_ip(),
                 "state":       gpu_state,
             },
             "queues":       queues,
