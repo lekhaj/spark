@@ -80,7 +80,8 @@ def main() -> None:
     model_id    = os.getenv("HUNYUAN3D_MODEL_ID", "tencent/Hunyuan3D-2")
     shape_pipe  = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(model_id)
     if torch.cuda.is_available():
-        shape_pipe = shape_pipe.cuda()
+        # .to() is in-place and returns None on this pipeline — never reassign.
+        shape_pipe.to("cuda")
 
     _log(f"generating shape  steps={args.steps}  guidance={args.guidance_scale}  seed={args.seed}")
     generator = None
@@ -108,8 +109,9 @@ def main() -> None:
     from hy3dgen.texgen import Hunyuan3DPaintPipeline
 
     paint_pipe = Hunyuan3DPaintPipeline.from_pretrained(model_id)
-    if torch.cuda.is_available():
-        paint_pipe = paint_pipe.cuda()
+    if torch.cuda.is_available() and hasattr(paint_pipe, "to"):
+        # .to() may be in-place and return None — call without reassigning.
+        paint_pipe.to("cuda")
 
     with torch.no_grad():
         # texture_resolution kwarg is supported in Hunyuan3D-2; pass as keyword

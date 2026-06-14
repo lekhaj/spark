@@ -452,10 +452,12 @@ class ManualGenWorker(BaseWorker):
 
         front_img = self._download_image(front_url)
 
-        # Free VRAM for the subprocess
-        for fam in ("flux", "sd", "trellis"):
+        # Fully unload in-process models — the subprocess loads its own multi-GB
+        # models in a separate process, so the in-process families must release
+        # host RAM (not just VRAM) or the box OOM-kills the worker.
+        for fam in ("flux", "flux_cn", "sd", "trellis"):
             try:
-                self._mgr.evict(fam)
+                self._mgr.release(fam)
             except Exception:
                 pass
         logger.info(f"[pixal3d] pre-subprocess  {self._mgr.vram_summary()}")
@@ -490,10 +492,12 @@ class ManualGenWorker(BaseWorker):
 
         front_img = self._download_image(front_url)
 
-        # Evict in-process models — subprocess needs the full 48 GB on L40S
+        # Fully unload in-process models — the subprocess loads its own multi-GB
+        # models in a separate process, so the in-process families must release
+        # host RAM (not just VRAM) or the box OOM-kills the worker.
         for fam in ("flux", "flux_cn", "sd", "trellis"):
             try:
-                self._mgr.evict(fam)
+                self._mgr.release(fam)
             except Exception:
                 pass
         logger.info(f"[hunyuan3d] pre-subprocess  {self._mgr.vram_summary()}")

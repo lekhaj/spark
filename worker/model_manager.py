@@ -211,6 +211,32 @@ class ModelManager:
         torch.cuda.empty_cache()
         logger.info(f"[evict] {family!r} moved to CPU  {self.vram_summary()}")
 
+    def release(self, family: str) -> None:
+        """
+        Fully unload *family* — drop the cached pipeline and free **system RAM**
+        (not just VRAM).
+
+        ``evict`` only moves a pipeline to CPU, so the weights stay resident in
+        host RAM. That is fine when swapping between in-process GPU families, but
+        the subprocess generators (pixal3d, hunyuan3d) load their own multi-GB
+        models in a separate process; if FLUX + TRELLIS.2 are still parked in
+        host RAM the box OOM-kills the worker (g7e.2xlarge has 62 GB). Call this
+        before launching a subprocess generator so the host RAM is actually
+        reclaimed. The family reloads from disk on its next ``ensure``.
+
+        Safe to call even if *family* is not loaded or not registered.
+        """
+        import gc
+
+        entry = self._registry.get(family)
+        if entry is None or entry["pipeline"] is None:
+            return
+
+        entry["pipeline"] = None  # drop the only reference held by the manager
+        gc.collect()
+        torch.cuda.empty_cache()
+        logger.info(f"[release] {family!r} unloaded from RAM  {self.vram_summary()}")
+
     def get(self, family: str) -> Any:
         """
         Return the cached pipeline for *family*.

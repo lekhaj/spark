@@ -77,8 +77,14 @@ def run_pixal3d(front_image: Image.Image, params: dict | None = None) -> bytes:
         ]
         env = {
             **os.environ,
-            "ATTN_BACKEND":     attn,
-            "PIXAL3D_LOW_VRAM": low_vram,
+            "ATTN_BACKEND":        attn,
+            # Pixal3D's sparse config reads SPARSE_ATTN_BACKEND *first* and only
+            # falls back to ATTN_BACKEND if it is unset. The worker env carries
+            # SPARSE_ATTN_BACKEND=xformers for in-process TRELLIS.2, which the
+            # subprocess would otherwise inherit and try to import (xformers is
+            # not installed in the pixal3d env). Pin it to the pixal3d backend.
+            "SPARSE_ATTN_BACKEND": attn,
+            "PIXAL3D_LOW_VRAM":    low_vram,
         }
 
         logger.info(f"[pixal3d] running subprocess: {' '.join(cmd)}")
