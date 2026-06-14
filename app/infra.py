@@ -10,21 +10,29 @@ All services (orchestrator, aws_service, workers) import from here.
 
 # ── EC2 Instance IDs ─────────────────────────────────────────────────────────
 CPU_INSTANCE_ID  = "i-0f5a6edd3ce343281"             # new instance (AMI launch 2026-05-09)
-# Active GPU = on-demand g6e.2xlarge in us-east-1b, booted from the relocated
-# models volume (2026-06-11). env AWS_GPU_INSTANCE_ID overrides in aws_service.
-GPU_INSTANCE_ID  = "i-089872baa8e109ca3"
 
-# spark_l4 (i-0d6b9d6d34ccc053d) was deleted 2026-05-22 — kept only so the
-# loud-warning path in aws_service still recognises the old id.
-DELETED_L4_INSTANCE_ID = "i-0d6b9d6d34ccc053d"
+# GPU fleet (all g7e.2xlarge in us-east-1d, 2026-06-13). The orchestrator brings
+# ONE online at a time via the spot-first / on-demand-fallback ladder
+# (worker/lib/gpu_launcher.py). The Elastic IP rides whichever is active, so the
+# CPU always talks to GPU_PUBLIC_IP regardless of which box is up.
+SPOT_GPU_INSTANCE_ID     = "i-083d0209a8615302e"     # spark_gpu_spot_high (preferred)
+ONDEMAND_GPU_INSTANCE_ID = "i-05e8570023728c112"     # spark_gpu_high (fallback)
+# Back-compat default for callers that need a single static GPU id. env
+# AWS_GPU_INSTANCE_ID (= on-demand) overrides in aws_service.
+GPU_INSTANCE_ID  = ONDEMAND_GPU_INSTANCE_ID
+
+# ── EIP / placement (us-east-1d) ─────────────────────────────────────────────
+GPU_EIP_ALLOC_ID = "eipalloc-0db12aa4d8be94e92"      # 52.91.128.47 — rides active GPU
+GPU_SUBNET_ID    = "subnet-0c5b465f9ede9e6ce"        # us-east-1d
 
 # ── Public IPs ───────────────────────────────────────────────────────────────
 CPU_PUBLIC_IP = "18.207.13.85"
-# Elastic IP — rides with whichever GPU instance is active (see
-# deploy/gpu_failover/). Stable across spot/on-demand switches.
+# Elastic IP — rides with whichever GPU instance is active (gpu_launcher attaches
+# it on start). Stable across spot/on-demand switches.
 GPU_PUBLIC_IP = "52.91.128.47"
 GPU_PUBLIC_DNS = "ec2-52-91-128-47.compute-1.amazonaws.com"
-GPU_PRIVATE_IP = "172.31.81.46"   # on-demand i-089872baa8e109ca3 (us-east-1b)
+# GPU private IP is AZ/instance-specific and resolved at runtime via IMDS on the
+# GPU side — not pinned here.
 
 # ── Private VPC IP (CPU side) ────────────────────────────────────────────────
 # GPU→CPU Redis/MongoDB traffic uses this. GPU's own private IP is not
@@ -112,7 +120,9 @@ GPU_QUEUES = (
 
 # ── Orchestrator Tuning ───────────────────────────────────────────────────────
 TASK_TTL_SECONDS      = 14400   # 4 hours — expire stale queued tasks
-IDLE_SHUTDOWN_SECONDS = 3600    # 60 min idle → stop GPU instance
+# 15 min idle → stop GPU instance. Matches the GPU-side auto_shutdown default and
+# the Gradio panel default. Overridable at runtime via Redis autoshutdown:idle_minutes.
+IDLE_SHUTDOWN_SECONDS = 900
 POLL_INTERVAL_SECONDS = 30      # how often orchestrator checks queues
 
 # ─────────────────────────────────────────────────────────────────────────────

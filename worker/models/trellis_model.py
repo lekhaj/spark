@@ -1,5 +1,5 @@
 """
-trellis_model.py — TRELLIS (JeffreyXiang/TRELLIS-image-large) image-to-3D
+trellis_model.py — TRELLIS.2 (microsoft/TRELLIS.2-4B) image-to-3D
 ===========================================================================
 
 Public API
@@ -8,27 +8,30 @@ Public API
     run_trellis(pipes, front_image, params,
                 side_image=None, back_image=None) -> bytes  (GLB binary)
 
-Multi-view
-----------
-    If side_image or back_image are provided alongside front_image, the
-    pipeline uses run_multi_image([front, side, back]) for higher quality.
-    Side/back are optional — front-only always works.
+Single-view
+-----------
+    TRELLIS.2's `pipeline.run(image)` is single-image (it preprocesses the
+    image itself, including background removal, when preprocess_image=True).
+    side_image / back_image are accepted for call-site compatibility but are
+    ignored with a warning — TRELLIS.2 has no multi-image entry point.
 
 TrellisPipes (dataclass)
 ------------------------
-    pipe          — TrellisImageTo3DPipeline on CUDA
-    rembg_session — rembg session for background removal (or None)
+    pipe          — Trellis2ImageTo3DPipeline on CUDA
+    rembg_session — unused (kept for signature compatibility; None)
 
 Param defaults
 --------------
-    texture_size  (int)  1024  — baked texture atlas resolution
-    simplify      (float) 0.95 — mesh simplification ratio (0-1)
+    texture_size       (int)  1024    — baked texture atlas resolution
+    decimation_target  (int)  200000  — target face count for the exported mesh
+    seed               (int)  42      — sampler seed
 
 Notes
 -----
-- Uses JeffreyXiang/TRELLIS (package: trellis, class: TrellisImageTo3DPipeline).
-- Repo must be cloned to TRELLIS_REPO_PATH (~/trellis) and added to PYTHONPATH.
-- GLB export uses postprocessing_utils.to_glb(gaussian, mesh).
+- Uses microsoft/TRELLIS.2 (package: trellis2, class: Trellis2ImageTo3DPipeline).
+- Repo must be cloned to TRELLIS_REPO_PATH (~/trellis) and on PYTHONPATH.
+- GLB export uses o_voxel.postprocess.to_glb(...) on the MeshWithVoxel result,
+  with WebP-embedded textures.
 - Returns raw GLB bytes — caller uploads directly.
 """
 
@@ -37,6 +40,7 @@ from __future__ import annotations
 import io
 import logging
 import os
+import tempfile
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -45,12 +49,21 @@ from PIL import Image
 
 logger = logging.getLogger("models.trellis")
 
+# expandable_segments reduces fragmentation OOMs on the big 4B sparse model.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 TRELLIS_REPO_PATH = os.getenv("TRELLIS_REPO_PATH", os.path.expanduser("~/trellis"))
 
 PARAM_DEFAULTS: dict = {
-    "texture_size": 1024,
-    "simplify":     0.95,
+    "texture_size":      1024,
+    "decimation_target": 200000,
+    "seed":              42,
 }
+
+# TRELLIS.2 voxel grid is normalized to the unit cube centered at origin.
+_AABB = [[-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]]
+# nvdiffrast hard triangle limit — simplify the raw mesh below this before export.
+_NVDIFFRAST_LIMIT = 16_777_216
 
 
 @dataclass
@@ -60,20 +73,21 @@ class TrellisPipes:
 
 
 def load_trellis(
-    model_id:   str  = "JeffreyXiang/TRELLIS-image-large",
+    model_id:   str  = "microsoft/TRELLIS.2-4B",
     repo_path:  str  = TRELLIS_REPO_PATH,
     remove_bg:  bool = True,
 ) -> TrellisPipes:
     """
-    Load TRELLIS pipeline onto CUDA.
+    Load the TRELLIS.2 pipeline onto CUDA.
 
     Args:
-        model_id:  HuggingFace model ID (JeffreyXiang/TRELLIS-image-large)
-        repo_path: Path to cloned TRELLIS repo — added to sys.path.
-        remove_bg: Whether to load rembg background-removal session.
+        model_id:  HuggingFace model ID (microsoft/TRELLIS.2-4B).
+        repo_path: Path to cloned TRELLIS.2 repo — added to sys.path.
+        remove_bg: Unused — TRELLIS.2 removes the background internally during
+                   run(preprocess_image=True). Kept for call-site compatibility.
 
     Raises:
-        ImportError: If trellis package is not importable.
+        ImportError: If the trellis2 package is not importable.
                      Set PYTHONPATH=/home/ec2-user/trellis
     """
     import sys
@@ -81,46 +95,21 @@ def load_trellis(
         sys.path.insert(0, repo_path)
         logger.info(f"[trellis] Added repo to sys.path: {repo_path}")
 
-    logger.info(f"[trellis] Loading pipeline: {model_id}")
+    logger.info(f"[trellis] Loading TRELLIS.2 pipeline: {model_id}")
     try:
-        from trellis.pipelines import TrellisImageTo3DPipeline
+        from trellis2.pipelines import Trellis2ImageTo3DPipeline
     except ImportError as exc:
         raise ImportError(
-            "trellis package not found. "
+            "trellis2 package not found. "
             f"Set PYTHONPATH={repo_path}\n"
             f"(repo_path={repo_path!r}  error={exc})"
         ) from exc
 
-    pipe = TrellisImageTo3DPipeline.from_pretrained(model_id)
+    pipe = Trellis2ImageTo3DPipeline.from_pretrained(model_id)
     pipe.cuda()
-    logger.info("[trellis] Pipeline loaded on CUDA.")
+    logger.info("[trellis] TRELLIS.2 pipeline loaded on CUDA.")
 
-    rembg_session = None
-    if remove_bg:
-        try:
-            import rembg
-            rembg_session = rembg.new_session("u2net")
-            logger.info("[trellis] rembg loaded (u2net).")
-        except ImportError:
-            logger.warning("[trellis] rembg not installed — background will not be removed.")
-
-    return TrellisPipes(pipe=pipe, rembg_session=rembg_session)
-
-
-def _prepare_image(image: Image.Image, rembg_session) -> Image.Image:
-    """Remove background (if session present), composite on white, resize to 512×512."""
-    image = image.convert("RGBA")
-
-    if rembg_session is not None:
-        try:
-            import rembg
-            image = rembg.remove(image, session=rembg_session)
-        except Exception as exc:
-            logger.warning(f"[trellis] rembg failed: {exc} — using original image")
-
-    bg = Image.new("RGBA", image.size, (255, 255, 255, 255))
-    bg.paste(image, mask=image.split()[3])
-    return bg.convert("RGB").resize((512, 512))
+    return TrellisPipes(pipe=pipe, rembg_session=None)
 
 
 def run_trellis(
@@ -131,76 +120,79 @@ def run_trellis(
     back_image:  Image.Image | None = None,
 ) -> bytes:
     """
-    Run TRELLIS on one or more views and return a GLB binary.
+    Run TRELLIS.2 on the front view and return a GLB binary.
 
     Args:
         pipes:       TrellisPipes from load_trellis().
         front_image: PIL.Image — required front-view character image.
         params:      Override dict — any subset of PARAM_DEFAULTS keys:
-                       texture_size (int)   — texture atlas resolution
-                       simplify     (float) — mesh simplification ratio
-        side_image:  Optional PIL.Image — side view for multi-image mode.
-        back_image:  Optional PIL.Image — back view for multi-image mode.
+                       texture_size      (int) — texture atlas resolution
+                       decimation_target (int) — target exported face count
+                       seed              (int) — sampler seed
+        side_image:  Ignored (TRELLIS.2 is single-image) — warns if supplied.
+        back_image:  Ignored (TRELLIS.2 is single-image) — warns if supplied.
 
     Returns:
-        bytes — raw GLB binary.
-
-    Notes:
-        - If side_image or back_image are provided, uses run_multi_image()
-          for higher quality reconstruction.
-        - If only front_image, uses single-image run().
-        - Always produces a valid GLB regardless of which views are supplied.
+        bytes — raw GLB binary (textures embedded as WebP).
     """
     import sys
     if TRELLIS_REPO_PATH not in sys.path:
         sys.path.insert(0, TRELLIS_REPO_PATH)
 
-    from trellis.utils import postprocessing_utils
+    import o_voxel
 
-    p            = {**PARAM_DEFAULTS, **(params or {})}
-    texture_size = int(p["texture_size"])
-    simplify     = float(p["simplify"])
+    if side_image is not None or back_image is not None:
+        logger.warning(
+            "[trellis] side/back views supplied but TRELLIS.2 is single-image — "
+            "using front view only."
+        )
 
-    front_prep = _prepare_image(front_image, pipes.rembg_session)
+    p                 = {**PARAM_DEFAULTS, **(params or {})}
+    texture_size      = int(p["texture_size"])
+    decimation_target = int(p["decimation_target"])
+    seed              = int(p["seed"])
 
-    # Collect extra views that were actually provided
-    extra_views = []
-    if side_image is not None:
-        extra_views.append(_prepare_image(side_image, pipes.rembg_session))
-    if back_image is not None:
-        extra_views.append(_prepare_image(back_image, pipes.rembg_session))
-
-    multi_view = len(extra_views) > 0
+    image = front_image.convert("RGB")
 
     logger.info(
-        f"[trellis] run  views={'front+' + '+'.join(['side','back'][:len(extra_views)]) if multi_view else 'front'}  "
-        f"texture={texture_size}  simplify={simplify}"
+        f"[trellis] run  texture={texture_size}  "
+        f"decimation={decimation_target}  seed={seed}"
     )
 
     with torch.no_grad():
-        if multi_view:
-            images = [front_prep] + extra_views
-            outputs = pipes.pipe.run_multi_image(
-                images,
-                formats=["mesh", "gaussian"],
-            )
-        else:
-            outputs = pipes.pipe.run(
-                front_prep,
-                formats=["mesh", "gaussian"],
-            )
+        mesh = pipes.pipe.run(image, seed=seed, preprocess_image=True)[0]
+        # Cap raw triangle count to nvdiffrast's limit before texturing/export.
+        mesh.simplify(_NVDIFFRAST_LIMIT)
 
-    glb = postprocessing_utils.to_glb(
-        outputs["gaussian"][0],
-        outputs["mesh"][0],
-        simplify=simplify,
-        texture_size=texture_size,
-        verbose=False,
-    )
+        glb = o_voxel.postprocess.to_glb(
+            vertices          = mesh.vertices,
+            faces             = mesh.faces,
+            attr_volume       = mesh.attrs,
+            coords            = mesh.coords,
+            attr_layout       = mesh.layout,
+            voxel_size        = mesh.voxel_size,
+            aabb              = _AABB,
+            decimation_target = decimation_target,
+            texture_size      = texture_size,
+            remesh            = True,
+            remesh_band       = 1,
+            remesh_project    = 0,
+            verbose           = False,
+        )
 
-    buf = io.BytesIO()
-    glb.export(buf, file_type="glb")
-    glb_bytes = buf.getvalue()
+    # o_voxel's GLB object writes via .export(path, extension_webp=...); it has no
+    # in-memory writer, so round-trip through a temp file to get the bytes.
+    with tempfile.NamedTemporaryFile(suffix=".glb", delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        glb.export(tmp_path, extension_webp=True)
+        with open(tmp_path, "rb") as fh:
+            glb_bytes = fh.read()
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
 
     torch.cuda.empty_cache()
     logger.info(f"[trellis] done  size={len(glb_bytes) // 1024} KB")

@@ -15,6 +15,7 @@ import redis as _redis
 from app.config import settings
 from app import infra
 from app.services import aws_service
+from worker.lib.gpu_launcher import ensure_gpu_ready, REDIS_ACTIVE_KEY
 
 logger = logging.getLogger("orchestrator")
 
@@ -156,6 +157,43 @@ class GPUOrchestrator:
         # Fallback: check VRAM
         return aws_service.is_gpu_worker_running(self._gpu_alias)
 
+    # ── Active GPU resolution ─────────────────────────────────────────────────
+
+    def _active_iid(self) -> str:
+        """The instance the EIP currently rides (set by gpu_launcher), or the
+        on-demand default if nothing has been recorded yet."""
+        try:
+            val = r.get(REDIS_ACTIVE_KEY)
+            if val:
+                return val
+        except Exception:
+            pass
+        return infra.ONDEMAND_GPU_INSTANCE_ID
+
+    def _honor_stop_requests(self, total: int):
+        """Honour GPU-delegated stop requests from ANY box.
+
+        The GPU-side autoshutdown publishes ``autoshutdown:stop_requested:<iid>``
+        when it wants to stop but lacks ec2:StopInstances (S3-only profile). It
+        already verified its own queues are empty + no in-flight task. With two
+        boxes (on-demand + a parallel spot) either may publish, so we scan all
+        keys and stop each requester — unless new work arrived meanwhile.
+        """
+        try:
+            keys = list(r.scan_iter(match="autoshutdown:stop_requested:*"))
+        except Exception as e:
+            logger.warning(f"[GPU] could not scan stop requests: {e}")
+            return
+        for key in keys:
+            iid = key.rsplit(":", 1)[-1]
+            if total == 0:
+                logger.warning(f"[GPU] Stop requested by GPU-side autoshutdown — stopping {iid}")
+                r.delete(key)
+                aws_service.stop_instance(iid)
+            else:
+                logger.info(f"[GPU] Stop request for {iid} cleared — new tasks arrived")
+                r.delete(key)
+
     # ── Main orchestration loop ───────────────────────────────────────────────
 
     async def manage_gpu(self):
@@ -166,36 +204,30 @@ class GPUOrchestrator:
 
         queues      = self.get_queue_lengths()
         total       = sum(queues.values())
-        gpu_state   = aws_service.get_instance_state(self._gpu_alias)
+        active_iid  = self._active_iid()
+        gpu_state   = aws_service.get_instance_state(active_iid)
         gpu_running = gpu_state == "running"
 
-        logger.info(f"[GPU] {' '.join(f'{q}={n}' for q,n in queues.items())} instance={gpu_state} ip={infra.GPU_PUBLIC_IP}")
+        logger.info(f"[GPU] {' '.join(f'{q}={n}' for q,n in queues.items())} active={active_iid} state={gpu_state} ip={infra.GPU_PUBLIC_IP}")
 
-        # GPU-delegated stop: the GPU-side autoshutdown publishes this when it
-        # decided to stop but lacks ec2:StopInstances (S3-only instance profile).
-        # It already verified queues-empty + no in-flight task, so honour it —
-        # unless new work arrived since the request.
-        stop_req_key = f"autoshutdown:stop_requested:{infra.GPU_INSTANCE_ID}"
-        if gpu_running and r.get(stop_req_key):
-            if total == 0:
-                logger.warning(f"[GPU] Stop requested by GPU-side autoshutdown — stopping {infra.GPU_INSTANCE_ID}")
-                r.delete(stop_req_key)
-                aws_service.stop_instance(self._gpu_alias)
-                self.idle_since = None
-                return
-            logger.info("[GPU] Stop request found but new tasks arrived — clearing request")
-            r.delete(stop_req_key)
+        # Honour GPU-delegated stop requests (any box) before anything else.
+        self._honor_stop_requests(total)
 
         if total > 0:
             self.idle_since = None          # tasks arrived — reset idle clock
             if not gpu_running:
-                logger.info(f"[GPU] {total} task(s) queued — starting instance...")
-                if not aws_service.start_instance(self._gpu_alias):
-                    logger.error("[GPU] Failed to start instance — will retry next cycle")
+                logger.info(f"[GPU] {total} task(s) queued — bringing a GPU online (spot-first)...")
+                ok, reason = ensure_gpu_ready()
+                logger.info(f"[GPU] ensure_gpu_ready → ok={ok} reason={reason}")
+                if not ok:
+                    logger.error("[GPU] Could not bring a GPU online — will retry next cycle")
                     return
+                active_iid = self._active_iid()   # may now be spot or on-demand
             self._ensure_workers_for_queues(queues)
         else:
-            # No work in any queue — track idle time and stop when threshold hit
+            # No work in any queue — track idle time and stop the active box.
+            # (Each box also self-stops via GPU-side auto_shutdown; this is the
+            # CPU backstop for the box the EIP currently rides.)
             if not gpu_running:
                 self.idle_since = None      # already stopped, nothing to do
             else:
@@ -227,16 +259,20 @@ class GPUOrchestrator:
                         else:
                             logger.warning(
                                 f"[GPU] Idle threshold reached ({self.idle_shutdown // 60} min), "
-                                f"worker not active — backstop-stopping {infra.GPU_INSTANCE_ID}"
+                                f"worker not active — backstop-stopping {active_iid}"
                             )
-                            aws_service.stop_instance(self._gpu_alias)
+                            aws_service.stop_instance(active_iid)
                             self.idle_since = None
 
     # ── Status ────────────────────────────────────────────────────────────────
 
     def get_status(self) -> dict:
         queues      = self.get_queue_lengths()
-        gpu_state   = aws_service.get_instance_state(self._gpu_alias)
+        active_iid  = self._active_iid()
+        gpu_state   = aws_service.get_instance_state(active_iid)
+        lifecycle   = ("spot" if active_iid == infra.SPOT_GPU_INSTANCE_ID
+                       else "on-demand" if active_iid == infra.ONDEMAND_GPU_INSTANCE_ID
+                       else "unknown")
 
         idle_elapsed = None
         if self.idle_since:
@@ -248,7 +284,8 @@ class GPUOrchestrator:
             "idle_shutdown_minutes": self.idle_shutdown // 60,
             "autoshutdown":          self.get_autoshutdown_state(),
             "gpu_instance": {
-                "instance_id": infra.GPU_INSTANCE_ID,
+                "instance_id": active_iid,
+                "lifecycle":   lifecycle,
                 "public_ip":   infra.GPU_PUBLIC_IP,
                 "state":       gpu_state,
             },
@@ -257,7 +294,7 @@ class GPUOrchestrator:
         }
 
     async def run(self):
-        logger.info(f"[ORCHESTRATOR] Started — poll={self.poll_interval}s gpu={infra.GPU_INSTANCE_ID} ({infra.GPU_PUBLIC_IP})")
+        logger.info(f"[ORCHESTRATOR] Started — poll={self.poll_interval}s spot={infra.SPOT_GPU_INSTANCE_ID} ondemand={infra.ONDEMAND_GPU_INSTANCE_ID} eip={infra.GPU_PUBLIC_IP}")
         while True:
             try:
                 await self.manage_gpu()

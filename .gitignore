@@ -97,3 +97,4 @@ Hunyuan3D-2.1/
 3D_pipeline_compress/
 generated_files/
 .gradio/
+.venv-test/

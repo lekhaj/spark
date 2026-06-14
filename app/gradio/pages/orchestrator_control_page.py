@@ -124,7 +124,9 @@ def create_orchestrator_ui():
                     gpu = status["gpu_instance"]
                     state = gpu.get("state", "unknown")
                     icon = "🟢" if state == "running" else "🔴" if state in ["stopped", "terminated"] else "🟡"
-                    status_text += f"**GPU:** {icon} {state.capitalize()} ({gpu.get('public_ip', '?')})\n"
+                    lifecycle = gpu.get("lifecycle", "")
+                    life_tag = f" · {lifecycle}" if lifecycle and lifecycle != "unknown" else ""
+                    status_text += f"**GPU:** {icon} {state.capitalize()}{life_tag} ({gpu.get('public_ip', '?')})\n"
 
                 if "queues" in status:
                     queues = status["queues"]
@@ -154,11 +156,11 @@ def create_orchestrator_ui():
 
         def handle_mode_toggle(auto_mode: bool):
             if auto_mode:
-                gr.Warning(
-                    "⚠️ spark_l4 instance has been DELETED. "
-                    "GPU management now uses the spot instance only (spark_gpu_spot). "
-                    "Fixed-instance start/stop calls will fail — use the spot flow.",
-                    duration=10,
+                gr.Info(
+                    "Auto scaling ON — work brings a GPU online spot-first "
+                    "(g7e), falling back to on-demand if spot is unavailable. "
+                    "Idle boxes stop after the threshold below.",
+                    duration=8,
                 )
             result = set_orchestrator_mode(auto_mode)
             if "error" in result:

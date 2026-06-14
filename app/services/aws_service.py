@@ -1,31 +1,12 @@
 import boto3
 import subprocess
 import time
-import warnings
 from app.config import settings
 from app import infra
 
-# ── Spot instance import — DISABLED (re-enable after custom AMI is ready) ────
-# from app.services.spot_gpu_service import spot_gpu
-
-_L4_WARNED: set[str] = set()
-
-def _warn_if_l4(instance_id: str, caller: str = "") -> None:
-    """Emit a one-time loud warning when a call targets the deleted spark_l4 instance."""
-    if instance_id == infra.DELETED_L4_INSTANCE_ID:
-        key = f"{caller}:{instance_id}"
-        if key not in _L4_WARNED:
-            _L4_WARNED.add(key)
-        msg = (
-            "\n" + "=" * 70 + "\n"
-            "  ⚠️  WARNING: spark_l4 instance has been DELETED\n"
-            f"  Instance ID {instance_id} no longer exists in AWS.\n"
-            "  Use the SPOT INSTANCE flow (spark_gpu_spot / SpotGPUManager).\n"
-            "  The call will proceed but WILL FAIL at the AWS API level.\n"
-            + "=" * 70
-        )
-        warnings.warn(msg, stacklevel=3)
-        print(msg)
+# GPU lifecycle (spot-first / on-demand-fallback + EIP) is owned by
+# worker/lib/gpu_launcher.py. This module provides the lower-level start/stop/SSH
+# primitives the orchestrator and routes call.
 
 
 def _boto3_kwargs() -> dict:
@@ -107,14 +88,9 @@ def wait_for_instance_state(instance_id: str, target_state: str, timeout: int = 
 
 
 def start_instance(instance_name: str) -> bool:
-    """Start a fixed EC2 instance by alias."""
-    # ── SPOT INSTANCE PATH (disabled) ────────────────────────────────────────
-    # if instance_name.lower() in infra.GPU_ALIAS_INSTANCE_MAP:
-    #     return spot_gpu.ensure_gpu_available()
-    # ─────────────────────────────────────────────────────────────────────────
+    """Start an EC2 instance by alias or raw instance id."""
     try:
         instance_id = get_instance_id(instance_name.lower())
-        _warn_if_l4(instance_id, "start_instance")
         print(f"[AWS] Starting instance: {instance_name} ({instance_id})")
         response = ec2.start_instances(InstanceIds=[instance_id])
         state = response["StartingInstances"][0]["CurrentState"]["Name"]
@@ -127,14 +103,9 @@ def start_instance(instance_name: str) -> bool:
 
 
 def stop_instance(instance_name: str) -> bool:
-    """Stop a fixed EC2 instance by alias."""
-    # ── SPOT INSTANCE PATH (disabled) ────────────────────────────────────────
-    # if instance_name.lower() in infra.GPU_ALIAS_INSTANCE_MAP:
-    #     return spot_gpu.terminate()
-    # ─────────────────────────────────────────────────────────────────────────
+    """Stop an EC2 instance by alias or raw instance id."""
     try:
         instance_id = get_instance_id(instance_name.lower())
-        _warn_if_l4(instance_id, "stop_instance")
         print(f"[AWS] Stopping instance: {instance_name} ({instance_id})")
         response = ec2.stop_instances(InstanceIds=[instance_id])
         state = response["StoppingInstances"][0]["CurrentState"]["Name"]
@@ -157,12 +128,6 @@ def ssh_to_gpu(gpu_type: str, command: str, timeout: int = 60) -> tuple[bool, st
         print(f"[SSH ERROR] Unknown GPU type: {gpu_type}")
         return False, ""
 
-    # ── SPOT INSTANCE PATH (disabled) ────────────────────────────────────────
-    # if gpu_type in infra.GPU_ALIAS_INSTANCE_MAP:
-    #     return spot_gpu.ssh_command(command)
-    # ─────────────────────────────────────────────────────────────────────────
-
-    _warn_if_l4(cfg.get("instance_id", ""), "ssh_to_gpu")
     public_ip   = cfg["public_ip"]
     ssh_user    = cfg["ssh_user"]
     key_path    = settings.GPU_SSH_KEY_PATH or infra.SSH_KEY_PATH
