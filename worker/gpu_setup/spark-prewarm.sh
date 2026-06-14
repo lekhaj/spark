@@ -35,16 +35,20 @@ echo "=== spark-prewarm START $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
 echo "Reading model weights into page cache to defeat EBS snapshot lazy-load."
 
 # ── 1. Critical HF model snapshots ────────────────────────────────────────
-# Only the directories we actually use. Skipping TRELLIS.2 (4B) unless we
-# need it — saves ~30 GB of cache pressure on the 61 GB host.
+# The directories we actually use on g7e (cache dir names verified against the
+# live HF hub cache). The host has 62 GB RAM and the full set is ~140 GB, so
+# only the tail stays resident — listed roughly in first-use order so the
+# heaviest cold-start models (FLUX, TRELLIS.2) get warmed last and survive.
 HF_MODELS=(
-    "models--black-forest-labs--FLUX.1-schnell"
     "models--TencentARC--Pixal3D"
-    "models--camenduru--dinov3-vitl16-pretrain-lvd1689m"
-    "models--facebook--dinov3-vitl16-pretrain-lvd1689m"
+    "models--tencent--Hunyuan3D-2"
+    "models--Shakker-Labs--FLUX.1-dev-ControlNet-Union-Pro-2.0"
+    "models--black-forest-labs--FLUX.1-dev"
     "models--Ruicheng--moge-2-vitl"
     "models--ZhengPeng7--BiRefNet"
-    "models--microsoft--TRELLIS-image-large"
+    "models--camenduru--dinov3-vitl16-pretrain-lvd1689m"
+    "models--microsoft--TRELLIS.2-4B"
+    "models--black-forest-labs--FLUX.1-schnell"
 )
 
 total_bytes=0
