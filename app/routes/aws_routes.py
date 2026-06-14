@@ -4,7 +4,9 @@ from app.services.aws_service import (
 )
 from worker.lib import gpu_launcher
 
-router = APIRouter(prefix="/aws", tags=["AWS Control"])
+# NOTE: main.py mounts this with prefix="/aws", so do NOT repeat it here
+# (that produced the old /aws/aws/* double-prefix).
+router = APIRouter(tags=["AWS Control"])
 
 @router.post("/start/{instance_id}")
 async def start_ec2(instance_id: str):
