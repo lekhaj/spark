@@ -38,12 +38,12 @@ class Settings(BaseSettings):
     # ── EC2 Instance IDs ───────────────────────────────────────────────────
     # See app/infra.py for all infra constants — these override defaults from .env
     AWS_CPU_INSTANCE_ID: Optional[str] = None          # CPU — FastAPI / orchestrator
-    AWS_GPU_INSTANCE_ID: Optional[str] = None          # GPU — g5.2xlarge A10G (active)
+    AWS_GPU_INSTANCE_ID: Optional[str] = None          # GPU — g7e.2xlarge (Blackwell), on-demand id
 
     # ── GPU SSH Configuration ──────────────────────────────────────────────
-    GPU_A10_PUBLIC_IP: Optional[str] = None            # Public IP of GPU instance
+    GPU_PUBLIC_IP: Optional[str] = None                # static GPU IP (runtime uses infra.active_gpu_ip())
     # SSH key path on the orchestrator (CPU instance) used to reach the GPU instance
-    GPU_SSH_KEY_PATH: str = "/home/ubuntu/.ssh/s_spu_key.pem"
+    GPU_SSH_KEY_PATH: str = "/home/ubuntu/.ssh/us_cpu_key.pem"
 
     # ── Spot GPU Instance Config (FUTURE — disabled until custom AMI ready) ─
     # SPOT_AMI_ID: Optional[str] = None

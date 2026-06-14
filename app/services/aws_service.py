@@ -28,13 +28,11 @@ def _boto3_kwargs() -> dict:
 ec2 = boto3.client("ec2", region_name=settings.AWS_REGION, **_boto3_kwargs())
 
 # ── Instance ID map (alias → EC2 instance ID) ────────────────────────────────
-# All GPU aliases map to the single active GPU instance.
-# To swap instances: update infra.py only.
+# One logical GPU alias ("gpu"); raw instance ids pass through get_instance_id
+# unchanged. To swap instances: update infra.py only.
 INSTANCE_MAP = {
-    "cpu":           settings.AWS_CPU_INSTANCE_ID or infra.CPU_INSTANCE_ID,
-    "gpu_a10":       settings.AWS_GPU_INSTANCE_ID or infra.GPU_INSTANCE_ID,
-    "gpu_a10_image": settings.AWS_GPU_INSTANCE_ID or infra.GPU_INSTANCE_ID,
-    "gpu_t4":        settings.AWS_GPU_INSTANCE_ID or infra.GPU_INSTANCE_ID,  # legacy alias
+    "cpu": settings.AWS_CPU_INSTANCE_ID or infra.CPU_INSTANCE_ID,
+    "gpu": settings.AWS_GPU_INSTANCE_ID or infra.GPU_INSTANCE_ID,
 }
 
 # GPU_CONFIG — SSH details per alias (all point to same GPU host for now)
@@ -195,10 +193,10 @@ def restart_gpu_worker(gpu_type: str) -> bool:
 
 def is_gpu_worker_running(gpu_type: str) -> bool:
     """
-    Check if a GPU worker is actively processing.
+    Check if the GPU worker is up / actively processing.
 
-    image-worker  → check systemctl is-active
-    model-worker  → check for running subprocess OR VRAM usage
+    Primary: ``systemctl is-active manual_gen_worker``.
+    Fallback: VRAM usage > 1 GB (worker mid-job with the service flapping).
     """
     gpu_type = gpu_type.lower()
     cfg = GPU_CONFIG.get(gpu_type)
@@ -210,26 +208,11 @@ def is_gpu_worker_running(gpu_type: str) -> bool:
 
     service = cfg["worker_service"]
 
-    # image-worker: direct systemd check
-    if gpu_type == "gpu_a10_image":
-        ok, output = ssh_to_gpu(gpu_type, f"systemctl is-active {service}", timeout=15)
-        result = ok and output.strip() == "active"
-        print(f"[AWS] {service} active={result}")
-        return result
-
-    # model-worker: check for running Python subprocess
-    ok, output = ssh_to_gpu(
-        gpu_type,
-        "pgrep -f 'python.*model_worker_simple\\.py\\|python.*model_worker_trellis\\.py\\|python.*run_trellis' | wc -l",
-        timeout=15,
-    )
-    if ok:
-        try:
-            if int(output.strip()) > 0:
-                print("[AWS] Active processing worker found")
-                return True
-        except (ValueError, IndexError):
-            pass
+    # Primary: is the worker service active?
+    ok, output = ssh_to_gpu(gpu_type, f"systemctl is-active {service}", timeout=15)
+    if ok and output.strip() == "active":
+        print(f"[AWS] {service} active=True")
+        return True
 
     # Fallback: VRAM usage check
     ok, output = ssh_to_gpu(

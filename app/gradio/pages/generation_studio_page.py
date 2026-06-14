@@ -92,7 +92,7 @@ REDIS_QUEUE = os.getenv("MANUAL_GEN_QUEUE", "manual_gen_tasks")
 # AutoShutdown admin UI both know which physical GPU serves each queue.
 #
 # Override via env var GPU_INSTANCE_MAP, comma-separated:
-#   GPU_INSTANCE_MAP=manual_gen_tasks=i-aaa:L4 g6.2xlarge,manual_gen_tasks_spot=i-bbb:L40S g6e.2xlarge
+#   GPU_INSTANCE_MAP=manual_gen_tasks_spot=i-bbb:g7e.2xlarge (Blackwell)
 def _parse_gpu_instance_map() -> dict[str, dict]:
     raw = os.getenv("GPU_INSTANCE_MAP", "").strip()
     if raw:
@@ -116,10 +116,11 @@ def _parse_gpu_instance_map() -> dict[str, dict]:
     # set prewarm=False so the status panel doesn't show "Prewarming forever".
     return {
         "manual_gen_tasks":      {"id": "",
-                                  "label": "Default L4 (set GPU_INSTANCE_MAP to override)",
+                                  "label": "Default (set GPU_INSTANCE_MAP to override)",
                                   "prewarm": False},
-        "manual_gen_tasks_spot": {"id": os.getenv("AWS_GPU_INSTANCE_ID", "").strip(),
-                                  "label": "L40S g6e.2xlarge (spot — auto-resolved)",
+        "manual_gen_tasks_spot": {"id": os.getenv("AWS_GPU_SPOT_INSTANCE_ID", "").strip()
+                                        or os.getenv("AWS_GPU_INSTANCE_ID", "").strip(),
+                                  "label": "g7e.2xlarge Blackwell (spot — auto-resolved)",
                                   "prewarm": True},
     }
 

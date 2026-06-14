@@ -111,39 +111,23 @@ MONGODB_HOST = CPU_PUBLIC_IP
 MONGODB_PORT = 27017
 MONGODB_DB   = "World_builder"
 
-# ── GPU Instance Aliases ──────────────────────────────────────────────────────
-# Maps logical GPU type names → actual instance ID
+# ── GPU Instance Alias ────────────────────────────────────────────────────────
+# ONE logical GPU alias ("gpu"). The orchestrator/launcher choose spot vs
+# on-demand at runtime; ssh_to_gpu resolves the live host IP via active_gpu_ip().
+# The old A10/L4/T4 aliases were removed — the hardware is g7e.2xlarge
+# (NVIDIA RTX PRO 6000 Blackwell). GPU_INSTANCE_ID is the on-demand fallback id;
+# the EIP/IP follow the active box regardless.
+GPU_ALIAS = "gpu"
 GPU_ALIAS_INSTANCE_MAP: dict[str, str] = {
-    "gpu_a10":        GPU_INSTANCE_ID,
-    "gpu_a10_image":  GPU_INSTANCE_ID,
-    "gpu_t4":         GPU_INSTANCE_ID,  # legacy alias — same physical GPU
-    "gpu_l4":         GPU_INSTANCE_ID,
+    GPU_ALIAS: GPU_INSTANCE_ID,
 }
 
 # ── GPU Instance SSH Config (per alias) ──────────────────────────────────────
 GPU_CONFIG: dict[str, dict] = {
-    "gpu_a10": {
+    GPU_ALIAS: {
         "instance_id": GPU_INSTANCE_ID,
         "ssh_user":    GPU_SSH_USER,
-        "public_ip":   GPU_PUBLIC_IP,
-        "worker_service": "manual_gen_worker",
-    },
-    "gpu_a10_image": {
-        "instance_id": GPU_INSTANCE_ID,
-        "ssh_user":    GPU_SSH_USER,
-        "public_ip":   GPU_PUBLIC_IP,
-        "worker_service": "manual_gen_worker",
-    },
-    "gpu_t4": {
-        "instance_id": GPU_INSTANCE_ID,
-        "ssh_user":    GPU_SSH_USER,
-        "public_ip":   GPU_PUBLIC_IP,
-        "worker_service": "manual_gen_worker",
-    },
-    "gpu_l4": {
-        "instance_id": GPU_INSTANCE_ID,
-        "ssh_user":    GPU_SSH_USER,
-        "public_ip":   GPU_PUBLIC_IP,
+        "public_ip":   GPU_PUBLIC_IP,        # static fallback; ssh uses active_gpu_ip()
         "worker_service": "manual_gen_worker",
     },
 }

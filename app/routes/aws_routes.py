@@ -1,9 +1,8 @@
 from fastapi import APIRouter, HTTPException
 from app.services.aws_service import (
     start_instance, stop_instance, get_instance_state,
-    start_gpu_worker, stop_gpu_worker
 )
-from app.services.orchestrator_service import orchestrator
+from worker.lib import gpu_launcher
 
 router = APIRouter(prefix="/aws", tags=["AWS Control"])
 
@@ -31,59 +30,28 @@ async def get_instance_status(instance_id: str):
     state = get_instance_state(instance_id)
     return {"instance": instance_id, "state": state}
 
-# GPU-specific endpoints
-@router.post("/gpu/t4/start")
-async def start_gpu_t4():
-    """Start GPU T4 with worker"""
-    if orchestrator.gpu_states["gpu_t4"] == "running":
-        return {"status": "error", "message": "GPU T4 is already running"}
+# ── GPU lifecycle (g7e, spot-first / on-demand-fallback) ──────────────────────
+# A single logical GPU. Bring-up is owned by gpu_launcher's ladder (spot first,
+# on-demand on capacity loss); shutdown stops the active box. These replace the
+# old per-card (/gpu/t4, /gpu/a10) endpoints from the multi-GPU era.
 
-    success = start_instance("gpu_t4") and start_gpu_worker("gpu_t4")
-    if success:
-        orchestrator.gpu_states["gpu_t4"] = "running"
-        return {"status": "success", "message": "GPU T4 started with worker"}
-    else:
-        orchestrator.gpu_states["gpu_t4"] = "stopped"
-        raise HTTPException(status_code=500, detail="Failed to start GPU T4")
+@router.post("/gpu/start")
+async def start_gpu():
+    """Bring a GPU online (spot-first, on-demand fallback). Force-runs the ladder
+    even if GPU_AUTO_LAUNCH is off."""
+    import os
+    os.environ.setdefault("GPU_AUTO_LAUNCH", "1")
+    ok, reason = gpu_launcher.ensure_gpu_ready()
+    if ok:
+        return {"status": "success", "reason": reason,
+                "instance_id": gpu_launcher.get_active_instance_id()}
+    raise HTTPException(status_code=500, detail=f"Could not bring GPU online: {reason}")
 
-@router.post("/gpu/t4/stop")
-async def stop_gpu_t4():
-    """Stop GPU T4"""
-    if orchestrator.gpu_states["gpu_t4"] == "stopped":
-        return {"status": "error", "message": "GPU T4 is already stopped"}
-
-    success = stop_instance("gpu_t4")
-    if success:
-        orchestrator.gpu_states["gpu_t4"] = "stopped"
-        return {"status": "success", "message": "GPU T4 stopped"}
-    else:
-        orchestrator.gpu_states["gpu_t4"] = "running"
-        raise HTTPException(status_code=500, detail="Failed to stop GPU T4")
-
-@router.post("/gpu/a10/start")
-async def start_gpu_a10():
-    """Start GPU A10 with worker"""
-    if orchestrator.gpu_states["gpu_a10"] == "running":
-        return {"status": "error", "message": "GPU A10 is already running"}
-
-    success = start_instance("gpu_a10") and start_gpu_worker("gpu_a10")
-    if success:
-        orchestrator.gpu_states["gpu_a10"] = "running"
-        return {"status": "success", "message": "GPU A10 started with worker"}
-    else:
-        orchestrator.gpu_states["gpu_a10"] = "stopped"
-        raise HTTPException(status_code=500, detail="Failed to start GPU A10")
-
-@router.post("/gpu/a10/stop")
-async def stop_gpu_a10():
-    """Stop GPU A10"""
-    if orchestrator.gpu_states["gpu_a10"] == "stopped":
-        return {"status": "error", "message": "GPU A10 is already stopped"}
-
-    success = stop_instance("gpu_a10")
-    if success:
-        orchestrator.gpu_states["gpu_a10"] = "stopped"
-        return {"status": "success", "message": "GPU A10 stopped"}
-    else:
-        orchestrator.gpu_states["gpu_a10"] = "running"
-        raise HTTPException(status_code=500, detail="Failed to stop GPU A10")
+@router.post("/gpu/stop")
+async def stop_gpu():
+    """Stop the currently-active GPU box (spot or on-demand)."""
+    ok, reason = gpu_launcher.stop_gpu(force=True)
+    if ok:
+        return {"status": "success", "reason": reason,
+                "instance_id": gpu_launcher.get_active_instance_id()}
+    raise HTTPException(status_code=500, detail=f"Could not stop GPU: {reason}")

@@ -40,7 +40,7 @@ class GPUOrchestrator:
         self.task_ttl       = TASK_TTL_SECONDS
         self.idle_since     = None
         self.auto_mode      = True
-        self._gpu_alias     = "gpu_a10"
+        self._gpu_alias     = infra.GPU_ALIAS   # "gpu" — ssh_to_gpu resolves the live box IP
 
     # ── AutoShutdown control ──────────────────────────────────────────────────
 
