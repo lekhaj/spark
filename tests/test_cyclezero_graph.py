@@ -301,3 +301,35 @@ def test_release_records_spec_version(client):
     rel = client.post(f"/cyclezero/games/{slug}/releases", json={}).json()
     kael_entry = next(e for e in rel["manifest"]["entities"] if e["key"] == "kael")
     assert kael_entry["spec_version"] == "2.1"
+
+
+# ── X0: explore-layer metamodel + schemas ─────────────────────────────────────
+def test_metamodel_has_explore_layers_and_relations():
+    db = mongomock.MongoClient()["mm_test"]
+    layers = {l["layer"] for l in metamodel.list_layers(db)}
+    assert {"npc", "mission", "interaction", "environment", "factor", "outcome"} <= layers
+    kinds = {r["kind"] for r in metamodel.list_relation_types(db)}
+    assert {"CONTAINS", "AFFECTS", "MODIFIES", "GATES", "LEADS_TO", "READS"} <= kinds
+
+
+def test_affects_edge_legality():
+    mm = _mm()
+    entities = _ents(("story", "beat"), ("factor", "trust"), ("character", "kael"))
+    ok = graph.validate_graph(entities, [{"src": "beat", "dst": "trust", "kind": "AFFECTS"}], mm)
+    assert ok["ok"] is True
+    bad = graph.validate_graph(entities, [{"src": "kael", "dst": "trust", "kind": "AFFECTS"}], mm)
+    assert bad["ok"] is False  # character is not a valid AFFECTS source
+
+
+def test_seed_schemas_idempotent_and_valid():
+    from app.cyclezero.schema_seeds import seed_schemas, SCHEMAS
+    from jsonschema import Draft202012Validator
+    db = mongomock.MongoClient()["World_builder_test"]
+    n = seed_schemas(db)
+    assert n == len(SCHEMAS)
+    assert seed_schemas(db) == 0  # idempotent
+    mission = db["spec_schemas"].find_one({"schema_key": "mission_spec", "active": True})
+    # a representative mission body validates against the seeded schema
+    Draft202012Validator(mission["json_schema"]).validate(
+        {"summary": "Save the well", "timer": {"enabled": True, "seconds": 480}}
+    )

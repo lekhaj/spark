@@ -64,6 +64,19 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001 — never block startup on the optional DB
         logger.warning("CycleZero DB init skipped: %s", exc)
 
+    # CycleZero: seed the metamodel (layers + relation types) and default per-layer
+    # schemas into Mongo if absent. Idempotent; best-effort.
+    try:
+        from worker.lib import manual_gen_schema as _mgs
+        from app.cyclezero import metamodel as _cz_mm
+        from app.cyclezero.schema_seeds import seed_schemas as _cz_seed_schemas
+        _db = _mgs.get_db()
+        _cz_mm.ensure_seeded(_db)
+        n = _cz_seed_schemas(_db)
+        logger.info("CycleZero metamodel ready; seeded %s schema(s).", n)
+    except Exception as exc:  # noqa: BLE001 — never block startup on the optional DB
+        logger.warning("CycleZero metamodel/schema seed skipped: %s", exc)
+
     # Start orchestrator + result consumer as background tasks
     orchestrator_task    = asyncio.create_task(orchestrator_main())
     result_consumer_task = asyncio.create_task(result_consumer_main())

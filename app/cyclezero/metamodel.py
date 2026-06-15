@@ -41,9 +41,15 @@ def _db():
 DEFAULT_LAYERS: List[Dict[str, Any]] = [
     {"layer": "scene", "schema_key": "scene_spec", "title": "Scene"},
     {"layer": "character", "schema_key": "character_spec", "title": "Character"},
+    {"layer": "npc", "schema_key": "npc_spec", "title": "NPC"},
     {"layer": "system", "schema_key": "system_spec", "title": "System"},
+    {"layer": "environment", "schema_key": "environment_spec", "title": "Environment / Area theme"},
     {"layer": "story", "schema_key": "story_spec", "title": "Story"},
     {"layer": "quest", "schema_key": "quest_spec", "title": "Quest"},
+    {"layer": "mission", "schema_key": "mission_spec", "title": "Mission"},
+    {"layer": "interaction", "schema_key": "interaction_spec", "title": "Interaction"},
+    {"layer": "factor", "schema_key": "factor_spec", "title": "Factor"},
+    {"layer": "outcome", "schema_key": "outcome_spec", "title": "Outcome"},
     {"layer": "item", "schema_key": "item_spec", "title": "Item"},
     {"layer": "prop", "schema_key": "prop_spec", "title": "Prop"},
     {"layer": "collider", "schema_key": "collider_spec", "title": "Collider"},
@@ -107,7 +113,99 @@ DEFAULT_RELATION_TYPES: List[Dict[str, Any]] = [
     },
     {
         "kind": "OWNS",
-        "src_layers": ["character"],
+        "src_layers": ["character", "npc"],
+        "dst_layers": ["item"],
+        "src_cardinality": "many",
+        "dst_cardinality": "many",
+        "required": False,
+        "dependency": False,
+        "data_schema": None,
+    },
+    # ── Explore-layer relations (X0) ──────────────────────────────────────────
+    # Scene-hub membership: a scene CONTAINS the things shown in its dashboard.
+    # Aggregation edge, NOT a build-order dependency (APPEARS_IN drives order).
+    {
+        "kind": "CONTAINS",
+        "src_layers": ["scene"],
+        "dst_layers": ["character", "npc", "prop", "mission", "interaction",
+                       "environment", "system", "story"],
+        "src_cardinality": "many",
+        "dst_cardinality": "many",
+        "required": False,
+        "dependency": False,
+        "data_schema": None,
+    },
+    # The progress/regress signal. Edge data carries the delta:
+    # {"op": "add"|"set", "value": <number|bool>, "when"?: <choice/condition>}.
+    {
+        "kind": "AFFECTS",
+        "src_layers": ["story", "mission", "interaction", "environment"],
+        "dst_layers": ["factor"],
+        "src_cardinality": "many",
+        "dst_cardinality": "many",
+        "required": False,
+        "dependency": False,
+        "data_schema": None,
+    },
+    # Environment-driven system override. Edge data = param patch.
+    {
+        "kind": "MODIFIES",
+        "src_layers": ["environment"],
+        "dst_layers": ["system"],
+        "src_cardinality": "many",
+        "dst_cardinality": "many",
+        "required": False,
+        "dependency": False,
+        "data_schema": None,
+    },
+    # Content gated/unlocked by a factor or flag.
+    {
+        "kind": "GATES",
+        "src_layers": ["factor"],
+        "dst_layers": ["story", "mission", "interaction"],
+        "src_cardinality": "many",
+        "dst_cardinality": "many",
+        "required": False,
+        "dependency": False,
+        "data_schema": None,
+    },
+    # Story branch edges (choice → next beat or ending). Edge data: {"label": ...}.
+    {
+        "kind": "LEADS_TO",
+        "src_layers": ["story"],
+        "dst_layers": ["story", "outcome"],
+        "src_cardinality": "many",
+        "dst_cardinality": "many",
+        "required": False,
+        "dependency": False,
+        "data_schema": None,
+    },
+    # Outcome resolver wiring.
+    {
+        "kind": "READS",
+        "src_layers": ["outcome"],
+        "dst_layers": ["factor"],
+        "src_cardinality": "many",
+        "dst_cardinality": "many",
+        "required": False,
+        "dependency": False,
+        "data_schema": None,
+    },
+    # NPC placement (scene before npc → dependency, like APPEARS_IN).
+    {
+        "kind": "ASSIGNED_TO",
+        "src_layers": ["npc"],
+        "dst_layers": ["scene"],
+        "src_cardinality": "many",
+        "dst_cardinality": "many",
+        "required": False,
+        "dependency": True,
+        "data_schema": None,
+    },
+    # Mission rewards.
+    {
+        "kind": "REWARDS",
+        "src_layers": ["mission", "quest"],
         "dst_layers": ["item"],
         "src_cardinality": "many",
         "dst_cardinality": "many",
