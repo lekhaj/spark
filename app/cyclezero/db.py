@@ -35,7 +35,24 @@ def _database_url() -> str:
 def get_engine() -> Engine:
     global _engine
     if _engine is None:
-        _engine = create_engine(_database_url(), pool_pre_ping=True, future=True)
+        # Resilient pooling: pre_ping + recycle drop stale connections, and the
+        # psycopg2 connect_args bound every phase so a half-dead socket fails
+        # fast instead of hanging — connect_timeout (establish), TCP keepalives
+        # (detect dropped peers), statement_timeout (cap any query).
+        _engine = create_engine(
+            _database_url(),
+            future=True,
+            pool_pre_ping=True,
+            pool_recycle=1800,
+            connect_args={
+                "connect_timeout": 10,
+                "keepalives": 1,
+                "keepalives_idle": 30,
+                "keepalives_interval": 10,
+                "keepalives_count": 3,
+                "options": "-c statement_timeout=15000",
+            },
+        )
     return _engine
 
 
