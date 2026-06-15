@@ -104,7 +104,9 @@ app = FastAPI(
 # (e.g. a custom domain) without code changes.
 _default_cors_origins = [
     "https://sparkaistudio.netlify.app",
+    "https://spark-studio.pages.dev",  # Cloudflare Pages (current prod host)
     "http://localhost:5173",   # vite dev
+    "http://localhost:5179",   # studio dev (launch.json)
     "http://localhost:4173",   # vite preview
     "http://127.0.0.1:5173",
 ]
