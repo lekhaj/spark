@@ -307,6 +307,20 @@ def accept_run(run_id: str) -> Dict[str, Any]:
     doc = _get_run(db, run_id)
     if doc["status"] != "valid":
         raise HTTPException(409, f"only valid runs can be accepted (status={doc['status']})")
+    # An accept *supersedes* if this (project, entity, stage) already had any
+    # accepted run — i.e. it is a real change to existing content, not the first.
+    superseded = (
+        db[COLLECTION].count_documents(
+            {
+                "project_id": doc["project_id"],
+                "entity_id":  doc["entity_id"],
+                "stage":      doc["stage"],
+                "status":     "accepted",
+            },
+            limit=1,
+        )
+        > 0
+    )
     # One accepted per (project, entity, stage, major) — demote siblings.
     db[COLLECTION].update_many(
         {
@@ -319,6 +333,19 @@ def accept_run(run_id: str) -> Dict[str, Any]:
         {"$set": {"status": "rejected"}},
     )
     db[COLLECTION].update_one({"run_id": run_id}, {"$set": {"status": "accepted"}})
+
+    # S1/S4: stamp the cyclezero graph node + surface computed ripple. Best-effort
+    # — the import + every call inside is guarded so a missing graph DB never
+    # blocks the accept.
+    try:
+        from app.cyclezero import bridge as _cz_bridge
+
+        _cz_bridge.on_spec_accepted(
+            db, doc["project_id"], doc["entity_id"], run_id, superseded
+        )
+    except Exception:  # pragma: no cover — bridge must never break accept
+        log.exception("cyclezero bridge on_spec_accepted failed")
+
     return _serialize(_get_run(db, run_id))
 
 

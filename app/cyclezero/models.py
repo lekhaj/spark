@@ -53,6 +53,11 @@ class Entity(Base):
     key: Mapped[str] = mapped_column(Text)  # unique within (game, layer)
     name: Mapped[str] = mapped_column(Text)
     data: Mapped[dict] = mapped_column(JSONType, default=dict)
+    # S1 bridge → Mongo spec-gen. ``spec_stage`` is the schema_key this node's
+    # content validates against; ``accepted_spec_run_id`` points at the accepted
+    # spec_gen_runs doc holding the validated JSON body (None until first accept).
+    spec_stage: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    accepted_spec_run_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now

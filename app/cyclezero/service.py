@@ -3,7 +3,7 @@ types here, so it is unit-testable against any SQLAlchemy session."""
 from __future__ import annotations
 
 import uuid
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -53,10 +53,21 @@ def delete_game(db: Session, game: models.Game) -> None:
 
 
 # ── entities ─────────────────────────────────────────────────────────────────
-def create_entity(db: Session, game: models.Game, body: schemas.EntityCreate) -> models.Entity:
+def create_entity(
+    db: Session,
+    game: models.Game,
+    body: schemas.EntityCreate,
+    spec_stage: Optional[str] = None,
+) -> models.Entity:
     key = body.key or schemas.slugify(body.name)
     entity = models.Entity(
-        game_id=game.id, layer=body.layer, key=key, name=body.name, data=body.data or {}
+        game_id=game.id,
+        layer=body.layer,
+        key=key,
+        name=body.name,
+        data=body.data or {},
+        # explicit body value wins; else the route passes the layer's bound stage
+        spec_stage=body.spec_stage or spec_stage,
     )
     db.add(entity)
     db.commit()
@@ -88,6 +99,8 @@ def update_entity(
         entity.name = body.name
     if body.data is not None:
         entity.data = body.data
+    if body.spec_stage is not None:
+        entity.spec_stage = body.spec_stage
     db.commit()
     db.refresh(entity)
     return entity
@@ -98,15 +111,54 @@ def delete_entity(db: Session, entity: models.Entity) -> None:
     db.commit()
 
 
+# ── S1 bridge: link a node to its accepted Mongo spec body ────────────────────
+def get_entity_by_key(db: Session, game_id: uuid.UUID, key: str) -> Optional[models.Entity]:
+    return db.scalar(
+        select(models.Entity).where(
+            models.Entity.game_id == game_id, models.Entity.key == key
+        )
+    )
+
+
+def set_accepted_spec(
+    db: Session, entity: models.Entity, run_id: Optional[str]
+) -> models.Entity:
+    """Stamp (or clear) the accepted spec-run pointer on a node."""
+    entity.accepted_spec_run_id = run_id
+    db.commit()
+    db.refresh(entity)
+    return entity
+
+
+def resolve_body(mongo_db, entity: models.Entity) -> Optional[Dict[str, Any]]:
+    """Fetch the validated JSON body for a node from Mongo ``spec_gen_runs``.
+
+    Returns the accepted run's ``output`` (the schema-validated content), or None
+    when the node has no accepted spec yet. ``mongo_db`` is a pymongo Database.
+    """
+    if not entity.accepted_spec_run_id:
+        return None
+    doc = mongo_db["spec_gen_runs"].find_one({"run_id": entity.accepted_spec_run_id})
+    return doc.get("output") if doc else None
+
+
 # ── relations ────────────────────────────────────────────────────────────────
 def create_relation(
-    db: Session, game: models.Game, body: schemas.RelationCreate
+    db: Session,
+    game: models.Game,
+    body: schemas.RelationCreate,
+    metamodel: Optional[Dict[str, Any]] = None,
 ) -> models.Relation:
     src = get_entity(db, game, body.src)
     dst = get_entity(db, game, body.dst)
     if src is None or dst is None:
         missing = body.src if src is None else body.dst
         raise ValueError(f"entity not found: {missing}")
+    # S2: when a metamodel is supplied, the edge must obey the relation contract
+    # (legal layers + cardinality). Omitting it keeps create_relation usable as a
+    # raw graph op (e.g. in pure-Postgres tests).
+    if metamodel is not None:
+        _validate_new_edge(db, game, src, dst, body.kind, metamodel)
     rel = models.Relation(
         game_id=game.id,
         src_entity=src.id,
@@ -118,6 +170,33 @@ def create_relation(
     db.commit()
     db.refresh(rel)
     return rel
+
+
+def _validate_new_edge(
+    db: Session,
+    game: models.Game,
+    src: models.Entity,
+    dst: models.Entity,
+    kind: str,
+    metamodel: Dict[str, Any],
+) -> None:
+    """Raise ValueError if a proposed edge breaks the relation contract."""
+    rt = metamodel.get("relation_types", {}).get(kind)
+    if rt is None:
+        raise ValueError(f"unknown relation kind: {kind}")
+    if rt.get("src_layers") and src.layer not in rt["src_layers"]:
+        raise ValueError(f"src layer '{src.layer}' not allowed for {kind}")
+    if rt.get("dst_layers") and dst.layer not in rt["dst_layers"]:
+        raise ValueError(f"dst layer '{dst.layer}' not allowed for {kind}")
+    existing = list_relations(db, game)
+    if rt.get("src_cardinality") == "one" and any(
+        r.kind == kind and r.src_entity == src.id for r in existing
+    ):
+        raise ValueError(f"{kind} is one-per-source; '{src.key}' already has one")
+    if rt.get("dst_cardinality") == "one" and any(
+        r.kind == kind and r.dst_entity == dst.id for r in existing
+    ):
+        raise ValueError(f"{kind} is one-per-target; '{dst.key}' already has one")
 
 
 def list_relations(db: Session, game: models.Game) -> List[models.Relation]:

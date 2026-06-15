@@ -49,11 +49,13 @@ class EntityCreate(BaseModel):
     name: str
     key: Optional[str] = None
     data: Dict[str, Any] = Field(default_factory=dict)
+    spec_stage: Optional[str] = None  # defaults from the layer metamodel if omitted
 
 
 class EntityUpdate(BaseModel):
     name: Optional[str] = None
     data: Optional[Dict[str, Any]] = None
+    spec_stage: Optional[str] = None
 
 
 class EntityOut(BaseModel):
@@ -63,6 +65,8 @@ class EntityOut(BaseModel):
     key: str
     name: str
     data: Dict[str, Any]
+    spec_stage: Optional[str] = None
+    accepted_spec_run_id: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

@@ -27,17 +27,53 @@ Surface:
 from __future__ import annotations
 
 import uuid
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import contract as contract_builder
-from . import generation, matching, schemas, service
+from . import generation, graph, matching, metamodel, schemas, service
 from .db import get_db
 
 router = APIRouter()
+
+
+def _mongo():
+    """Authoring Mongo DB (spec schemas/runs + the metamodel). Overridable in
+    tests via monkeypatch, mirroring schema_routes._db."""
+    from worker.lib import manual_gen_schema as mgs
+
+    return mgs.get_db()
+
+
+def _load_metamodel():
+    return metamodel.load_metamodel(_mongo())
+
+
+def _entity_dicts(db: Session, game) -> List[dict]:
+    """Entities as plain dicts for the pure graph/contract/matching helpers."""
+    return [
+        {
+            "layer": e.layer,
+            "key": e.key,
+            "name": e.name,
+            "data": e.data,
+            "spec_stage": e.spec_stage,
+            "accepted_spec_run_id": e.accepted_spec_run_id,
+        }
+        for e in service.list_entities(db, game)
+    ]
+
+
+def _relation_dicts(db: Session, game) -> List[dict]:
+    """Relations as ``{src, dst, kind}`` keyed by entity *key* for the graph algos."""
+    id2key = {e.id: e.key for e in service.list_entities(db, game)}
+    return [
+        {"src": id2key.get(r.src_entity), "dst": id2key.get(r.dst_entity), "kind": r.kind}
+        for r in service.list_relations(db, game)
+    ]
 
 
 def _game_uri(slug: str) -> str:
@@ -108,8 +144,16 @@ def delete_game(slug: str, db: Session = Depends(get_db)):
 @router.post("/games/{slug}/entities", response_model=schemas.EntityOut, status_code=201)
 def create_entity(slug: str, body: schemas.EntityCreate, db: Session = Depends(get_db)):
     game = _require_game(db, slug)
+    # Default the node's spec_stage from the layer metamodel (best-effort: if the
+    # metamodel/Mongo is unavailable, the node is still created without a stage).
+    stage = None
     try:
-        return service.create_entity(db, game, body)
+        layer_def = metamodel.get_layer(_mongo(), body.layer)
+        stage = (layer_def or {}).get("schema_key")
+    except Exception:  # noqa: BLE001 — never block authoring on the metamodel
+        stage = None
+    try:
+        return service.create_entity(db, game, body, spec_stage=stage)
     except IntegrityError:
         db.rollback()
         raise HTTPException(409, f"entity key already exists in layer '{body.layer}'")
@@ -145,8 +189,14 @@ def delete_entity(slug: str, key: str, db: Session = Depends(get_db)):
 @router.post("/games/{slug}/relations", response_model=schemas.RelationOut, status_code=201)
 def create_relation(slug: str, body: schemas.RelationCreate, db: Session = Depends(get_db)):
     game = _require_game(db, slug)
+    # Validate the edge against the relation contract when the metamodel is
+    # reachable; degrade to a raw edge create if Mongo is down.
     try:
-        return service.create_relation(db, game, body)
+        mm = _load_metamodel()
+    except Exception:  # noqa: BLE001
+        mm = None
+    try:
+        return service.create_relation(db, game, body, metamodel=mm)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     except IntegrityError:
@@ -195,24 +245,150 @@ def get_job(slug: str, job_id: uuid.UUID, db: Session = Depends(get_db)):
     return job
 
 
-# ── contract (P6) + matching (P7) ────────────────────────────────────────────
+# ── contract (P6) + matching (P7), now sourced from accepted specs (S6) ───────
+def _contract_entity_dicts(db: Session, game) -> List[dict]:
+    """Entities for the contract builder, with ``data`` taken from each node's
+    accepted spec body when one exists (falling back to inline ``entity.data``).
+    This is the S6 shift: the contract compiles from *validated* content."""
+    try:
+        mongo = _mongo()
+    except Exception:  # noqa: BLE001 — no Mongo → fall back to inline data
+        mongo = None
+    out: List[dict] = []
+    for e in service.list_entities(db, game):
+        body = None
+        if mongo is not None and e.accepted_spec_run_id:
+            try:
+                body = service.resolve_body(mongo, e)
+            except Exception:  # noqa: BLE001
+                body = None
+        out.append(
+            {"layer": e.layer, "key": e.key, "name": e.name, "data": body or e.data}
+        )
+    return out
+
+
 @router.get("/games/{slug}/contract")
 def get_contract(slug: str, db: Session = Depends(get_db)):
     game = _require_game(db, slug)
-    entities = [
-        {"layer": e.layer, "key": e.key, "name": e.name, "data": e.data}
-        for e in service.list_entities(db, game)
-    ]
     return contract_builder.build_contract(
-        {"slug": game.slug, "title": game.title}, entities
+        {"slug": game.slug, "title": game.title}, _contract_entity_dicts(db, game)
     )
 
 
 @router.post("/games/{slug}/match")
 def match_contract(slug: str, body: schemas.MatchRequest, db: Session = Depends(get_db)):
     game = _require_game(db, slug)
-    entities = [
-        {"layer": e.layer, "key": e.key, "name": e.name, "data": e.data}
-        for e in service.list_entities(db, game)
-    ]
-    return matching.match(entities, body.contract)
+    return matching.match(_contract_entity_dicts(db, game), body.contract)
+
+
+# ── metamodel (S0) ───────────────────────────────────────────────────────────
+@router.get("/metamodel/layers")
+def get_layers():
+    return metamodel.list_layers(_mongo())
+
+
+@router.post("/metamodel/layers")
+def post_layer(body: Dict[str, Any] = Body(...)):
+    layer = body.get("layer")
+    schema_key = body.get("schema_key")
+    if not layer or not schema_key:
+        raise HTTPException(422, "layer and schema_key are required")
+    return metamodel.upsert_layer(_mongo(), layer, schema_key, body.get("title"))
+
+
+@router.get("/metamodel/relation-types")
+def get_relation_types():
+    return metamodel.list_relation_types(_mongo())
+
+
+@router.post("/metamodel/relation-types")
+def post_relation_type(body: Dict[str, Any] = Body(...)):
+    try:
+        return metamodel.upsert_relation_type(_mongo(), body)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+
+
+# ── graph (S2/S3) ─────────────────────────────────────────────────────────────
+@router.get("/games/{slug}/graph/validate")
+def graph_validate(slug: str, db: Session = Depends(get_db)):
+    game = _require_game(db, slug)
+    return graph.validate_graph(
+        _entity_dicts(db, game), _relation_dicts(db, game), _load_metamodel()
+    )
+
+
+@router.get("/games/{slug}/graph/order")
+def graph_order(slug: str, db: Session = Depends(get_db)):
+    game = _require_game(db, slug)
+    return graph.topo_order(
+        _entity_dicts(db, game), _relation_dicts(db, game), _load_metamodel()
+    )
+
+
+@router.get("/games/{slug}/graph/ripple")
+def graph_ripple(slug: str, entity: str = Query(...), db: Session = Depends(get_db)):
+    game = _require_game(db, slug)
+    _require_entity(db, game, entity)  # 404 if the key is unknown
+    return graph.ripple(
+        entity, _entity_dicts(db, game), _relation_dicts(db, game), _load_metamodel()
+    )
+
+
+# ── graph-aware packet (S5) ───────────────────────────────────────────────────
+@router.get("/games/{slug}/entities/{key}/packet")
+def entity_packet(slug: str, key: str, db: Session = Depends(get_db)):
+    """Assemble the Generation Packet input for a node: its bound schema plus its
+    *graph neighborhood* (upstream accepted specs + outgoing relation context) so
+    an external LLM / the refiner sees the connected subgraph, not an island.
+    Shape mirrors spark_studio packet.ts ``PacketInput``."""
+    game = _require_game(db, slug)
+    entity = _require_entity(db, game, key)
+    mongo = _mongo()
+    mm = metamodel.load_metamodel(mongo)
+    rtypes = mm["relation_types"]
+
+    id2entity = {e.id: e for e in service.list_entities(db, game)}
+    key2entity = {e.key: e for e in id2entity.values()}
+    relations = service.list_relations(db, game)
+
+    # Outgoing edges from this node → relation context + dependency upstreams.
+    references: List[dict] = []
+    upstream: List[dict] = []
+    for r in relations:
+        if r.src_entity != entity.id:
+            continue
+        dst = id2entity.get(r.dst_entity)
+        if dst is None:
+            continue
+        references.append({"kind": r.kind, "dst": dst.key, "dst_layer": dst.layer})
+        if rtypes.get(r.kind, {}).get("dependency"):
+            upstream.append(
+                {
+                    "key": dst.key,
+                    "layer": dst.layer,
+                    "kind": r.kind,
+                    "accepted_body": service.resolve_body(mongo, dst),
+                }
+            )
+
+    stage = entity.spec_stage or (mm["layers"].get(entity.layer, {}) or {}).get("schema_key")
+    schema_doc = None
+    if stage:
+        schema_doc = mongo["spec_schemas"].find_one({"schema_key": stage, "active": True})
+
+    return {
+        "projectId": game.slug,
+        "entityId": entity.key,
+        "stage": stage,
+        "schemaTitle": (schema_doc or {}).get("title", stage),
+        "schemaVersion": (schema_doc or {}).get("version", 0),
+        "jsonSchema": (schema_doc or {}).get("json_schema", {}),
+        "inputSpec": {
+            "node": {"key": entity.key, "layer": entity.layer, "name": entity.name},
+            "upstream": upstream,
+            "references": references,
+        },
+        "userIntent": "",
+    }
