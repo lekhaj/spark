@@ -26,6 +26,7 @@ from app.routes.spec_gen_routes import router as spec_gen_router
 from app.routes.journey_routes import router as journey_router
 from app.routes.refiner_routes import router as refiner_router
 from app.routes.asset_run_routes import router as asset_run_router
+from app.routes.access_routes import router as access_router
 from app.cyclezero.routes import router as cyclezero_router
 
 # Bring in the generator and DB helpers from the biome package
@@ -144,6 +145,8 @@ app.include_router(refiner_router, prefix="/refiner", tags=["Refiner"])
 app.include_router(asset_run_router, prefix="/asset-runs", tags=["AssetRuns"])
 # CycleZero game-authoring backend — games/entities/relations/jobs/contract/match
 app.include_router(cyclezero_router, prefix="/cyclezero", tags=["CycleZero"])
+# Studio access control — email allowlist + waitlist (invite-only sign-in)
+app.include_router(access_router, prefix="/access", tags=["Access"])
 
 # --- Biome generation endpoints (moved from c_main.py) ---
 # In-memory background task store for lightweight single-node async tasks
