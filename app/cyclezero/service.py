@@ -1,0 +1,195 @@
+"""CRUD service for the CycleZero design graph. Pure data access — no FastAPI
+types here, so it is unit-testable against any SQLAlchemy session."""
+from __future__ import annotations
+
+import uuid
+from typing import List, Optional
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from . import models, schemas
+
+
+# ── games ────────────────────────────────────────────────────────────────────
+def create_game(db: Session, body: schemas.GameCreate) -> models.Game:
+    slug = body.slug or schemas.slugify(body.title)
+    game = models.Game(
+        slug=slug,
+        title=body.title,
+        owner_id=body.owner_id,
+        status=body.status,
+        data=body.data or {},
+    )
+    db.add(game)
+    db.commit()
+    db.refresh(game)
+    return game
+
+
+def list_games(db: Session) -> List[models.Game]:
+    return list(db.scalars(select(models.Game).order_by(models.Game.created_at.desc())))
+
+
+def get_game(db: Session, slug: str) -> Optional[models.Game]:
+    return db.scalar(select(models.Game).where(models.Game.slug == slug))
+
+
+def update_game(db: Session, game: models.Game, body: schemas.GameUpdate) -> models.Game:
+    if body.title is not None:
+        game.title = body.title
+    if body.status is not None:
+        game.status = body.status
+    if body.data is not None:
+        game.data = body.data
+    db.commit()
+    db.refresh(game)
+    return game
+
+
+def delete_game(db: Session, game: models.Game) -> None:
+    db.delete(game)
+    db.commit()
+
+
+# ── entities ─────────────────────────────────────────────────────────────────
+def create_entity(db: Session, game: models.Game, body: schemas.EntityCreate) -> models.Entity:
+    key = body.key or schemas.slugify(body.name)
+    entity = models.Entity(
+        game_id=game.id, layer=body.layer, key=key, name=body.name, data=body.data or {}
+    )
+    db.add(entity)
+    db.commit()
+    db.refresh(entity)
+    return entity
+
+
+def list_entities(
+    db: Session, game: models.Game, layer: Optional[str] = None
+) -> List[models.Entity]:
+    stmt = select(models.Entity).where(models.Entity.game_id == game.id)
+    if layer:
+        stmt = stmt.where(models.Entity.layer == layer)
+    return list(db.scalars(stmt.order_by(models.Entity.layer, models.Entity.key)))
+
+
+def get_entity(db: Session, game: models.Game, key: str) -> Optional[models.Entity]:
+    return db.scalar(
+        select(models.Entity).where(
+            models.Entity.game_id == game.id, models.Entity.key == key
+        )
+    )
+
+
+def update_entity(
+    db: Session, entity: models.Entity, body: schemas.EntityUpdate
+) -> models.Entity:
+    if body.name is not None:
+        entity.name = body.name
+    if body.data is not None:
+        entity.data = body.data
+    db.commit()
+    db.refresh(entity)
+    return entity
+
+
+def delete_entity(db: Session, entity: models.Entity) -> None:
+    db.delete(entity)
+    db.commit()
+
+
+# ── relations ────────────────────────────────────────────────────────────────
+def create_relation(
+    db: Session, game: models.Game, body: schemas.RelationCreate
+) -> models.Relation:
+    src = get_entity(db, game, body.src)
+    dst = get_entity(db, game, body.dst)
+    if src is None or dst is None:
+        missing = body.src if src is None else body.dst
+        raise ValueError(f"entity not found: {missing}")
+    rel = models.Relation(
+        game_id=game.id,
+        src_entity=src.id,
+        dst_entity=dst.id,
+        kind=body.kind,
+        data=body.data or {},
+    )
+    db.add(rel)
+    db.commit()
+    db.refresh(rel)
+    return rel
+
+
+def list_relations(db: Session, game: models.Game) -> List[models.Relation]:
+    return list(
+        db.scalars(select(models.Relation).where(models.Relation.game_id == game.id))
+    )
+
+
+def delete_relation(db: Session, game: models.Game, rel_id: uuid.UUID) -> bool:
+    rel = db.scalar(
+        select(models.Relation).where(
+            models.Relation.id == rel_id, models.Relation.game_id == game.id
+        )
+    )
+    if rel is None:
+        return False
+    db.delete(rel)
+    db.commit()
+    return True
+
+
+# ── asset jobs ───────────────────────────────────────────────────────────────
+def create_job(
+    db: Session,
+    game: models.Game,
+    entity: Optional[models.Entity],
+    body: schemas.JobCreate,
+) -> models.AssetJob:
+    job = models.AssetJob(
+        game_id=game.id,
+        entity_id=entity.id if entity else None,
+        kind=body.kind,
+        status="queued",
+        params=body.params or {},
+        result={},
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+def list_jobs(db: Session, game: models.Game) -> List[models.AssetJob]:
+    return list(
+        db.scalars(
+            select(models.AssetJob)
+            .where(models.AssetJob.game_id == game.id)
+            .order_by(models.AssetJob.created_at.desc())
+        )
+    )
+
+
+def get_job(db: Session, game: models.Game, job_id: uuid.UUID) -> Optional[models.AssetJob]:
+    return db.scalar(
+        select(models.AssetJob).where(
+            models.AssetJob.id == job_id, models.AssetJob.game_id == game.id
+        )
+    )
+
+
+def set_job_status(
+    db: Session,
+    job: models.AssetJob,
+    status: str,
+    result: Optional[dict] = None,
+    error: Optional[str] = None,
+) -> models.AssetJob:
+    job.status = status
+    if result is not None:
+        job.result = result
+    if error is not None:
+        job.error = error
+    db.commit()
+    db.refresh(job)
+    return job

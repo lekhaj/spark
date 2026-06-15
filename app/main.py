@@ -26,6 +26,7 @@ from app.routes.spec_gen_routes import router as spec_gen_router
 from app.routes.journey_routes import router as journey_router
 from app.routes.refiner_routes import router as refiner_router
 from app.routes.asset_run_routes import router as asset_run_router
+from app.cyclezero.routes import router as cyclezero_router
 
 # Bring in the generator and DB helpers from the biome package
 from app.src_biome_gen import database as db_module
@@ -54,6 +55,14 @@ async def lifespan(app: FastAPI):
         logger.info("MongoDB connected on startup.")
     else:
         logger.error("MongoDB connection failed on startup.")
+
+    # CycleZero: ensure Postgres tables exist (no-op when already created).
+    try:
+        from app.cyclezero.db import init_models as _cz_init
+        _cz_init()
+        logger.info("CycleZero Postgres tables ready.")
+    except Exception as exc:  # noqa: BLE001 — never block startup on the optional DB
+        logger.warning("CycleZero DB init skipped: %s", exc)
 
     # Start orchestrator + result consumer as background tasks
     orchestrator_task    = asyncio.create_task(orchestrator_main())
@@ -118,6 +127,8 @@ app.include_router(journey_router, prefix="", tags=["Journeys"])
 app.include_router(refiner_router, prefix="/refiner", tags=["Refiner"])
 # asset_spec -> GPU pipeline bridge (CycleZero U05)
 app.include_router(asset_run_router, prefix="/asset-runs", tags=["AssetRuns"])
+# CycleZero game-authoring backend — games/entities/relations/jobs/contract/match
+app.include_router(cyclezero_router, prefix="/cyclezero", tags=["CycleZero"])
 
 # --- Biome generation endpoints (moved from c_main.py) ---
 # In-memory background task store for lightweight single-node async tasks

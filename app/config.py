@@ -15,9 +15,15 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
     
     MONGODB_URL: str
-    
+
     MONGODB_DB_NAME: str
-    
+
+    # ── CycleZero game-authoring backend ───────────────────────────────────
+    # Postgres design graph + a separate Mongo DB for freeform/generated content.
+    # Both live on the CPU box; the URL is kept in .env.secrets (gitignored).
+    CYCLEZERO_DATABASE_URL: Optional[str] = None
+    CYCLEZERO_MONGO_DB: str = "cyclezero"
+
     CELERY_BROKER_URL: str
     CELERY_RESULT_BACKEND: str
 

@@ -1,6 +1,9 @@
 # Core Application Dependencies
 accelerate==1.6.0
 aiofiles==24.1.0
+# CycleZero game-authoring backend (Postgres design graph)
+SQLAlchemy==2.0.36
+psycopg2-binary==2.9.10
 amqp==5.3.1
 annotated-types==0.7.0
 anyio==4.9.0
