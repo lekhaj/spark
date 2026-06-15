@@ -111,3 +111,27 @@ class JobOut(BaseModel):
 # ── matching ─────────────────────────────────────────────────────────────────
 class MatchRequest(BaseModel):
     contract: Dict[str, Any] = Field(description="the built/deployed scene contract JSON")
+
+
+# ── releases (S7) ────────────────────────────────────────────────────────────
+class ReleaseCreate(BaseModel):
+    label: Optional[str] = None  # human tag, e.g. "1.0" / "alpha"
+    notes: Optional[str] = None
+
+
+class ReleaseOut(BaseModel):
+    id: uuid.UUID
+    game_id: uuid.UUID
+    version: int
+    label: Optional[str]
+    notes: Optional[str]
+    complete: bool
+    manifest: Dict[str, Any]
+    created_at: datetime
+
+
+class ReleaseSummary(BaseModel):
+    version: int
+    label: Optional[str]
+    complete: bool
+    created_at: datetime

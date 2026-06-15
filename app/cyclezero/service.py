@@ -218,6 +218,55 @@ def delete_relation(db: Session, game: models.Game, rel_id: uuid.UUID) -> bool:
     return True
 
 
+# ── releases (S7) ────────────────────────────────────────────────────────────
+def create_release(
+    db: Session,
+    game: models.Game,
+    manifest: Dict[str, Any],
+    complete: bool,
+    label: Optional[str] = None,
+    notes: Optional[str] = None,
+) -> models.GameRelease:
+    """Cut the next release for a game (version = max existing + 1)."""
+    latest = db.scalar(
+        select(models.GameRelease)
+        .where(models.GameRelease.game_id == game.id)
+        .order_by(models.GameRelease.version.desc())
+    )
+    version = (latest.version + 1) if latest else 1
+    rel = models.GameRelease(
+        game_id=game.id,
+        version=version,
+        label=label,
+        notes=notes,
+        complete=complete,
+        manifest=manifest,
+    )
+    db.add(rel)
+    db.commit()
+    db.refresh(rel)
+    return rel
+
+
+def list_releases(db: Session, game: models.Game) -> List[models.GameRelease]:
+    return list(
+        db.scalars(
+            select(models.GameRelease)
+            .where(models.GameRelease.game_id == game.id)
+            .order_by(models.GameRelease.version.desc())
+        )
+    )
+
+
+def get_release(db: Session, game: models.Game, version: int) -> Optional[models.GameRelease]:
+    return db.scalar(
+        select(models.GameRelease).where(
+            models.GameRelease.game_id == game.id,
+            models.GameRelease.version == version,
+        )
+    )
+
+
 # ── asset jobs ───────────────────────────────────────────────────────────────
 def create_job(
     db: Session,

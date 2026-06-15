@@ -21,8 +21,22 @@ Surface:
   GET    /cyclezero/games/{slug}/jobs               list asset jobs
   GET    /cyclezero/games/{slug}/jobs/{id}          fetch a job
 
-  GET    /cyclezero/games/{slug}/contract           build the scene contract (P6)
+  GET    /cyclezero/games/{slug}/contract           build the scene contract (P6/S6)
   POST   /cyclezero/games/{slug}/match              coverage vs a contract (P7)
+
+  GET    /cyclezero/metamodel/layers               list layer→schema_key (S0)
+  POST   /cyclezero/metamodel/layers               upsert a layer
+  GET    /cyclezero/metamodel/relation-types       list relation contracts (S0)
+  POST   /cyclezero/metamodel/relation-types       upsert a relation type
+
+  GET    /cyclezero/games/{slug}/graph/validate    structural validation (S2)
+  GET    /cyclezero/games/{slug}/graph/order       generation/spec order (S3)
+  GET    /cyclezero/games/{slug}/graph/ripple?entity=  downstream of a node (S3)
+  GET    /cyclezero/games/{slug}/entities/{key}/packet  graph-aware LLM packet (S5)
+
+  POST   /cyclezero/games/{slug}/releases          cut a release snapshot (S7)
+  GET    /cyclezero/games/{slug}/releases          list releases (newest first)
+  GET    /cyclezero/games/{slug}/releases/{version}  fetch a release manifest
 """
 from __future__ import annotations
 
@@ -392,3 +406,74 @@ def entity_packet(slug: str, key: str, db: Session = Depends(get_db)):
         },
         "userIntent": "",
     }
+
+
+# ── releases (S7) ─────────────────────────────────────────────────────────────
+def _spec_version(mongo, run_id: Optional[str]) -> Optional[str]:
+    """Resolve a spec run's ``major.minor`` for the release manifest (best-effort)."""
+    if not run_id or mongo is None:
+        return None
+    try:
+        doc = mongo["spec_gen_runs"].find_one({"run_id": run_id})
+    except Exception:  # noqa: BLE001
+        return None
+    if not doc:
+        return None
+    return f"{doc.get('major')}.{doc.get('minor')}"
+
+
+def _build_manifest(db: Session, game) -> Dict[str, Any]:
+    """Freeze the game's current authored state: entities (with the spec version
+    each points at), relations, the compiled contract, and the validation report."""
+    try:
+        mongo = _mongo()
+    except Exception:  # noqa: BLE001
+        mongo = None
+    entities = service.list_entities(db, game)
+    manifest_entities = [
+        {
+            "key": e.key,
+            "layer": e.layer,
+            "name": e.name,
+            "spec_stage": e.spec_stage,
+            "accepted_spec_run_id": e.accepted_spec_run_id,
+            "spec_version": _spec_version(mongo, e.accepted_spec_run_id),
+        }
+        for e in entities
+    ]
+    relations = _relation_dicts(db, game)
+    contract = contract_builder.build_contract(
+        {"slug": game.slug, "title": game.title}, _contract_entity_dicts(db, game)
+    )
+    try:
+        validation = graph.validate_graph(_entity_dicts(db, game), relations, _load_metamodel())
+    except Exception:  # noqa: BLE001 — release should still cut without the metamodel
+        validation = {"ok": None, "complete": False}
+    return {
+        "entities": manifest_entities,
+        "relations": relations,
+        "contract": contract,
+        "validation": validation,
+    }
+
+
+@router.post("/games/{slug}/releases", response_model=schemas.ReleaseOut, status_code=201)
+def create_release(slug: str, body: schemas.ReleaseCreate, db: Session = Depends(get_db)):
+    game = _require_game(db, slug)
+    manifest = _build_manifest(db, game)
+    complete = bool(manifest.get("validation", {}).get("complete"))
+    return service.create_release(db, game, manifest, complete, body.label, body.notes)
+
+
+@router.get("/games/{slug}/releases", response_model=List[schemas.ReleaseSummary])
+def list_releases(slug: str, db: Session = Depends(get_db)):
+    return service.list_releases(db, _require_game(db, slug))
+
+
+@router.get("/games/{slug}/releases/{version}", response_model=schemas.ReleaseOut)
+def get_release(slug: str, version: int, db: Session = Depends(get_db)):
+    game = _require_game(db, slug)
+    rel = service.get_release(db, game, version)
+    if rel is None:
+        raise HTTPException(404, f"release v{version} not found")
+    return rel

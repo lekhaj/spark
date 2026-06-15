@@ -259,3 +259,45 @@ def test_packet_includes_graph_neighborhood(client):
     # kael APPEARS_IN main (a dependency edge) → main is an upstream with its body.
     assert any(u["key"] == "main" and u["accepted_body"] for u in pkt["inputSpec"]["upstream"])
     assert any(ref["dst"] == "main" for ref in pkt["inputSpec"]["references"])
+
+
+# ── S7: releases ──────────────────────────────────────────────────────────────
+def test_release_cut_lists_and_versions(client):
+    slug = _seed_graph(client)
+    r1 = client.post(f"/cyclezero/games/{slug}/releases", json={"label": "0.1", "notes": "first"})
+    assert r1.status_code == 201
+    body = r1.json()
+    assert body["version"] == 1
+    assert body["label"] == "0.1"
+    # manifest freezes the whole authored state.
+    assert {"entities", "relations", "contract", "validation"} <= set(body["manifest"])
+    assert body["manifest"]["contract"]["id"] == slug
+    # no accepted specs yet → not complete.
+    assert body["complete"] is False
+
+    r2 = client.post(f"/cyclezero/games/{slug}/releases", json={})
+    assert r2.json()["version"] == 2
+
+    summaries = client.get(f"/cyclezero/games/{slug}/releases").json()
+    assert [s["version"] for s in summaries] == [2, 1]  # newest first
+    full = client.get(f"/cyclezero/games/{slug}/releases/1").json()
+    assert full["notes"] == "first"
+    assert client.get(f"/cyclezero/games/{slug}/releases/99").status_code == 404
+
+
+def test_release_records_spec_version(client):
+    slug = _seed_graph(client)
+    client._mongo["spec_gen_runs"].insert_one(
+        {"run_id": "rk", "output": {"role": "player"}, "major": 2, "minor": 1}
+    )
+    session = client._Session()
+    from app.cyclezero.models import Game
+    from sqlalchemy import select
+    game = session.scalar(select(Game).where(Game.slug == slug))
+    kael = service.get_entity_by_key(session, game.id, "kael")
+    service.set_accepted_spec(session, kael, "rk")
+    session.close()
+
+    rel = client.post(f"/cyclezero/games/{slug}/releases", json={}).json()
+    kael_entry = next(e for e in rel["manifest"]["entities"] if e["key"] == "kael")
+    assert kael_entry["spec_version"] == "2.1"

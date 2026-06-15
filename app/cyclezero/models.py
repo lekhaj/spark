@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Text, Uuid
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, Text, Uuid
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -81,6 +81,28 @@ class Relation(Base):
     )
     kind: Mapped[str] = mapped_column(Text)
     data: Mapped[dict] = mapped_column(JSONType, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class GameRelease(Base):
+    """S7 — an immutable snapshot of a game's authored state at a point in time.
+
+    Versions are auto-numbered per game (v1, v2, …). The ``manifest`` freezes the
+    entities (with the spec version each pointed at), the relations, the compiled
+    contract, and the validation report — so every iteration cycle produces a
+    comparable, restorable checkpoint."""
+
+    __tablename__ = "game_releases"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    game_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("games.id", ondelete="CASCADE"), index=True
+    )
+    version: Mapped[int] = mapped_column(Integer)  # 1-based, unique within a game
+    label: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # e.g. "1.0", "alpha"
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    complete: Mapped[bool] = mapped_column(Boolean, default=False)  # graph.validate complete?
+    manifest: Mapped[dict] = mapped_column(JSONType, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
