@@ -17,6 +17,16 @@ Env:
   REFINER_ANTHROPIC_MODEL  — default "claude-haiku-4-5"
   REFINER_OPENAI_BASE      — e.g. http://localhost:11434/v1 — enables OpenAICompatProvider
   REFINER_OPENAI_MODEL     — model name for the compat endpoint
+
+  REFINER_CONVERSE         — "1"/"true" enables BedrockConverseProvider (boto3
+                             Converse API; any vendor; IAM creds). Preferred path.
+  REFINER_TIER_A_MODEL     — cheap chat (refiner). Default = Haiku (start simple).
+  REFINER_TIER_B_MODEL     — structured (schema/rule/brief draft + validator). Haiku.
+  REFINER_TIER_C_MODEL     — reasoning (compile: plan + code-gen prompt). Sonnet.
+  AWS_REGION / AWS_DEFAULT_REGION — region (default us-east-1)
+
+Tiers (inference-architecture.md): start Haiku-everywhere, then drop A→Llama 4 and
+lift C→Sonnet by env, one line each. Actual code-writing stays in Claude Code.
 """
 
 from __future__ import annotations
@@ -59,6 +69,47 @@ class AnthropicBedrockProvider:
         return "".join(
             block.text for block in response.content
             if getattr(block, "type", "") == "text"
+        )
+
+
+class BedrockConverseProvider:
+    """Bedrock via the **Converse API** (boto3) — one interface for ANY vendor on
+    Bedrock (Claude / Llama / Nova / Mistral …). No API key; uses the instance IAM
+    role (standard boto3 chain). Swapping models is just a different ``model`` id, so
+    the studio's A/B/C tiers (cheap chat / structured / reasoning) are pure config.
+
+    Optional ``cache`` adds a Bedrock cachePoint after the system prompt — the reused
+    system prompt is then billed ~90% cheaper on subsequent calls (where supported)."""
+
+    id = "converse"
+
+    def __init__(self, model: str, region: str, cache: bool = True):
+        self.model = model
+        self._region = region
+        self._cache = cache
+
+    def _client(self):
+        import boto3  # lazy — only needed when this provider is configured
+
+        return boto3.client("bedrock-runtime", region_name=self._region)
+
+    def chat(self, system: str, messages: List[Dict[str, str]]) -> str:
+        system_blocks: List[Dict] = [{"text": system}]
+        if self._cache:
+            system_blocks.append({"cachePoint": {"type": "default"}})
+        conv = [
+            {"role": m["role"], "content": [{"text": m["content"]}]}
+            for m in messages
+        ]
+        resp = self._client().converse(
+            modelId=self.model,
+            system=system_blocks,
+            messages=conv,
+            inferenceConfig={"maxTokens": MAX_TOKENS},
+        )
+        return "".join(
+            block.get("text", "")
+            for block in resp["output"]["message"]["content"]
         )
 
 
@@ -115,9 +166,43 @@ class OpenAICompatProvider:
         return resp.json()["choices"][0]["message"]["content"]
 
 
+# Tier → Bedrock Converse model id. Locked plan (2026-06-19): start Haiku-everywhere;
+# A→Llama 4 Maverick and C→Sonnet 4.6 are env overrides when tiering up.
+# global. cross-region profile = ~10% cheaper than us. + best availability (live-verified).
+_HAIKU = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+TIER_DEFAULTS = {
+    "A": os.environ.get("REFINER_TIER_A_MODEL", _HAIKU),  # cheap chat (refiner)
+    "B": os.environ.get("REFINER_TIER_B_MODEL", _HAIKU),  # structured (draft/validate)
+    "C": os.environ.get("REFINER_TIER_C_MODEL", _HAIKU),  # reasoning (compile)
+}
+
+
+def _region() -> str:
+    return (os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
+            or "us-east-1")
+
+
+def get_tier_provider(tier: str) -> "RefinerProvider":
+    """Return the Converse provider for an inference tier (A/B/C). Used by the
+    compile/validate agents; falls back to the first configured provider if
+    Converse isn't enabled, so callers degrade gracefully."""
+    if os.environ.get("REFINER_CONVERSE", "").lower() in ("1", "true", "yes"):
+        return BedrockConverseProvider(
+            model=TIER_DEFAULTS.get(tier, _HAIKU), region=_region()
+        )
+    providers = get_providers()
+    if not providers:
+        raise RuntimeError("no LLM providers configured (set REFINER_CONVERSE=1)")
+    return next(iter(providers.values()))
+
+
 def get_providers() -> Dict[str, RefinerProvider]:
     """Env-driven registry. Order matters: first configured = default."""
     providers: Dict[str, RefinerProvider] = {}
+    if os.environ.get("REFINER_CONVERSE", "").lower() in ("1", "true", "yes"):
+        providers["converse"] = BedrockConverseProvider(
+            model=TIER_DEFAULTS["A"], region=_region()
+        )
     if os.environ.get("REFINER_BEDROCK", "").lower() in ("1", "true", "yes"):
         providers["bedrock"] = AnthropicBedrockProvider(
             model=os.environ.get(

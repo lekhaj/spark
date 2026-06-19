@@ -49,6 +49,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import contract as contract_builder
+from . import compile_agent, compile_tools
 from . import generation, graph, matching, metamodel, outcome, schemas, service
 from .db import get_db
 
@@ -342,6 +343,68 @@ def get_contract(slug: str, db: Session = Depends(get_db)):
 def match_contract(slug: str, body: schemas.MatchRequest, db: Session = Depends(get_db)):
     game = _require_game(db, slug)
     return matching.match(_contract_entity_dicts(db, game), body.contract)
+
+
+# ── compile / churn-out (U4) ──────────────────────────────────────────────────
+def _schemas_by_layer(mongo, mm, layers: List[str]) -> Dict[str, Any]:
+    """Active JSON Schema for each layer in scope, keyed by layer name (the compile
+    tools look up by layer and by ``{layer}_spec``)."""
+    out: Dict[str, Any] = {}
+    if mongo is None:
+        return out
+    for layer in layers:
+        schema_key = (mm["layers"].get(layer, {}) or {}).get("schema_key") or f"{layer}_spec"
+        doc = mongo["spec_schemas"].find_one({"schema_key": schema_key, "active": True})
+        if doc:
+            out[layer] = doc.get("json_schema", {})
+    return out
+
+
+@router.get("/games/{slug}/capabilities")
+def get_capabilities(slug: str, engine: str = Query("babylon"), db: Session = Depends(get_db)):
+    """The engine Capability Registry — what the runtime already provides, so the
+    compiler can tell the code-gen LLM what NOT to re-implement."""
+    _require_game(db, slug)
+    return compile_tools.get_capability_registry(engine)
+
+
+@router.post("/games/{slug}/compile")
+def compile_game(slug: str, body: Dict[str, Any] = Body(default={}), db: Session = Depends(get_db)):
+    """Churn out a code-gen prompt for a scope (whole game / scene / entities).
+
+    Body: {scope?, target?, output?, acceptance?, stitch?}. ``stitch`` (default true)
+    enables the Tier-C LLM implementation-plan seam when Bedrock is configured; the
+    deterministic skeleton always renders even without it (tools-first)."""
+    game = _require_game(db, slug)
+    try:
+        mongo = _mongo()
+        mm = metamodel.load_metamodel(mongo)
+    except Exception:  # noqa: BLE001 — no Mongo → empty schemas/metamodel, still compiles
+        mongo, mm = None, {"layers": {}, "relation_types": {}}
+
+    entities = _entity_data_dicts(db, game)
+    relations = _relation_data_dicts(db, game)
+    scope = body.get("scope") or {"kind": "game"}
+
+    # Resolve active schemas only for the layers actually in scope.
+    bundle = compile_tools.gather_scope(entities, relations, scope)
+    schemas_by_layer = _schemas_by_layer(mongo, mm, bundle["layers"])
+
+    stitch_fn = None
+    if body.get("stitch", True):
+        try:
+            stitch_fn = compile_agent.make_bedrock_stitcher()
+        except Exception:  # noqa: BLE001 — no LLM configured → deterministic only
+            stitch_fn = None
+
+    return compile_agent.compile_prompt(
+        entities, relations, mm, schemas_by_layer,
+        scope=scope,
+        target=body.get("target", "babylon"),
+        output=body.get("output", "build_packet"),
+        acceptance=body.get("acceptance"),
+        stitch_fn=stitch_fn,
+    )
 
 
 # ── metamodel (S0) ───────────────────────────────────────────────────────────
