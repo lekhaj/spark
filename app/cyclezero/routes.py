@@ -49,7 +49,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import contract as contract_builder
-from . import capability_store, compile_agent, compile_tools
+from . import capability_store, compile_agent, compile_tools, validate_agent
 from . import generation, graph, matching, metamodel, outcome, schemas, service
 from .db import get_db
 
@@ -419,6 +419,35 @@ def parse_done_note(slug: str, body: Dict[str, Any] = Body(...), db: Session = D
         known_layers = []
     suggestion = capability_store.extract_from_note(note, known_layers, base.get("systems", []))
     return {"suggestion": suggestion, "source": "deterministic"}
+
+
+@router.post("/games/{slug}/validate")
+def validate_game(slug: str, body: Dict[str, Any] = Body(default={}), db: Session = Depends(get_db)):
+    """Validate the authored game (U5). Deterministic static gate first (graph/contract/
+    outcome); the optional semantic check (Bedrock Tier-B, AWS credits) only runs when
+    both ``acceptance`` and ``done_note`` are supplied. Returns verdict + Fix Packet."""
+    game = _require_game(db, slug)
+    try:
+        mm = _load_metamodel()
+    except Exception:  # noqa: BLE001
+        mm = {"layers": {}, "relation_types": {}}
+    entities = _entity_data_dicts(db, game)
+    relations = _relation_data_dicts(db, game)
+
+    acceptance = body.get("acceptance")
+    done_note = body.get("done_note")
+    semantic_fn = None
+    if acceptance and done_note:
+        try:
+            semantic_fn = validate_agent.make_bedrock_semantic()
+        except Exception:  # noqa: BLE001 — no LLM → static only
+            semantic_fn = None
+
+    return validate_agent.validate(
+        entities, relations, mm,
+        game={"slug": game.slug, "title": game.title},
+        acceptance=acceptance, done_note=done_note, semantic_fn=semantic_fn,
+    )
 
 
 @router.post("/games/{slug}/capabilities/ingest")
