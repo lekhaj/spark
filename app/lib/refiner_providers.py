@@ -213,8 +213,16 @@ def get_providers() -> Dict[str, RefinerProvider]:
             or os.environ.get("AWS_DEFAULT_REGION")
             or "us-east-1",
         )
+    # ⚠️ COST POLICY (enforced 2026-06-19): all LLM usage must bill via **Bedrock
+    # = AWS credits**, never the **direct Anthropic API = direct charge**. The
+    # direct provider is therefore OFF unless someone explicitly opts in with
+    # REFINER_ALLOW_DIRECT_ANTHROPIC=1 — a stray ANTHROPIC_API_KEY alone will NOT
+    # enable it, so it can never silently cause direct charges.
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if anthropic_key:
+    allow_direct = os.environ.get("REFINER_ALLOW_DIRECT_ANTHROPIC", "").lower() in (
+        "1", "true", "yes"
+    )
+    if anthropic_key and allow_direct:
         providers["anthropic"] = AnthropicProvider(
             model=os.environ.get("REFINER_ANTHROPIC_MODEL", "claude-haiku-4-5"),
             api_key=anthropic_key,
