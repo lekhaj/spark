@@ -41,6 +41,7 @@ Surface:
 from __future__ import annotations
 
 import uuid
+from collections import defaultdict
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
@@ -48,7 +49,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import contract as contract_builder
-from . import generation, graph, matching, metamodel, schemas, service
+from . import generation, graph, matching, metamodel, outcome, schemas, service
 from .db import get_db
 
 router = APIRouter()
@@ -88,6 +89,53 @@ def _relation_dicts(db: Session, game) -> List[dict]:
         {"src": id2key.get(r.src_entity), "dst": id2key.get(r.dst_entity), "kind": r.kind}
         for r in service.list_relations(db, game)
     ]
+
+
+def _entity_data_dicts(db: Session, game) -> List[dict]:
+    """Entities with inline ``data`` for the outcome model (factors carry kind/
+    min/max/default in ``data``)."""
+    return [
+        {
+            "layer": e.layer,
+            "key": e.key,
+            "name": e.name,
+            "data": e.data,
+            "accepted_spec_run_id": e.accepted_spec_run_id,
+        }
+        for e in service.list_entities(db, game)
+    ]
+
+
+def _relation_data_dicts(db: Session, game) -> List[dict]:
+    """Relations keyed by entity *key*, **including edge ``data``** — needed by the
+    outcome model (AFFECTS deltas) where ``_relation_dicts`` drops it."""
+    id2key = {e.id: e.key for e in service.list_entities(db, game)}
+    return [
+        {
+            "src": id2key.get(r.src_entity),
+            "dst": id2key.get(r.dst_entity),
+            "kind": r.kind,
+            "data": r.data,
+        }
+        for r in service.list_relations(db, game)
+    ]
+
+
+def _entity_dict(e) -> dict:
+    """Serialize an Entity ORM row to the same shape as ``schemas.EntityOut`` for
+    endpoints that return a custom (non-``response_model``) structure."""
+    return {
+        "id": str(e.id),
+        "game_id": str(e.game_id),
+        "layer": e.layer,
+        "key": e.key,
+        "name": e.name,
+        "data": e.data,
+        "spec_stage": e.spec_stage,
+        "accepted_spec_run_id": e.accepted_spec_run_id,
+        "created_at": e.created_at,
+        "updated_at": e.updated_at,
+    }
 
 
 def _game_uri(slug: str) -> str:
@@ -406,6 +454,84 @@ def entity_packet(slug: str, key: str, db: Session = Depends(get_db)):
         },
         "userIntent": "",
     }
+
+
+# ── scene hub (X2) + outcome model (X5) ───────────────────────────────────────
+@router.get("/games/{slug}/scenes/{key}/hub")
+def scene_hub(slug: str, key: str, db: Session = Depends(get_db)):
+    """Everything a scene CONTAINS, grouped by layer, plus the **inherited
+    globals** (systems scoped ``global`` or not contained by any scene, and all
+    factors — factors are world-level). Powers the Scene-hub dashboard."""
+    game = _require_game(db, slug)
+    scene = _require_entity(db, game, key)
+    if scene.layer != "scene":
+        raise HTTPException(400, f"entity '{key}' is not a scene (layer={scene.layer})")
+
+    entities = service.list_entities(db, game)
+    relations = service.list_relations(db, game)
+    id2e = {e.id: e for e in entities}
+
+    members: Dict[str, List[dict]] = defaultdict(list)
+    contained_anywhere: set = set()
+    for r in relations:
+        if r.kind != "CONTAINS":
+            continue
+        contained_anywhere.add(r.dst_entity)
+        if r.src_entity == scene.id:
+            dst = id2e.get(r.dst_entity)
+            if dst is not None:
+                members[dst.layer].append(_entity_dict(dst))
+
+    inherited_systems: List[dict] = []
+    inherited_factors: List[dict] = []
+    for e in entities:
+        if e.layer == "system":
+            scope = (e.data or {}).get("scope")
+            if scope == "global" or e.id not in contained_anywhere:
+                inherited_systems.append(_entity_dict(e))
+        elif e.layer == "factor":
+            inherited_factors.append(_entity_dict(e))
+
+    return {
+        "scene": _entity_dict(scene),
+        "members": dict(members),
+        "inherited": {"systems": inherited_systems, "factors": inherited_factors},
+    }
+
+
+@router.get("/games/{slug}/factors/{key}/contributors")
+def factor_contributors(slug: str, key: str, db: Session = Depends(get_db)):
+    """Ranked AFFECTS-in edges for a factor (who pushes it, by magnitude)."""
+    game = _require_game(db, slug)
+    entity = _require_entity(db, game, key)
+    if entity.layer != "factor":
+        raise HTTPException(400, f"entity '{key}' is not a factor (layer={entity.layer})")
+    return outcome.contributors(
+        key, _entity_data_dicts(db, game), _relation_data_dicts(db, game)
+    )
+
+
+@router.post("/games/{slug}/outcome/project")
+def outcome_project(
+    slug: str, body: Dict[str, Any] = Body(default={}), db: Session = Depends(get_db)
+):
+    """Project the factor end-state from a baseline (optionally with what-if
+    ``overrides``), then run the outcome resolver → ending + per-rule trace. The
+    UI's live "if the game ended now" panel."""
+    game = _require_game(db, slug)
+    entities = _entity_data_dicts(db, game)
+    relations = _relation_data_dicts(db, game)
+
+    state = outcome.project(entities, relations)
+    overrides = (body or {}).get("overrides") or {}
+    if isinstance(overrides, dict):
+        state.update(overrides)
+
+    outcome_nodes = [e for e in entities if e["layer"] == "outcome"]
+    od = (outcome_nodes[0].get("data") or {}) if outcome_nodes else {}
+    res = outcome.resolve(state, od.get("rules") or [], od.get("default_ending"))
+
+    return {"factor_state": state, **res}
 
 
 # ── releases (S7) ─────────────────────────────────────────────────────────────
