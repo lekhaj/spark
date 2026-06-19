@@ -49,7 +49,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import contract as contract_builder
-from . import capability_store, compile_agent, compile_tools, validate_agent
+from . import capability_store, compile_agent, compile_tools, propose_agent, validate_agent
 from . import generation, graph, matching, metamodel, outcome, schemas, service
 from .db import get_db
 
@@ -518,6 +518,74 @@ def compile_game(slug: str, body: Dict[str, Any] = Body(default={}), db: Session
         ledger=ledger,
         stitch_fn=stitch_fn,
     )
+
+
+# ── system proposal + bulk install (U6) ───────────────────────────────────────
+@router.post("/metamodel/propose-systems")
+def propose_systems(body: Dict[str, Any] = Body(...)):
+    """Describe a game → propose layers + relations (Bedrock Tier-C, AWS credits),
+    deterministically linted. Body: {description, feedback?, prior?}. Global (operates
+    on the shared metamodel); writes nothing — the creator reviews then installs."""
+    description = (body.get("description") or "").strip()
+    if not description:
+        raise HTTPException(422, "description is required")
+    try:
+        mm = _load_metamodel()
+        known = list(mm.get("layers", {}).keys())
+    except Exception:  # noqa: BLE001
+        known = []
+    try:
+        propose_fn = propose_agent.make_bedrock_proposer(known)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(503, f"proposer unavailable (no LLM configured): {exc}")
+    return propose_agent.propose_systems(
+        description, known,
+        feedback=body.get("feedback"), prior=body.get("prior"), propose_fn=propose_fn,
+    )
+
+
+@router.post("/metamodel/install")
+def install_systems(body: Dict[str, Any] = Body(...)):
+    """Bulk-create proposed systems: for each layer create+activate a schema and
+    register the layer; for each relation upsert the relation type. One request →
+    avoids many slow round-trips on the cold single-worker box. Idempotent-ish
+    (re-installing a layer just adds a schema version)."""
+    from datetime import datetime, timezone
+    mongo = _mongo()
+    col = mongo["spec_schemas"]
+    created_layers: List[str] = []
+    created_relations: List[str] = []
+
+    for l in body.get("layers") or []:
+        layer = l.get("layer")
+        schema = l.get("schema") or {"type": "object", "properties": {}}
+        if not layer:
+            continue
+        lint = compile_tools.lint_schema(schema)
+        if not lint["ok"]:
+            raise HTTPException(422, f"layer '{layer}' schema invalid: {'; '.join(lint['errors'])}")
+        schema_key = f"{layer}_spec"
+        latest = col.find_one({"schema_key": schema_key}, sort=[("version", -1)])
+        version = (latest["version"] + 1) if latest else 1
+        col.update_many({"schema_key": schema_key, "active": True}, {"$set": {"active": False}})
+        col.insert_one({
+            "schema_key": schema_key, "version": version, "title": l.get("title") or layer,
+            "engine_bound": False, "json_schema": schema, "changelog": "proposed via U6",
+            "created_at": datetime.now(timezone.utc), "active": True,
+        })
+        metamodel.upsert_layer(mongo, layer, schema_key, l.get("title") or layer)
+        created_layers.append(layer)
+
+    for r in body.get("relations") or []:
+        if not r.get("kind"):
+            continue
+        try:
+            metamodel.upsert_relation_type(mongo, r)
+            created_relations.append(r["kind"])
+        except ValueError as exc:
+            raise HTTPException(422, f"relation '{r.get('kind')}' invalid: {exc}")
+
+    return {"ok": True, "created_layers": created_layers, "created_relations": created_relations}
 
 
 # ── metamodel (S0) ───────────────────────────────────────────────────────────
