@@ -49,7 +49,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import contract as contract_builder
-from . import compile_agent, compile_tools
+from . import capability_store, compile_agent, compile_tools
 from . import generation, graph, matching, metamodel, outcome, schemas, service
 from .db import get_db
 
@@ -360,12 +360,92 @@ def _schemas_by_layer(mongo, mm, layers: List[str]) -> Dict[str, Any]:
     return out
 
 
+_CAP_COLLECTION = "cz_capabilities"
+_BUILDLOG_COLLECTION = "cz_build_log"
+
+
+def _load_ledger(mongo, engine: str):
+    """Living capability ledger for an engine (per engine — the runtime repo is
+    shared across games). None when Mongo is unavailable."""
+    if mongo is None:
+        return None
+    return mongo[_CAP_COLLECTION].find_one({"engine": engine}, {"_id": 0})
+
+
+def _save_ledger(mongo, ledger: dict) -> None:
+    mongo[_CAP_COLLECTION].update_one(
+        {"engine": ledger["engine"]}, {"$set": ledger}, upsert=True
+    )
+
+
 @router.get("/games/{slug}/capabilities")
 def get_capabilities(slug: str, engine: str = Query("babylon"), db: Session = Depends(get_db)):
-    """The engine Capability Registry — what the runtime already provides, so the
-    compiler can tell the code-gen LLM what NOT to re-implement."""
+    """The engine Capability Registry — base seed + the **living ledger** of what
+    Claude Code has built — so the compiler knows what NOT to re-implement."""
     _require_game(db, slug)
-    return compile_tools.get_capability_registry(engine)
+    try:
+        ledger = _load_ledger(_mongo(), engine)
+    except Exception:  # noqa: BLE001
+        ledger = None
+    return compile_tools.get_capability_registry(engine, ledger=ledger)
+
+
+@router.get("/games/{slug}/capabilities/log")
+def get_build_log(slug: str, db: Session = Depends(get_db)):
+    """Per-game build log — the status sheet of compiles + what Claude Code reported."""
+    game = _require_game(db, slug)
+    try:
+        mongo = _mongo()
+        rows = list(mongo[_BUILDLOG_COLLECTION].find({"slug": game.slug}, {"_id": 0}).sort("at", -1).limit(50))
+    except Exception:  # noqa: BLE001
+        rows = []
+    return {"slug": game.slug, "entries": rows}
+
+
+@router.post("/games/{slug}/capabilities/parse")
+def parse_done_note(slug: str, body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    """Structure a freeform Claude Code done-note into {systems, consumes, repo,
+    commit, files, summary} for review. Deterministic extraction first; an optional
+    Bedrock (AWS-credit) pass enriches it. Writes nothing — the creator confirms then
+    calls /ingest."""
+    _require_game(db, slug)
+    engine = body.get("engine", "babylon")
+    note = body.get("note", "")
+    base = compile_tools.get_base_registry(engine)
+    try:
+        mm = _load_metamodel()
+        known_layers = list(mm.get("layers", {}).keys())
+    except Exception:  # noqa: BLE001
+        known_layers = []
+    suggestion = capability_store.extract_from_note(note, known_layers, base.get("systems", []))
+    return {"suggestion": suggestion, "source": "deterministic"}
+
+
+@router.post("/games/{slug}/capabilities/ingest")
+def ingest_report(slug: str, body: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    """Record what Claude Code built and **merge it into the capability ledger** so the
+    next compile reflects the new engine state. Body: {engine?, systems?, consumes?,
+    repo?, commit?, files?, summary?}. Returns the updated merged registry."""
+    game = _require_game(db, slug)
+    engine = body.get("engine", "babylon")
+    try:
+        mongo = _mongo()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(503, f"capability store unavailable: {exc}")
+    ledger = _load_ledger(mongo, engine) or capability_store.empty_ledger(engine)
+    ledger = capability_store.apply_report(ledger, body)
+    _save_ledger(mongo, ledger)
+    # status sheet entry
+    mongo[_BUILDLOG_COLLECTION].insert_one({
+        "slug": game.slug, "engine": engine,
+        "at": ledger["entries"][-1]["at"],
+        "report": ledger["entries"][-1],
+    })
+    return {
+        "ok": True,
+        "registry": compile_tools.get_capability_registry(engine, ledger=ledger),
+        "entry": ledger["entries"][-1],
+    }
 
 
 @router.post("/games/{slug}/compile")
@@ -390,6 +470,9 @@ def compile_game(slug: str, body: Dict[str, Any] = Body(default={}), db: Session
     bundle = compile_tools.gather_scope(entities, relations, scope)
     schemas_by_layer = _schemas_by_layer(mongo, mm, bundle["layers"])
 
+    target = body.get("target", "babylon")
+    ledger = _load_ledger(mongo, target)  # living capability state → shrinks gaps
+
     stitch_fn = None
     if body.get("stitch", True):
         try:
@@ -400,9 +483,10 @@ def compile_game(slug: str, body: Dict[str, Any] = Body(default={}), db: Session
     return compile_agent.compile_prompt(
         entities, relations, mm, schemas_by_layer,
         scope=scope,
-        target=body.get("target", "babylon"),
+        target=target,
         output=body.get("output", "build_packet"),
         acceptance=body.get("acceptance"),
+        ledger=ledger,
         stitch_fn=stitch_fn,
     )
 

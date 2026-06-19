@@ -39,14 +39,16 @@ def compile_prompt(
     target: str = "babylon",
     output: str = "build_packet",
     acceptance: Optional[List[str]] = None,
+    ledger: Optional[Dict[str, Any]] = None,
     stitch_fn: Optional[Callable[[Dict[str, Any]], str]] = None,
 ) -> Dict[str, Any]:
     """Assemble a code-gen prompt for a scope. Pure except for the injected
-    ``stitch_fn`` (the single LLM seam). Returns the prompt + provenance so the UI
-    can show what went into it and whether the graph passed the gate."""
+    ``stitch_fn`` (the single LLM seam). ``ledger`` (the living capability ledger of
+    what Claude Code has already built) is merged into the registry so gaps shrink as
+    the engine grows. Returns the prompt + provenance for the UI."""
     # 1. deterministic tools
     bundle = ct.gather_scope(entities, relations, scope)
-    registry = ct.get_capability_registry(target)
+    registry = ct.get_capability_registry(target, ledger=ledger)
     diff = ct.diff_capabilities(bundle["layers"], registry)
     skeleton = ct.assemble_prompt_skeleton(
         bundle, schemas_by_layer, registry, diff, target, output, acceptance

@@ -43,14 +43,29 @@ _REGISTRY: Dict[str, Dict[str, Any]] = {
 }
 
 
-def get_capability_registry(engine: str = "babylon") -> Dict[str, Any]:
-    """Return what the named engine runtime already provides. Unknown engine →
-    an empty/generic registry (everything is a gap), never an error."""
+def get_base_registry(engine: str = "babylon") -> Dict[str, Any]:
+    """The hardcoded seed registry for an engine (what shipped originally). Unknown
+    engine → empty/generic (everything is a gap), never an error."""
     reg = _REGISTRY.get(engine)
     if reg is None:
         return {"engine": engine, "systems": [], "contract_fields": [],
                 "consumes": [], "unknown_engine": True}
     return dict(reg)
+
+
+def get_capability_registry(
+    engine: str = "babylon", ledger: Any = None
+) -> Dict[str, Any]:
+    """What the engine runtime provides = base seed + the **living ledger** of what
+    Claude Code has since built (merged in). With no ledger this is just the seed, so
+    the signature stays backward-compatible. The ledger keeps the reasoning model's
+    mental model current so it stops re-suggesting already-built systems."""
+    base = get_base_registry(engine)
+    if ledger is None:
+        return base
+    # Imported here to avoid a hard import cycle at module load.
+    from . import capability_store
+    return capability_store.merge_registry(base, ledger)
 
 
 # ── Scope gathering ───────────────────────────────────────────────────────────
