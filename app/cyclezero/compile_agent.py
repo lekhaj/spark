@@ -96,6 +96,8 @@ def make_bedrock_stitcher() -> Callable[[Dict[str, Any]], str]:
 
     provider = refiner_providers.get_tier_provider("C")
 
+    from app.lib import usage_recorder
+
     def _stitch(sections: Dict[str, Any]) -> str:
         user = (
             "Here is the assembled Build Packet (JSON). Write the implementation "
@@ -103,6 +105,7 @@ def make_bedrock_stitcher() -> Callable[[Dict[str, Any]], str]:
             + json.dumps(sections, indent=2, default=str)
             + "\n```"
         )
-        return provider.chat(STITCH_SYSTEM, [{"role": "user", "content": user}])
+        with usage_recorder.attribution(agent="compile"):
+            return provider.chat(STITCH_SYSTEM, [{"role": "user", "content": user}])
 
     return _stitch

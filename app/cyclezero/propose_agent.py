@@ -171,8 +171,10 @@ def make_bedrock_proposer(known_layers: List[str]) -> Callable[[str], str]:
     provider = refiner_providers.get_tier_provider("C")
     # NB: plain replace (not str.format) — the template contains literal JSON braces.
     system = PROPOSE_SYSTEM.replace("{known_layers}", ", ".join(known_layers) or "(none)")
+    from app.lib import usage_recorder
 
     def _propose(user: str) -> str:
-        return provider.chat(system, [{"role": "user", "content": user}])
+        with usage_recorder.attribution(agent="propose"):
+            return provider.chat(system, [{"role": "user", "content": user}])
 
     return _propose

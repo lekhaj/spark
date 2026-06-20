@@ -137,6 +137,7 @@ def make_bedrock_semantic() -> Callable[[List[str], str], str]:
     from app.lib import refiner_providers
 
     provider = refiner_providers.get_tier_provider("B")
+    from app.lib import usage_recorder
 
     def _check(acceptance: List[str], done_note: str) -> str:
         user = (
@@ -145,6 +146,7 @@ def make_bedrock_semantic() -> Callable[[List[str], str], str]:
             + "\n\nDeveloper done-note:\n"
             + done_note
         )
-        return provider.chat(SEMANTIC_SYSTEM, [{"role": "user", "content": user}])
+        with usage_recorder.attribution(agent="validate"):
+            return provider.chat(SEMANTIC_SYSTEM, [{"role": "user", "content": user}])
 
     return _check

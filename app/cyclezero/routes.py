@@ -52,6 +52,8 @@ from . import contract as contract_builder
 from . import capability_store, compile_agent, compile_tools, propose_agent, validate_agent
 from . import generation, graph, matching, metamodel, outcome, schemas, service
 from .db import get_db
+from app.lib import usage_recorder
+from app.lib.identity import StudioUser, current_user
 
 router = APIRouter()
 
@@ -422,7 +424,8 @@ def parse_done_note(slug: str, body: Dict[str, Any] = Body(...), db: Session = D
 
 
 @router.post("/games/{slug}/validate")
-def validate_game(slug: str, body: Dict[str, Any] = Body(default={}), db: Session = Depends(get_db)):
+def validate_game(slug: str, body: Dict[str, Any] = Body(default={}), db: Session = Depends(get_db),
+                  user: StudioUser = Depends(current_user)):
     """Validate the authored game (U5). Deterministic static gate first (graph/contract/
     outcome); the optional semantic check (Bedrock Tier-B, AWS credits) only runs when
     both ``acceptance`` and ``done_note`` are supplied. Returns verdict + Fix Packet."""
@@ -443,11 +446,12 @@ def validate_game(slug: str, body: Dict[str, Any] = Body(default={}), db: Sessio
         except Exception:  # noqa: BLE001 — no LLM → static only
             semantic_fn = None
 
-    return validate_agent.validate(
-        entities, relations, mm,
-        game={"slug": game.slug, "title": game.title},
-        acceptance=acceptance, done_note=done_note, semantic_fn=semantic_fn,
-    )
+    with usage_recorder.attribution(uid=user.uid, email=user.email, game_slug=slug):
+        return validate_agent.validate(
+            entities, relations, mm,
+            game={"slug": game.slug, "title": game.title},
+            acceptance=acceptance, done_note=done_note, semantic_fn=semantic_fn,
+        )
 
 
 @router.post("/games/{slug}/capabilities/ingest")
@@ -478,7 +482,8 @@ def ingest_report(slug: str, body: Dict[str, Any] = Body(...), db: Session = Dep
 
 
 @router.post("/games/{slug}/compile")
-def compile_game(slug: str, body: Dict[str, Any] = Body(default={}), db: Session = Depends(get_db)):
+def compile_game(slug: str, body: Dict[str, Any] = Body(default={}), db: Session = Depends(get_db),
+                 user: StudioUser = Depends(current_user)):
     """Churn out a code-gen prompt for a scope (whole game / scene / entities).
 
     Body: {scope?, target?, output?, acceptance?, stitch?}. ``stitch`` (default true)
@@ -509,20 +514,21 @@ def compile_game(slug: str, body: Dict[str, Any] = Body(default={}), db: Session
         except Exception:  # noqa: BLE001 — no LLM configured → deterministic only
             stitch_fn = None
 
-    return compile_agent.compile_prompt(
-        entities, relations, mm, schemas_by_layer,
-        scope=scope,
-        target=target,
-        output=body.get("output", "build_packet"),
-        acceptance=body.get("acceptance"),
-        ledger=ledger,
-        stitch_fn=stitch_fn,
-    )
+    with usage_recorder.attribution(uid=user.uid, email=user.email, game_slug=slug):
+        return compile_agent.compile_prompt(
+            entities, relations, mm, schemas_by_layer,
+            scope=scope,
+            target=target,
+            output=body.get("output", "build_packet"),
+            acceptance=body.get("acceptance"),
+            ledger=ledger,
+            stitch_fn=stitch_fn,
+        )
 
 
 # ── system proposal + bulk install (U6) ───────────────────────────────────────
 @router.post("/metamodel/propose-systems")
-def propose_systems(body: Dict[str, Any] = Body(...)):
+def propose_systems(body: Dict[str, Any] = Body(...), user: StudioUser = Depends(current_user)):
     """Describe a game → propose layers + relations, deterministically linted. Global
     (operates on the shared metamodel); writes nothing — the creator reviews then installs.
 
@@ -557,10 +563,11 @@ def propose_systems(body: Dict[str, Any] = Body(...)):
         propose_fn = propose_agent.make_bedrock_proposer(known)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(503, f"proposer unavailable (no LLM configured): {exc}")
-    return propose_agent.propose_systems(
-        description, known,
-        feedback=body.get("feedback"), prior=body.get("prior"), propose_fn=propose_fn,
-    )
+    with usage_recorder.attribution(uid=user.uid, email=user.email, game_slug="metamodel"):
+        return propose_agent.propose_systems(
+            description, known,
+            feedback=body.get("feedback"), prior=body.get("prior"), propose_fn=propose_fn,
+        )
 
 
 @router.post("/metamodel/install")

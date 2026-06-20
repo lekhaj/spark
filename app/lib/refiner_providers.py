@@ -44,11 +44,23 @@ class RefinerProvider(Protocol):
     def chat(self, system: str, messages: List[Dict[str, str]]) -> str: ...
 
 
+def _record_usage(model: str, tier, usage) -> None:
+    """Best-effort: price + persist one external (Bedrock) LLM call. Import is
+    lazy + fully guarded so the provider never breaks if recording is unavailable."""
+    try:
+        from app.lib import usage_recorder
+
+        usage_recorder.record(model, tier, usage)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 class AnthropicBedrockProvider:
     """Anthropic via AWS Bedrock — no API key; uses the CPU box's IAM role
     (standard boto3 credential chain). Same Messages API shape as the direct SDK."""
 
     id = "bedrock"
+    tier = None
 
     def __init__(self, model: str, region: str):
         self.model = model
@@ -66,6 +78,18 @@ class AnthropicBedrockProvider:
             system=system,
             messages=messages,
         )
+        try:
+            from app.lib.usage_recorder import Usage
+
+            u = response.usage
+            _record_usage(self.model, self.tier, Usage(
+                input_tokens=getattr(u, "input_tokens", 0) or 0,
+                output_tokens=getattr(u, "output_tokens", 0) or 0,
+                cache_read=getattr(u, "cache_read_input_tokens", 0) or 0,
+                cache_write=getattr(u, "cache_creation_input_tokens", 0) or 0,
+            ))
+        except Exception:  # noqa: BLE001
+            pass
         return "".join(
             block.text for block in response.content
             if getattr(block, "type", "") == "text"
@@ -82,6 +106,7 @@ class BedrockConverseProvider:
     system prompt is then billed ~90% cheaper on subsequent calls (where supported)."""
 
     id = "converse"
+    tier = None
 
     def __init__(self, model: str, region: str, cache: bool = True):
         self.model = model
@@ -107,6 +132,18 @@ class BedrockConverseProvider:
             messages=conv,
             inferenceConfig={"maxTokens": MAX_TOKENS},
         )
+        try:
+            from app.lib.usage_recorder import Usage
+
+            u = resp.get("usage", {}) or {}
+            _record_usage(self.model, self.tier, Usage(
+                input_tokens=u.get("inputTokens", 0) or 0,
+                output_tokens=u.get("outputTokens", 0) or 0,
+                cache_read=u.get("cacheReadInputTokens", 0) or 0,
+                cache_write=u.get("cacheWriteInputTokens", 0) or 0,
+            ))
+        except Exception:  # noqa: BLE001
+            pass
         return "".join(
             block.get("text", "")
             for block in resp["output"]["message"]["content"]
@@ -115,6 +152,7 @@ class BedrockConverseProvider:
 
 class AnthropicProvider:
     id = "anthropic"
+    tier = None
 
     def __init__(self, model: str, api_key: str):
         self.model = model
@@ -140,6 +178,7 @@ class AnthropicProvider:
 
 class OpenAICompatProvider:
     id = "openai_compat"
+    tier = None
 
     def __init__(self, base: str, model: str, api_key: str = ""):
         self.base = base.rstrip("/")
@@ -187,9 +226,11 @@ def get_tier_provider(tier: str) -> "RefinerProvider":
     compile/validate agents; falls back to the first configured provider if
     Converse isn't enabled, so callers degrade gracefully."""
     if os.environ.get("REFINER_CONVERSE", "").lower() in ("1", "true", "yes"):
-        return BedrockConverseProvider(
+        p = BedrockConverseProvider(
             model=TIER_DEFAULTS.get(tier, _HAIKU), region=_region()
         )
+        p.tier = tier
+        return p
     providers = get_providers()
     if not providers:
         raise RuntimeError("no LLM providers configured (set REFINER_CONVERSE=1)")
@@ -200,9 +241,9 @@ def get_providers() -> Dict[str, RefinerProvider]:
     """Env-driven registry. Order matters: first configured = default."""
     providers: Dict[str, RefinerProvider] = {}
     if os.environ.get("REFINER_CONVERSE", "").lower() in ("1", "true", "yes"):
-        providers["converse"] = BedrockConverseProvider(
-            model=TIER_DEFAULTS["A"], region=_region()
-        )
+        _converse = BedrockConverseProvider(model=TIER_DEFAULTS["A"], region=_region())
+        _converse.tier = "A"
+        providers["converse"] = _converse
     if os.environ.get("REFINER_BEDROCK", "").lower() in ("1", "true", "yes"):
         providers["bedrock"] = AnthropicBedrockProvider(
             model=os.environ.get(

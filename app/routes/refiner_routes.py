@@ -15,10 +15,11 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from app.lib import refiner_providers
+from app.lib import refiner_providers, usage_recorder
+from app.lib.identity import StudioUser, current_user
 
 log = logging.getLogger("refiner_routes")
 
@@ -80,7 +81,7 @@ def list_providers() -> List[Dict[str, str]]:
 
 
 @router.post("/chat")
-def chat(body: ChatBody) -> Dict[str, Any]:
+def chat(body: ChatBody, user: StudioUser = Depends(current_user)) -> Dict[str, Any]:
     providers = refiner_providers.get_providers()
     if not providers:
         raise HTTPException(503, "no refiner providers configured — set ANTHROPIC_API_KEY or REFINER_OPENAI_BASE")
@@ -97,7 +98,11 @@ def chat(body: ChatBody) -> Dict[str, Any]:
         entities=json.dumps(body.context.entities),
     )
     try:
-        reply = provider.chat(system, body.messages)
+        with usage_recorder.attribution(
+            uid=user.uid, email=user.email,
+            game_slug=body.context.project_id, agent="refiner",
+        ):
+            reply = provider.chat(system, body.messages)
     except HTTPException:
         raise
     except Exception as e:
