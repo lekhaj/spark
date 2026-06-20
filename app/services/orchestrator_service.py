@@ -206,7 +206,11 @@ class GPUOrchestrator:
 
     # ── Main orchestration loop ───────────────────────────────────────────────
 
-    async def manage_gpu(self):
+    def manage_gpu(self):
+        # NOTE: this is intentionally SYNChronous. Its body calls blocking
+        # boto3 / Redis primitives; the orchestrator loop runs it via
+        # asyncio.to_thread so a slow AWS call can never freeze the FastAPI
+        # event loop (the root cause of "site unusable every few minutes").
         if not self.auto_mode:
             return
 
@@ -307,7 +311,9 @@ class GPUOrchestrator:
         logger.info(f"[ORCHESTRATOR] Started — poll={self.poll_interval}s spot={infra.SPOT_GPU_INSTANCE_ID} ondemand={infra.ONDEMAND_GPU_INSTANCE_ID} eip={infra.GPU_PUBLIC_IP}")
         while True:
             try:
-                await self.manage_gpu()
+                # Run the blocking GPU-management cycle in a worker thread so a
+                # slow boto3/Redis call never blocks the event loop serving HTTP.
+                await asyncio.to_thread(self.manage_gpu)
                 await asyncio.sleep(self.poll_interval)
             except Exception as e:
                 logger.error(f"[ORCHESTRATOR ERROR] {e}", exc_info=True)

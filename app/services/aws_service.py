@@ -1,8 +1,21 @@
 import boto3
 import subprocess
 import time
+from botocore.config import Config
 from app.config import settings
 from app import infra
+
+# Bound every AWS API call so a flaky endpoint can't hang for minutes. Without
+# this, boto3's default socket timeouts + retry backoff let a single
+# describe_instances stall ~130s — and because the orchestrator loop calls these
+# synchronously, that stall used to freeze the whole FastAPI event loop ("site
+# unusable every few minutes"). With a 5s connect / 10s read cap and 2 attempts,
+# worst case is ~30s, and the orchestrator now runs off the event loop anyway.
+_BOTO_CONFIG = Config(
+    connect_timeout=5,
+    read_timeout=10,
+    retries={"max_attempts": 2, "mode": "standard"},
+)
 
 # GPU lifecycle (spot-first / on-demand-fallback + EIP) is owned by
 # worker/lib/gpu_launcher.py. This module provides the lower-level start/stop/SSH
@@ -25,7 +38,7 @@ def _boto3_kwargs() -> dict:
 
 
 # AWS EC2 client
-ec2 = boto3.client("ec2", region_name=settings.AWS_REGION, **_boto3_kwargs())
+ec2 = boto3.client("ec2", region_name=settings.AWS_REGION, config=_BOTO_CONFIG, **_boto3_kwargs())
 
 # ── Instance ID map (alias → EC2 instance ID) ────────────────────────────────
 # One logical GPU alias ("gpu"); raw instance ids pass through get_instance_id
@@ -258,7 +271,7 @@ def get_gpu_instance_status(gpu_type: str) -> dict:
 
 
 def _s3_client():
-    return boto3.client("s3", region_name=settings.AWS_REGION, **_boto3_kwargs())
+    return boto3.client("s3", region_name=settings.AWS_REGION, config=_BOTO_CONFIG, **_boto3_kwargs())
 
 
 def download_from_s3(bucket: str, key: str, download_path: str):
