@@ -42,6 +42,24 @@ def _tc(tool, **inp):
     return {"name": tool, "input": inp, "id": tool + "1"}
 
 
+# A minimal metamodel for link_entities tests: two relation kinds with layer contracts.
+_MM = {
+    "layers": {
+        "system": {"layer": "system"},
+        "factor": {"layer": "factor"},
+        "character": {"layer": "character"},
+        "scene": {"layer": "scene"},
+    },
+    "relation_types": {
+        "REQUIRES": {"kind": "REQUIRES", "src_layers": ["system"], "dst_layers": ["system"],
+                     "src_cardinality": "many", "dst_cardinality": "many"},
+        "AFFECTS": {"kind": "AFFECTS", "src_layers": ["system"], "dst_layers": ["factor"],
+                    "src_cardinality": "many", "dst_cardinality": "many"},
+    },
+}
+_MM_LAYERS = list(_MM["layers"].keys())
+
+
 @pytest.fixture()
 def sql():
     engine = create_engine(
@@ -142,6 +160,90 @@ def test_answer_resolves_open_question(sql, mongo):
     assert mem["open_questions"] == []  # resolved
 
 
+# ── relations (the stamina example) ───────────────────────────────────────────
+def test_link_entities_creates_and_rejects_illegal_edges(sql, mongo):
+    """One turn: create three entities and wire them up; legal edges persist,
+    illegal/unknown ones are rejected by the relation contract."""
+    service.create_game(sql, schemas.GameCreate(title="Diablo 2", owner_id="u1"))
+    prov = FakeProvider({"text": "Wiring stamina up.", "tool_calls": [
+        _tc("upsert_entity", layer="system", name="Stamina"),
+        _tc("upsert_entity", layer="system", name="Power Attack"),
+        _tc("upsert_entity", layer="factor", name="Defense"),
+        # legal: system REQUIRES system
+        _tc("link_entities", src="Power Attack", kind="REQUIRES", dst="Stamina"),
+        # legal: system AFFECTS factor (by name → resolves to slug key)
+        _tc("link_entities", src="Stamina", kind="AFFECTS", dst="Defense",
+            data={"op": "add", "value": -10}),
+        # illegal: AFFECTS dst must be a factor, Stamina is a system
+        _tc("link_entities", src="Power Attack", kind="AFFECTS", dst="Stamina"),
+        # unknown kind
+        _tc("link_entities", src="Stamina", kind="ZAPS", dst="Defense"),
+        # missing endpoint
+        _tc("link_entities", src="Stamina", kind="REQUIRES", dst="Nonexistent"),
+    ]})
+    out = creator_agent.run_turn(
+        provider=prov, sql_db=sql, mongo_db=mongo, uid="u1", email="a@b.com",
+        game_slug="diablo-2",
+        user_text="stamina drains on power attacks; low stamina weakens defense",
+        known_layers=_MM_LAYERS, metamodel=_MM,
+    )
+    rels = [s for s in out["saved"] if s["kind"] == "relation"]
+    rejects = [s for s in out["saved"] if s["kind"] == "rejected"]
+    assert {(r["src"], r["rel_kind"], r["dst"]) for r in rels} == {
+        ("power-attack", "REQUIRES", "stamina"),
+        ("stamina", "AFFECTS", "defense"),
+    }
+    assert len(rejects) == 3  # illegal layer + unknown kind + missing endpoint
+    # the edges are actually in the graph
+    game = service.get_game(sql, "diablo-2")
+    assert len(service.list_relations(sql, game)) == 2
+    # AFFECTS edge carried its data delta
+    affects = next(r for r in service.list_relations(sql, game) if r.kind == "AFFECTS")
+    assert affects.data == {"op": "add", "value": -10}
+
+
+def test_link_rejected_when_no_metamodel(sql, mongo):
+    """Without a metamodel the contract can't be enforced → relations are rejected,
+    never silently written."""
+    service.create_game(sql, schemas.GameCreate(title="Diablo 2", owner_id="u1"))
+    prov = FakeProvider({"text": "", "tool_calls": [
+        _tc("upsert_entity", layer="system", name="Stamina"),
+        _tc("upsert_entity", layer="system", name="Power Attack"),
+        _tc("link_entities", src="Power Attack", kind="REQUIRES", dst="Stamina"),
+    ]})
+    out = creator_agent.run_turn(
+        provider=prov, sql_db=sql, mongo_db=mongo, uid="u1", email="a@b.com",
+        game_slug="diablo-2", user_text="link them", known_layers=["system"],
+        metamodel=None,
+    )
+    assert any(s["kind"] == "rejected" for s in out["saved"])
+    assert not any(s["kind"] == "relation" for s in out["saved"])
+
+
+def test_play_hints_track_scene_and_player(sql, mongo):
+    service.create_game(sql, schemas.GameCreate(title="Diablo 2", owner_id="u1"))
+    # nothing yet → both hints
+    p0 = FakeProvider({"text": "ok", "tool_calls": []})
+    o0 = creator_agent.run_turn(
+        provider=p0, sql_db=sql, mongo_db=mongo, uid="u1", email="a@b.com",
+        game_slug="diablo-2", user_text="hi", known_layers=_MM_LAYERS, metamodel=_MM,
+    )
+    assert o0["playable"] is True  # contract renders from defaults
+    assert set(o0["play_hints"]) == {"add a scene", "add a player character"}
+
+    # add a scene + a player character → no hints left
+    p1 = FakeProvider({"text": "building", "tool_calls": [
+        _tc("upsert_entity", layer="scene", name="Tristram"),
+        _tc("upsert_entity", layer="character", name="Hero", data={"role": "player"}),
+    ]})
+    o1 = creator_agent.run_turn(
+        provider=p1, sql_db=sql, mongo_db=mongo, uid="u1", email="a@b.com",
+        game_slug="diablo-2", user_text="add a town and a hero",
+        known_layers=_MM_LAYERS, metamodel=_MM,
+    )
+    assert o1["play_hints"] == []
+
+
 # ── memory / session persistence ──────────────────────────────────────────────
 def test_turns_persist_and_cap_at_50(mongo):
     for i in range(60):
@@ -156,6 +258,7 @@ def test_turns_persist_and_cap_at_50(mongo):
 @pytest.fixture()
 def client(sql, mongo, monkeypatch):
     monkeypatch.setattr(creator_routes, "get_mongo", lambda: mongo)
+    monkeypatch.setattr(creator_routes, "_metamodel", lambda: None)
     monkeypatch.setattr(creator_routes, "_known_layers", lambda: ["character"])
 
     def override_sql():

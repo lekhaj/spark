@@ -41,6 +41,24 @@ SESSIONS = "creator_sessions"
 TURN_CAP = 50          # how much chat history we keep / reload ("to some extent")
 HISTORY_FOR_LLM = 12   # recent turns fed back to Haiku as conversation context
 
+# The contract renders with graceful defaults from an empty graph, but a game is
+# meaningfully playable once there's a place to be (scene) and someone to control
+# (a character with data.role == "player"). These drive the "what's left to play"
+# hints — not hard gates.
+PLAY_SCENE_LAYER = "scene"
+PLAY_PLAYER_LAYER = "character"
+
+# Deterministic dispatch order within a single turn: a game must exist before we
+# write to it, entities must exist before we can link them, and the clarification
+# popup is resolved last (after everything we *could* save this turn).
+_DISPATCH_ORDER = {
+    "start_game": 0,
+    "upsert_entity": 1,
+    "save_facts": 2,
+    "link_entities": 3,
+    "ask_clarification": 4,
+}
+
 
 # ── tool schemas (Anthropic-style; the provider translates to Converse) ───────
 TOOLS: List[Dict[str, Any]] = [
@@ -85,6 +103,26 @@ TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "link_entities",
+        "description": "Create a typed relationship between two existing entities — this is "
+                       "how mechanics actually connect (e.g. a power-attack REQUIRES a stamina "
+                       "system; a system AFFECTS a factor; a scene CONTAINS a character). "
+                       "'kind' must be one of the known relation types and the two entities' "
+                       "layers must be legal for it. Create BOTH endpoints with upsert_entity "
+                       "first (in the same turn is fine).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "src": {"type": "string", "description": "source entity key or name"},
+                "kind": {"type": "string", "description": "known relation kind (UPPER_SNAKE)"},
+                "dst": {"type": "string", "description": "destination entity key or name"},
+                "data": {"type": "object", "description":
+                         "optional edge data, e.g. {\"op\":\"add\",\"value\":-10} for an AFFECTS delta"},
+            },
+            "required": ["src", "kind", "dst"],
+        },
+    },
+    {
         "name": "ask_clarification",
         "description": "Ask the user ONE question when you are unsure what to save. "
                        "Provide 2-4 concrete options. Use this instead of guessing.",
@@ -104,17 +142,30 @@ TOOLS: List[Dict[str, Any]] = [
 CREATOR_SYSTEM = """You are the Spark Studio creator — the chat brain that helps a user
 BUILD a game, turn by turn. You converse briefly, and you SAVE progress using tools.
 
-You have these tools: start_game, save_facts, upsert_entity, ask_clarification.
+You have these tools: start_game, save_facts, upsert_entity, link_entities, ask_clarification.
 
 Rules:
 - If the user wants to start a new game and none exists yet, call start_game FIRST.
-- Save only what you are SURE about. Use save_facts for high-level design facts
-  (genre, pillars, tone, references) and upsert_entity for concrete objects
-  (characters, systems, missions, props, environments).
+- Save high-level design facts (genre, pillars, tone, references) with save_facts.
+- Create concrete objects with upsert_entity (characters, systems, scenes, missions,
+  props, environments, factors, items…). 'layer' MUST be one of the known layers:
+  {known_layers}.
+- Capture how things RELATE with link_entities — relations are how mechanics actually
+  connect, so don't drop them. 'kind' MUST be one of the known relation types (each
+  shows which layers it may connect):
+  {known_relations}
+  Example: the user says "stamina drains on power attacks and low stamina weakens
+  defense" → upsert a `system` "Stamina", upsert a `system` "Power Attack", upsert a
+  `factor` "Defense", then link Power Attack REQUIRES Stamina and Stamina AFFECTS
+  Defense. Always create BOTH endpoints before linking them.
+- PLAYABLE TARGET: the user can playtest the moment a game exists, but it's most fun
+  once there's a `scene` to be in and a `character` whose data.role is "player". When
+  the user is building, make sure those exist (sensible defaults are fine) so they can
+  try it early. Fill play-relevant fields when known: character {role, spawn:[x,y,z],
+  speed}, collider {shape, position, size}, prop {glb}.
 - When you are UNSURE what to persist, DO NOT GUESS — call ask_clarification with a
   short question and 2-4 concrete options. You may save the parts you're sure about
   AND ask about the one gap in the same turn.
-- upsert_entity 'layer' MUST be one of the known layers: {known_layers}.
 - Keep your spoken reply short (1-3 sentences); the tools do the saving.
 
 Confirmed facts so far for this game (already saved — don't re-save unless changing):
@@ -177,6 +228,46 @@ def load_turns(mongo_db, uid: Optional[str], game_slug: str, limit: int = TURN_C
     return turns[-limit:]
 
 
+# ── relation + play helpers ───────────────────────────────────────────────────
+def _render_relations(metamodel: Optional[Dict[str, Any]]) -> str:
+    """Render the relation vocabulary for the system prompt:
+    ``KIND (src_layers → dst_layers)`` per known relation type."""
+    rts = (metamodel or {}).get("relation_types") or {}
+    parts: List[str] = []
+    for kind, rt in sorted(rts.items()):
+        src = "/".join(rt.get("src_layers") or []) or "*"
+        dst = "/".join(rt.get("dst_layers") or []) or "*"
+        parts.append(f"{kind} ({src} → {dst})")
+    return "; ".join(parts) or "(no relation types installed yet)"
+
+
+def _resolve_key(sql_db: Session, game, ref: str) -> Optional[str]:
+    """Resolve an entity reference (a stored key OR a display name) to its key.
+    upsert_entity derives ``key = slugify(name)``, so a name resolves the same way."""
+    ref = (ref or "").strip()
+    if not ref:
+        return None
+    ent = service.get_entity(sql_db, game, ref)
+    if ent is None:
+        ent = service.get_entity(sql_db, game, schemas.slugify(ref))
+    return ent.key if ent else None
+
+
+def _play_hints(sql_db: Session, game_slug: str) -> List[str]:
+    """What's still missing for a *fun* playtest (the contract already renders an
+    empty scene from defaults, so these are nudges, not blockers)."""
+    game = service.get_game(sql_db, game_slug)
+    if game is None:
+        return []
+    layers = {e.layer for e in service.list_entities(sql_db, game)}
+    hints: List[str] = []
+    if PLAY_SCENE_LAYER not in layers:
+        hints.append("add a scene")
+    if PLAY_PLAYER_LAYER not in layers:
+        hints.append("add a player character")
+    return hints
+
+
 # ── orchestrator ──────────────────────────────────────────────────────────────
 def run_turn(
     *,
@@ -188,11 +279,15 @@ def run_turn(
     game_slug: Optional[str],
     user_text: str,
     known_layers: List[str],
+    metamodel: Optional[Dict[str, Any]] = None,
     resolve_field: Optional[str] = None,
 ) -> Dict[str, Any]:
     """One creator turn. Calls Haiku with tools, then deterministically dispatches
-    each tool call. Returns ``{reply, saved[], pending_question?, game_slug}``.
+    each tool call. Returns ``{reply, saved[], pending_question?, game_slug,
+    playable, play_hints}``.
 
+    ``metamodel`` (``{layers, relation_types}``) gates ``link_entities`` against the
+    relation contract; omit it (None) and relations are politely rejected.
     ``resolve_field`` (set when the user is answering a popup) drops that open
     question from memory once handled.
     """
@@ -206,6 +301,7 @@ def run_turn(
     system = (
         CREATOR_SYSTEM
         .replace("{known_layers}", ", ".join(known_layers) or "(none)")
+        .replace("{known_relations}", _render_relations(metamodel))
         .replace("{facts_json}", _json.dumps(facts, default=str) if facts else "(none yet)")
     )
 
@@ -224,8 +320,10 @@ def run_turn(
     saved: List[Dict[str, Any]] = []
     pending_question: Optional[Dict[str, Any]] = None
 
-    # start_game first so subsequent saves in the same turn have a game to write to.
-    tool_calls.sort(key=lambda c: 0 if c.get("name") == "start_game" else 1)
+    # Deterministic order: start_game → upsert_entity → save_facts → link_entities →
+    # ask_clarification, so a single turn can create a game, populate it, link the new
+    # entities, and still ask one gap. Stable sort preserves intra-group order.
+    tool_calls.sort(key=lambda c: _DISPATCH_ORDER.get(c.get("name"), 2))
 
     for call in tool_calls:
         name = call.get("name")
@@ -275,6 +373,44 @@ def run_turn(
                     sql_db.rollback()
                     saved.append({"kind": "rejected", "reason": str(e), "name": ename})
 
+            elif name == "link_entities":
+                kind = (args.get("kind") or "").strip()
+                src_ref = (args.get("src") or "").strip()
+                dst_ref = (args.get("dst") or "").strip()
+                label = f"{src_ref} {kind} {dst_ref}".strip()
+                if not game_slug or not kind or not src_ref or not dst_ref:
+                    continue
+                # gate on the relation contract: kind must be known
+                rel_types = (metamodel or {}).get("relation_types") or {}
+                if kind not in rel_types:
+                    saved.append({"kind": "rejected", "name": label,
+                                  "reason": f"unknown relation '{kind}'"})
+                    continue
+                game = service.get_game(sql_db, game_slug)
+                if game is None:
+                    continue
+                src_key = _resolve_key(sql_db, game, src_ref)
+                dst_key = _resolve_key(sql_db, game, dst_ref)
+                if not src_key or not dst_key:
+                    miss = src_ref if not src_key else dst_ref
+                    saved.append({"kind": "rejected", "name": label,
+                                  "reason": f"entity not found: {miss}"})
+                    continue
+                try:
+                    # passing the metamodel makes create_relation enforce the edge
+                    # contract (legal src/dst layers + cardinality).
+                    service.create_relation(
+                        sql_db, game,
+                        schemas.RelationCreate(src=src_key, dst=dst_key, kind=kind,
+                                               data=args.get("data") or {}),
+                        metamodel=metamodel,
+                    )
+                    saved.append({"kind": "relation", "rel_kind": kind,
+                                  "src": src_key, "dst": dst_key})
+                except Exception as e:  # noqa: BLE001 — contract violation / bad edge
+                    sql_db.rollback()
+                    saved.append({"kind": "rejected", "name": label, "reason": str(e)})
+
             elif name == "ask_clarification":
                 if pending_question is None:  # first question wins; one popup at a time
                     pending_question = {
@@ -311,6 +447,10 @@ def run_turn(
         "saved": saved,
         "pending_question": pending_question,
         "game_slug": game_slug,
+        # The contract renders from defaults, so a game is playable as soon as it
+        # exists; play_hints say what's still missing for a *fun* playtest.
+        "playable": bool(game_slug),
+        "play_hints": _play_hints(sql_db, game_slug) if game_slug else [],
     }
 
 

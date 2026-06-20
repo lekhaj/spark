@@ -37,16 +37,21 @@ def _provider():
     return creator_agent.make_bedrock_creator()
 
 
-def _known_layers() -> List[str]:
-    """Known layer names from the shared metamodel (best-effort)."""
+def _metamodel() -> Optional[Dict[str, Any]]:
+    """The shared relation metamodel (``{layers, relation_types}``), best-effort.
+    Gates ``link_entities`` against the edge contract; None → relations rejected."""
     try:
         from app.cyclezero import metamodel
         from worker.lib import manual_gen_schema as mgs
 
-        mm = metamodel.load_metamodel(mgs.get_db())
-        return list(mm.get("layers", {}).keys())
+        return metamodel.load_metamodel(mgs.get_db())
     except Exception:  # noqa: BLE001
-        return []
+        return None
+
+
+def _known_layers() -> List[str]:
+    """Known layer names from the shared metamodel (best-effort)."""
+    return list((_metamodel() or {}).get("layers", {}).keys())
 
 
 @router.post("/creator/turn")
@@ -71,6 +76,8 @@ def creator_turn(
 
     try:
         provider = _provider()
+        mm = _metamodel()
+        known_layers = list((mm or {}).get("layers", {}).keys()) or _known_layers()
         with usage_recorder.attribution(
             uid=user.uid, email=user.email, game_slug=game_slug or "(new)", agent="creator",
         ):
@@ -82,7 +89,8 @@ def creator_turn(
                 email=user.email,
                 game_slug=game_slug,
                 user_text=user_text,
-                known_layers=_known_layers(),
+                known_layers=known_layers,
+                metamodel=mm,
                 resolve_field=resolve_field,
             )
     except Exception as e:  # noqa: BLE001 — chat must degrade, never 500
