@@ -109,6 +109,47 @@ def validate_proposal(
     }
 
 
+def build_user_message(
+    description: str,
+    *,
+    feedback: Optional[str] = None,
+    prior: Optional[Dict[str, Any]] = None,
+) -> str:
+    """The user-turn text fed to the proposer (game description + optional iteration)."""
+    parts = [f"Game description:\n{description}"]
+    if prior:
+        parts.append("Current proposed systems (JSON):\n" + json.dumps(prior, default=str))
+    if feedback:
+        parts.append(f"Revise per this feedback:\n{feedback}")
+    return "\n\n".join(parts)
+
+
+def build_prompt(
+    description: str,
+    known_layers: List[str],
+    *,
+    feedback: Optional[str] = None,
+    prior: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Assemble the FULL self-contained propose prompt (system rules + user turn) the
+    creator can paste into any external LLM (e.g. Claude Code) — the BYO-LLM path that
+    burns zero Bedrock. Whatever JSON comes back goes through ``lint_raw`` then install."""
+    system = PROPOSE_SYSTEM.replace("{known_layers}", ", ".join(known_layers) or "(none)")
+    user = build_user_message(description, feedback=feedback, prior=prior)
+    return (
+        f"{system}\n\n"
+        "=== YOUR TASK ===\n"
+        f"{user}\n\n"
+        "Reply with ONLY the JSON object described above."
+    )
+
+
+def lint_raw(raw: str, known_layers: List[str]) -> Dict[str, Any]:
+    """Parse + deterministically lint a proposal pasted back from an external LLM.
+    Same output shape as ``propose_systems`` — feeds straight into the install step."""
+    return validate_proposal(_parse_json(raw), known_layers)
+
+
 def propose_systems(
     description: str,
     known_layers: List[str],
@@ -119,14 +160,8 @@ def propose_systems(
 ) -> Dict[str, Any]:
     """Run one proposal round. ``propose_fn`` is the LLM seam (gets the full user
     message, returns raw text). Iteration: pass ``feedback`` + ``prior`` to refine."""
-    parts = [f"Game description:\n{description}"]
-    if prior:
-        parts.append("Current proposed systems (JSON):\n" + json.dumps(prior, default=str))
-    if feedback:
-        parts.append(f"Revise per this feedback:\n{feedback}")
-    raw = propose_fn("\n\n".join(parts))
-    parsed = _parse_json(raw)
-    return validate_proposal(parsed, known_layers)
+    raw = propose_fn(build_user_message(description, feedback=feedback, prior=prior))
+    return lint_raw(raw, known_layers)
 
 
 def make_bedrock_proposer(known_layers: List[str]) -> Callable[[str], str]:

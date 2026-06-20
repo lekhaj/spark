@@ -523,17 +523,36 @@ def compile_game(slug: str, body: Dict[str, Any] = Body(default={}), db: Session
 # ── system proposal + bulk install (U6) ───────────────────────────────────────
 @router.post("/metamodel/propose-systems")
 def propose_systems(body: Dict[str, Any] = Body(...)):
-    """Describe a game → propose layers + relations (Bedrock Tier-C, AWS credits),
-    deterministically linted. Body: {description, feedback?, prior?}. Global (operates
-    on the shared metamodel); writes nothing — the creator reviews then installs."""
-    description = (body.get("description") or "").strip()
-    if not description:
-        raise HTTPException(422, "description is required")
+    """Describe a game → propose layers + relations, deterministically linted. Global
+    (operates on the shared metamodel); writes nothing — the creator reviews then installs.
+
+    Three modes (tools-first; the LLM is one swappable seam):
+    - ``mode="prompt"``: return ``{prompt}`` — the self-contained propose prompt to paste
+      into an external LLM (Claude Code). **Zero Bedrock burn.** Body: {description, feedback?, prior?}.
+    - ``mode="lint"``: lint JSON the creator pasted back. Body: {raw}. **Zero Bedrock burn.**
+    - default (``mode="run"`` / absent): run Bedrock Tier-C (AWS credits). Body: {description, feedback?, prior?}."""
+    mode = (body.get("mode") or "run").strip()
     try:
         mm = _load_metamodel()
         known = list(mm.get("layers", {}).keys())
     except Exception:  # noqa: BLE001
         known = []
+
+    if mode == "lint":
+        raw = body.get("raw") or ""
+        if not raw.strip():
+            raise HTTPException(422, "raw (pasted LLM reply) is required for lint mode")
+        return propose_agent.lint_raw(raw, known)
+
+    description = (body.get("description") or "").strip()
+    if not description:
+        raise HTTPException(422, "description is required")
+
+    if mode == "prompt":
+        return {"prompt": propose_agent.build_prompt(
+            description, known, feedback=body.get("feedback"), prior=body.get("prior"),
+        )}
+
     try:
         propose_fn = propose_agent.make_bedrock_proposer(known)
     except Exception as exc:  # noqa: BLE001

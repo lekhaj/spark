@@ -57,3 +57,25 @@ def test_feedback_and_prior_passed_to_llm():
                        prior=_GOOD, propose_fn=fn)
     assert "add a town layer" in seen["user"]
     assert "Current proposed systems" in seen["user"]
+
+
+# ── BYO-LLM (zero-Bedrock) path ────────────────────────────────────────────────
+def test_build_prompt_is_self_contained():
+    """Prompt-only mode embeds the system rules, known layers, and the user's ask —
+    so it can be pasted into an external LLM with no extra context."""
+    p = pa.build_prompt("a diablo arpg", ["scene", "character"],
+                        feedback="add waypoints", prior=_GOOD)
+    assert "scene, character" in p           # known layers injected (no str.format crash)
+    assert "a diablo arpg" in p              # the description
+    assert "add waypoints" in p              # feedback
+    assert "Current proposed systems" in p   # prior
+    assert "ONLY the JSON" in p              # output contract
+
+
+def test_lint_raw_matches_propose_systems():
+    """Pasted-back JSON lints to the same shape the in-Studio run produces."""
+    raw = "```json\n" + json.dumps(_GOOD) + "\n```"
+    out = pa.lint_raw(raw, ["scene", "character"])
+    ref = pa.propose_systems("x", ["scene", "character"], propose_fn=lambda _: raw)
+    assert out == ref
+    assert out["warnings"] == []
