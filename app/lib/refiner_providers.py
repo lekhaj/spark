@@ -149,6 +149,76 @@ class BedrockConverseProvider:
             for block in resp["output"]["message"]["content"]
         )
 
+    def chat_tools(
+        self,
+        system: str,
+        messages: List[Dict[str, str]],
+        tools: List[Dict],
+        tool_choice: str = "auto",
+        max_tokens: int = 4096,
+    ) -> Dict:
+        """Tool-use turn. ``tools`` are Anthropic-style dicts
+        (``{name, description, input_schema}``); we translate to Converse
+        ``toolConfig``. Returns ``{"text": str, "tool_calls": [{name, input, id}]}``.
+
+        Takes its own ``max_tokens`` (the creator orchestrator needs more room than
+        the chat ``MAX_TOKENS``); ``chat()`` and ``MAX_TOKENS`` are left untouched.
+        ``tool_choice``: "auto" (model decides), "any" (must use some tool), or a
+        specific tool name to force."""
+        system_blocks: List[Dict] = [{"text": system}]
+        if self._cache:
+            system_blocks.append({"cachePoint": {"type": "default"}})
+        conv = [
+            {"role": m["role"], "content": [{"text": m["content"]}]}
+            for m in messages
+        ]
+        tool_specs = [
+            {"toolSpec": {
+                "name": t["name"],
+                "description": t.get("description", ""),
+                "inputSchema": {"json": t.get("input_schema") or {"type": "object"}},
+            }}
+            for t in tools
+        ]
+        if tool_choice == "auto":
+            choice: Dict = {"auto": {}}
+        elif tool_choice == "any":
+            choice = {"any": {}}
+        else:
+            choice = {"tool": {"name": tool_choice}}
+        resp = self._client().converse(
+            modelId=self.model,
+            system=system_blocks,
+            messages=conv,
+            inferenceConfig={"maxTokens": max_tokens},
+            toolConfig={"tools": tool_specs, "toolChoice": choice},
+        )
+        try:
+            from app.lib.usage_recorder import Usage
+
+            u = resp.get("usage", {}) or {}
+            _record_usage(self.model, self.tier, Usage(
+                input_tokens=u.get("inputTokens", 0) or 0,
+                output_tokens=u.get("outputTokens", 0) or 0,
+                cache_read=u.get("cacheReadInputTokens", 0) or 0,
+                cache_write=u.get("cacheWriteInputTokens", 0) or 0,
+            ))
+        except Exception:  # noqa: BLE001
+            pass
+        text_parts: List[str] = []
+        tool_calls: List[Dict] = []
+        for block in resp["output"]["message"]["content"]:
+            if "text" in block:
+                text_parts.append(block["text"])
+            elif "toolUse" in block:
+                tu = block["toolUse"]
+                tool_calls.append({
+                    "name": tu.get("name"),
+                    "input": tu.get("input") or {},
+                    "id": tu.get("toolUseId"),
+                })
+        return {"text": "".join(text_parts), "tool_calls": tool_calls}
+
 
 class AnthropicProvider:
     id = "anthropic"
