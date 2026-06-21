@@ -98,10 +98,29 @@ def run_turn(
     ]
     messages.append({"role": "user", "content": user_text})
 
-    # 3. the agent proposes (LLM tool-use, scoped to its tool subset)
-    out = provider.chat_tools(system, messages, agent.tools, tool_choice="auto")
+    # 3. the agent proposes (LLM tool-use, its tool subset + the read-only librarian
+    #    tools every agent shares — the fallback for listing/catalog phrasings the
+    #    deterministic Info short-circuit above didn't pattern-match).
+    out = provider.chat_tools(system, messages, agent.tools + creator_agent.READ_TOOLS,
+                              tool_choice="auto")
     reply: str = out.get("text") or ""
     tool_calls: List[Dict[str, Any]] = out.get("tool_calls") or []
+
+    # 3a. LLM-as-router fallback: if the model recognised a read/listing intent we
+    #     missed deterministically, answer it with the SAME deterministic function
+    #     (real data, never a hallucinated "I don't have access"). First read wins.
+    for call in tool_calls:
+        if call.get("name") == "list_games":
+            return _info_games_turn(
+                sql_db=sql_db, mongo_db=mongo_db, uid=uid, email=email,
+                game_slug=game_slug, user_text=user_text,
+            )
+        if call.get("name") == "list_catalog" and game_slug:
+            layer = (call.get("input") or {}).get("layer")
+            return _info_catalog_turn(
+                sql_db=sql_db, mongo_db=mongo_db, uid=uid, game_slug=game_slug,
+                user_text=user_text, target=(layer or ""),
+            )
 
     # 4. apply deterministically through the shared gate
     res = creator_agent.apply_tool_calls(
@@ -178,11 +197,13 @@ def _info_games_turn(
 
 def _info_catalog_turn(
     *, sql_db: Session, mongo_db, uid: Optional[str], game_slug: str, user_text: str,
+    target: Optional[str] = None,
 ) -> Dict[str, Any]:
     """The Info path for "what characters/systems do I have" — reads the active graph
-    deterministically and lists a layer (or an overview), no LLM."""
+    deterministically and lists a layer (or an overview), no LLM. ``target`` is set when
+    the LLM-as-router fallback supplies the layer directly (``""`` = overview)."""
     entities, _ = creator_agent.load_graph_dicts(sql_db, game_slug)
-    ans = info.answer_catalog(user_text, entities, game_slug=game_slug)
+    ans = info.answer_catalog(user_text, entities, game_slug=game_slug, target=target)
     reply, saved = ans["reply"], ans["saved"]
     _persist_readonly_turn(mongo_db, uid, game_slug, user_text, reply, saved, info.NAME)
     return {

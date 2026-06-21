@@ -182,6 +182,37 @@ TOOLS: List[Dict[str, Any]] = [
     },
 ]
 
+# ── read-only "librarian" tools (LLM-as-router fallback) ──────────────────────
+# The deterministic Info agent (agents/info.py) answers listing/catalog queries
+# BEFORE the LLM ever runs, at zero cost. These tools are the safety net for the
+# rare phrasing it can't pattern-match: they're appended to EVERY discipline
+# agent's tool set, so if a missed "list my games"/"what's in my game" reaches the
+# LLM, the model can route it back here — and the orchestrator then answers it with
+# the SAME deterministic function (real data, no hallucinated "I don't have access").
+# They write nothing.
+READ_TOOLS: List[Dict[str, Any]] = [
+    {
+        "name": "list_games",
+        "description": "List the user's games/projects. Call this whenever the user wants to "
+                       "see, list, count, or switch between their games or projects — even if "
+                       "the request is phrased loosely or contains typos. Read-only; never "
+                       "claim you lack access to the user's games — call this instead.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "list_catalog",
+        "description": "List what's inside the CURRENT game: either one layer (characters, "
+                       "systems, scenes, items, quests, …) or an overview of everything. Call "
+                       "this whenever the user asks what they have / to list, inventory, or "
+                       "show the current game's contents. Read-only.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"layer": {"type": "string", "description":
+                           "optional specific layer to list; omit for a whole-game overview"}},
+        },
+    },
+]
+
 # The discipline prompts live with the agents (``agents/base.py`` COMMON_RULES +
 # each ``agents/<discipline>.py`` intro). This substrate stays prompt-free.
 

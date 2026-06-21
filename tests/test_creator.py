@@ -372,6 +372,47 @@ def test_catalog_query_routes_to_info_and_lists_layer(sql, mongo):
     assert set(out["saved"][0]["items"]) == {"Necromancer", "Barbarian"}
 
 
+def test_llm_fallback_routes_list_games_to_info(sql, mongo):
+    """The LLM-as-router safety net: a phrasing the deterministic Info short-circuit
+    can't pattern-match reaches the LLM, which calls the read-only `list_games` tool —
+    the orchestrator then answers it with the SAME deterministic function (real games,
+    no hallucination), attributing the turn to Info."""
+    service.create_game(sql, schemas.GameCreate(title="Diablo 2", owner_id="u1"))
+    service.create_game(sql, schemas.GameCreate(title="Baldurs Gate", owner_id="u1"))
+    # opaque phrasing → deterministic Info misses → the LLM emits list_games
+    prov = FakeProvider({"text": "Sure, here they are.", "tool_calls": [_tc("list_games")]})
+    out = orchestrator.run_turn(
+        provider=prov, sql_db=sql, mongo_db=mongo, uid="u1", email="a@b.com",
+        game_slug="diablo-2", user_text="yo wadup show me the stuff", known_layers=[],
+    )
+    assert out["agent"] == "info" and out["routed_to"] == "info"
+    assert {g["game_slug"] for g in out["games"]} == {"diablo-2", "baldurs-gate"}
+    assert out["saved"][0]["kind"] == "games"
+
+
+def test_llm_fallback_routes_list_catalog_with_layer(sql, mongo):
+    """When the LLM calls `list_catalog` with an explicit layer, the orchestrator lists
+    that layer deterministically (the layer arg overrides text parsing)."""
+    service.create_game(sql, schemas.GameCreate(title="Diablo 2", owner_id="u1"))
+    seed = FakeProvider({"text": "", "tool_calls": [
+        _tc("upsert_entity", layer="character", name="Necromancer"),
+        _tc("upsert_entity", layer="character", name="Barbarian"),
+    ]})
+    orchestrator.run_turn(
+        provider=seed, sql_db=sql, mongo_db=mongo, uid="u1", email="a@b.com",
+        game_slug="diablo-2", user_text="add the two heroes", known_layers=["character"],
+    )
+    prov = FakeProvider({"text": "Here's the cast.",
+                         "tool_calls": [_tc("list_catalog", layer="character")]})
+    out = orchestrator.run_turn(
+        provider=prov, sql_db=sql, mongo_db=mongo, uid="u1", email="a@b.com",
+        game_slug="diablo-2", user_text="gimme the roster", known_layers=["character"],
+    )
+    assert out["agent"] == "info"
+    assert out["saved"][0]["kind"] == "catalog" and out["saved"][0]["layer"] == "character"
+    assert set(out["saved"][0]["items"]) == {"Necromancer", "Barbarian"}
+
+
 # ── agent layer: routing + active game ────────────────────────────────────────
 def test_router_classifies_disciplines():
     # mechanics → systems (implemented)

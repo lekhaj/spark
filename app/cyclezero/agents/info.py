@@ -174,9 +174,14 @@ def _by_layer(entities: List[dict]) -> Dict[str, List[dict]]:
     return out
 
 
-def answer_catalog(text: str, entities: List[dict], *, game_slug: Optional[str]) -> Dict[str, Any]:
-    """Narrate one layer's entities, or a whole-game overview (counts per layer)."""
-    target = catalog_target(text)
+def answer_catalog(text: str, entities: List[dict], *, game_slug: Optional[str],
+                   target: Optional[str] = None) -> Dict[str, Any]:
+    """Narrate one layer's entities, or a whole-game overview (counts per layer).
+
+    ``target`` overrides the parsed intent — used by the LLM-as-router fallback, where
+    the model supplies the layer directly (``""`` = overview) instead of free text."""
+    if target is None:
+        target = catalog_target(text)
     grouped = _by_layer(entities)
 
     if target:  # a specific layer
