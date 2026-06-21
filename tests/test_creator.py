@@ -1,8 +1,9 @@
 """Creator orchestrator tests — deterministic dispatch over a fake LLM.
 
 No live Bedrock: a ``FakeProvider`` returns canned tool calls so we exercise the
-deterministic layer (``creator_agent.run_turn``) and the routes. SQLite (graph) +
-mongomock (memory/sessions), mirroring ``test_cyclezero_graph.py``.
+orchestrator (``agents.orchestrator.run_turn``) + the shared deterministic gate
+(``creator_agent.apply_tool_calls``) + the routes. SQLite (graph) + mongomock
+(memory/sessions), mirroring ``test_cyclezero_graph.py``.
 """
 import os
 
@@ -21,6 +22,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.cyclezero import creator_agent, service, schemas
+from app.cyclezero.agents import orchestrator, registry
 from app.cyclezero.db import Base, get_db as get_sql_db
 from app.routes import creator_routes
 
@@ -82,7 +84,7 @@ def mongo():
 # ── tool dispatch ─────────────────────────────────────────────────────────────
 def test_start_game_creates_game(sql, mongo):
     prov = FakeProvider({"text": "Starting it!", "tool_calls": [_tc("start_game", title="Diablo 2")]})
-    out = creator_agent.run_turn(
+    out = orchestrator.run_turn(
         provider=prov, sql_db=sql, mongo_db=mongo, uid="u1", email="a@b.com",
         game_slug=None, user_text="start a game called Diablo 2", known_layers=[],
     )
@@ -95,7 +97,7 @@ def test_save_facts_merges_into_memory(sql, mongo):
     service.create_game(sql, schemas.GameCreate(title="Diablo 2", owner_id="u1"))
     prov = FakeProvider({"text": "Got it.", "tool_calls": [
         _tc("save_facts", facts={"genre": "ARPG", "references": ["Diablo 2"]})]})
-    out = creator_agent.run_turn(
+    out = orchestrator.run_turn(
         provider=prov, sql_db=sql, mongo_db=mongo, uid="u1", email="a@b.com",
         game_slug="diablo-2", user_text="it's an ARPG like Diablo 2", known_layers=[],
     )
@@ -111,7 +113,7 @@ def test_upsert_entity_creates_and_rejects_unknown_layer(sql, mongo):
         _tc("upsert_entity", layer="character", name="Necromancer", data={"role": "player"}),
         _tc("upsert_entity", layer="bogus_layer", name="Junk"),
     ]})
-    out = creator_agent.run_turn(
+    out = orchestrator.run_turn(
         provider=prov, sql_db=sql, mongo_db=mongo, uid="u1", email="a@b.com",
         game_slug="diablo-2", user_text="add a Necromancer", known_layers=["character"],
     )
@@ -130,7 +132,7 @@ def test_save_confident_and_ask_the_gap(sql, mongo):
         _tc("ask_clarification", field="perspective", header="View",
             question="Which camera?", options=["Isometric", "Over-the-shoulder"]),
     ]})
-    out = creator_agent.run_turn(
+    out = orchestrator.run_turn(
         provider=prov, sql_db=sql, mongo_db=mongo, uid="u1", email="a@b.com",
         game_slug="diablo-2", user_text="ARPG, not sure on camera", known_layers=[],
     )
@@ -150,7 +152,7 @@ def test_answer_resolves_open_question(sql, mongo):
                               [{"field": "perspective", "question": "?", "options": []}])
     prov = FakeProvider({"text": "Locked in isometric.", "tool_calls": [
         _tc("save_facts", facts={"perspective": "Isometric"})]})
-    creator_agent.run_turn(
+    orchestrator.run_turn(
         provider=prov, sql_db=sql, mongo_db=mongo, uid="u1", email="a@b.com",
         game_slug="diablo-2", user_text="Answer to 'perspective': Isometric",
         known_layers=[], resolve_field="perspective",
@@ -181,7 +183,7 @@ def test_link_entities_creates_and_rejects_illegal_edges(sql, mongo):
         # missing endpoint
         _tc("link_entities", src="Stamina", kind="REQUIRES", dst="Nonexistent"),
     ]})
-    out = creator_agent.run_turn(
+    out = orchestrator.run_turn(
         provider=prov, sql_db=sql, mongo_db=mongo, uid="u1", email="a@b.com",
         game_slug="diablo-2",
         user_text="stamina drains on power attacks; low stamina weakens defense",
@@ -211,7 +213,7 @@ def test_link_rejected_when_no_metamodel(sql, mongo):
         _tc("upsert_entity", layer="system", name="Power Attack"),
         _tc("link_entities", src="Power Attack", kind="REQUIRES", dst="Stamina"),
     ]})
-    out = creator_agent.run_turn(
+    out = orchestrator.run_turn(
         provider=prov, sql_db=sql, mongo_db=mongo, uid="u1", email="a@b.com",
         game_slug="diablo-2", user_text="link them", known_layers=["system"],
         metamodel=None,
@@ -224,7 +226,7 @@ def test_play_hints_track_scene_and_player(sql, mongo):
     service.create_game(sql, schemas.GameCreate(title="Diablo 2", owner_id="u1"))
     # nothing yet → both hints
     p0 = FakeProvider({"text": "ok", "tool_calls": []})
-    o0 = creator_agent.run_turn(
+    o0 = orchestrator.run_turn(
         provider=p0, sql_db=sql, mongo_db=mongo, uid="u1", email="a@b.com",
         game_slug="diablo-2", user_text="hi", known_layers=_MM_LAYERS, metamodel=_MM,
     )
@@ -236,12 +238,49 @@ def test_play_hints_track_scene_and_player(sql, mongo):
         _tc("upsert_entity", layer="scene", name="Tristram"),
         _tc("upsert_entity", layer="character", name="Hero", data={"role": "player"}),
     ]})
-    o1 = creator_agent.run_turn(
+    o1 = orchestrator.run_turn(
         provider=p1, sql_db=sql, mongo_db=mongo, uid="u1", email="a@b.com",
         game_slug="diablo-2", user_text="add a town and a hero",
         known_layers=_MM_LAYERS, metamodel=_MM,
     )
     assert o1["play_hints"] == []
+
+
+# ── agent layer: routing + active game ────────────────────────────────────────
+def test_router_classifies_disciplines():
+    # mechanics → systems (implemented)
+    ag, routed = registry.route("add a stamina system that drains on attacks")
+    assert ag.name == "systems" and routed == "systems"
+    # narrative intent → recognised, but falls back to the default until that module lands
+    ag, routed = registry.route("write the opening quest and the villain's dialogue")
+    assert routed == "narrative" and ag.name == "systems"
+    # world intent → recognised, falls back
+    ag, routed = registry.route("design the dungeon layout and its rooms")
+    assert routed == "world" and ag.name == "systems"
+
+
+def test_orchestrator_reports_handling_agent(sql, mongo):
+    service.create_game(sql, schemas.GameCreate(title="Diablo 2", owner_id="u1"))
+    prov = FakeProvider({"text": "ok", "tool_calls": [
+        _tc("upsert_entity", layer="system", name="Stamina")]})
+    out = orchestrator.run_turn(
+        provider=prov, sql_db=sql, mongo_db=mongo, uid="u1", email="a@b.com",
+        game_slug="diablo-2", user_text="add a stamina system",
+        known_layers=_MM_LAYERS, metamodel=_MM,
+    )
+    assert out["agent"] == "systems"
+    assert out["routed_to"] == "systems"
+
+
+def test_active_game_pointer_set_on_turn(sql, mongo):
+    prov = FakeProvider({"text": "Starting!", "tool_calls": [
+        _tc("start_game", title="Diablo 2")]})
+    orchestrator.run_turn(
+        provider=prov, sql_db=sql, mongo_db=mongo, uid="u1", email="a@b.com",
+        game_slug=None, user_text="start a game called Diablo 2",
+        known_layers=_MM_LAYERS, metamodel=_MM,
+    )
+    assert creator_agent.get_active_game(mongo, "u1") == "diablo-2"
 
 
 # ── memory / session persistence ──────────────────────────────────────────────
@@ -314,3 +353,25 @@ def test_route_turn_never_500s_on_provider_error(client, monkeypatch):
     r = client.post("/creator/turn", json={"game_slug": "diablo-2", "text": "hi"}, headers=_hdr())
     assert r.status_code == 200
     assert r.json()["saved"] == []
+
+
+def test_route_games_list_and_switch_active(client, monkeypatch):
+    prov = FakeProvider(
+        {"text": "g1", "tool_calls": [_tc("start_game", title="Diablo 2")]},
+        {"text": "g2", "tool_calls": [_tc("start_game", title="Baldurs Gate")]},
+    )
+    monkeypatch.setattr(creator_routes, "_provider", lambda: prov)
+    client.post("/creator/turn", json={"text": "start Diablo 2"}, headers=_hdr())
+    client.post("/creator/turn", json={"text": "start Baldurs Gate"}, headers=_hdr())
+
+    # both games listed for this uid; active = the last one worked on
+    g = client.get("/creator/games", headers=_hdr()).json()
+    slugs = {x["game_slug"] for x in g["games"]}
+    assert {"diablo-2", "baldurs-gate"} <= slugs
+    assert g["active"] == "baldurs-gate"
+    assert client.get("/creator/latest", headers=_hdr()).json()["game_slug"] == "baldurs-gate"
+
+    # switch back to diablo-2 → latest follows the pointer
+    s = client.post("/creator/active", json={"game_slug": "diablo-2"}, headers=_hdr())
+    assert s.json()["active"] == "diablo-2"
+    assert client.get("/creator/latest", headers=_hdr()).json()["game_slug"] == "diablo-2"

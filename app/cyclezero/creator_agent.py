@@ -1,27 +1,28 @@
-"""Creator orchestrator — the deterministic spine of the chat-driven game builder.
+"""Creator substrate — the shared deterministic write layer + tool catalog.
 
-The studio chat is *always on* this orchestrator. Haiku (Tier-A, Bedrock = AWS
-credits) **proposes** via tool-use; this module **deterministically decides what
-gets written**. Three planes (per the approved design):
+This module is the **blackboard writer** that every discipline agent sits on top of.
+It owns the tool schemas, the deterministic dispatch (``apply_tool_calls``) that turns
+LLM-proposed tool calls into Postgres/Mongo writes, the per-(uid, game) memory helpers,
+and the active-game pointer. It does **not** call the LLM or decide routing — that's
+the orchestrator's job (``agents/orchestrator.py``), which picks a discipline agent
+(``agents/systems.py`` …), runs ``provider.chat_tools`` with that agent's prompt + tool
+subset, then hands the proposed tool calls back here to apply.
 
-  • Conversation  — Haiku, non-deterministic, fine.
-  • Memory        — per-(uid, game_slug) Mongo ``game_memory`` doc: the confirmed
-                    design ``facts`` re-fed into Haiku's system prompt every turn so
-                    it iterates for *this* user and *this* game.
+Three planes (per the approved design):
+  • Conversation  — Haiku, non-deterministic, fine (lives in the agent/orchestrator).
+  • Memory        — per-(uid, game_slug) Mongo ``game_memory`` doc re-fed each turn.
   • Game graph    — Postgres entities/relations (the source of truth).
 
-Tools Haiku may call (Converse ``toolConfig``):
-  start_game(title)                  → deterministic ``service.create_game``
+Tools (Converse ``toolConfig``):
+  start_game(title)                  → ``service.create_game``
   save_facts(facts)                  → merge into ``game_memory.facts``
-  upsert_entity(layer,name,key?,data)→ deterministic ``service.create_entity``
+  upsert_entity(layer,name,key?,data)→ ``service.create_entity``
+  link_entities(src,kind,dst,data?)  → metamodel-gated ``service.create_relation``
   ask_clarification(field,question,…)→ NO write; surfaces the Claude-Code-style popup
 
-Mode = "save the confident parts, ask only the gap": a single turn may both
-``save_facts`` AND ``ask_clarification``. The LLM never touches persistence — it
-only emits tool *calls*; the dispatch below is the deterministic layer.
-
-The provider is the only non-deterministic seam (injected ``provider.chat_tools``),
-so ``run_turn`` is unit-testable offline with a fake provider.
+Mode = "save the confident parts, ask only the gap". The LLM never touches persistence —
+it only emits tool *calls*; ``apply_tool_calls`` is the deterministic gate. Everything
+here is unit-testable offline (no LLM), and the agents on top inject a fake provider.
 """
 from __future__ import annotations
 
@@ -38,6 +39,7 @@ log = logging.getLogger("creator_agent")
 
 MEMORY = "game_memory"
 SESSIONS = "creator_sessions"
+ACTIVE = "creator_active_game"   # per-uid pointer: the game the user is working on now
 TURN_CAP = 50          # how much chat history we keep / reload ("to some extent")
 HISTORY_FOR_LLM = 12   # recent turns fed back to Haiku as conversation context
 
@@ -139,38 +141,8 @@ TOOLS: List[Dict[str, Any]] = [
     },
 ]
 
-CREATOR_SYSTEM = """You are the Spark Studio creator — the chat brain that helps a user
-BUILD a game, turn by turn. You converse briefly, and you SAVE progress using tools.
-
-You have these tools: start_game, save_facts, upsert_entity, link_entities, ask_clarification.
-
-Rules:
-- If the user wants to start a new game and none exists yet, call start_game FIRST.
-- Save high-level design facts (genre, pillars, tone, references) with save_facts.
-- Create concrete objects with upsert_entity (characters, systems, scenes, missions,
-  props, environments, factors, items…). 'layer' MUST be one of the known layers:
-  {known_layers}.
-- Capture how things RELATE with link_entities — relations are how mechanics actually
-  connect, so don't drop them. 'kind' MUST be one of the known relation types (each
-  shows which layers it may connect):
-  {known_relations}
-  Example: the user says "stamina drains on power attacks and low stamina weakens
-  defense" → upsert a `system` "Stamina", upsert a `system` "Power Attack", upsert a
-  `factor` "Defense", then link Power Attack REQUIRES Stamina and Stamina AFFECTS
-  Defense. Always create BOTH endpoints before linking them.
-- PLAYABLE TARGET: the user can playtest the moment a game exists, but it's most fun
-  once there's a `scene` to be in and a `character` whose data.role is "player". When
-  the user is building, make sure those exist (sensible defaults are fine) so they can
-  try it early. Fill play-relevant fields when known: character {role, spawn:[x,y,z],
-  speed}, collider {shape, position, size}, prop {glb}.
-- When you are UNSURE what to persist, DO NOT GUESS — call ask_clarification with a
-  short question and 2-4 concrete options. You may save the parts you're sure about
-  AND ask about the one gap in the same turn.
-- Keep your spoken reply short (1-3 sentences); the tools do the saving.
-
-Confirmed facts so far for this game (already saved — don't re-save unless changing):
-{facts_json}
-"""
+# The discipline prompts live with the agents (``agents/base.py`` COMMON_RULES +
+# each ``agents/<discipline>.py`` intro). This substrate stays prompt-free.
 
 
 # ── Mongo memory + session helpers ────────────────────────────────────────────
@@ -228,6 +200,25 @@ def load_turns(mongo_db, uid: Optional[str], game_slug: str, limit: int = TURN_C
     return turns[-limit:]
 
 
+# ── active-game pointer (which game the user is working on now) ────────────────
+def set_active_game(mongo_db, uid: Optional[str], game_slug: str) -> None:
+    if mongo_db is None or not uid or not game_slug:
+        return
+    mongo_db[ACTIVE].update_one(
+        {"uid": uid},
+        {"$set": {"uid": uid, "game_slug": game_slug,
+                  "updated_at": datetime.now(timezone.utc)}},
+        upsert=True,
+    )
+
+
+def get_active_game(mongo_db, uid: Optional[str]) -> Optional[str]:
+    if mongo_db is None or not uid:
+        return None
+    doc = mongo_db[ACTIVE].find_one({"uid": uid})
+    return (doc or {}).get("game_slug")
+
+
 # ── relation + play helpers ───────────────────────────────────────────────────
 def _render_relations(metamodel: Optional[Dict[str, Any]]) -> str:
     """Render the relation vocabulary for the system prompt:
@@ -268,62 +259,38 @@ def _play_hints(sql_db: Session, game_slug: str) -> List[str]:
     return hints
 
 
-# ── orchestrator ──────────────────────────────────────────────────────────────
-def run_turn(
+# ── deterministic dispatch (the shared blackboard writer) ─────────────────────
+def apply_tool_calls(
     *,
-    provider,
     sql_db: Session,
     mongo_db,
     uid: Optional[str],
     email: Optional[str],
     game_slug: Optional[str],
-    user_text: str,
+    tool_calls: List[Dict[str, Any]],
+    facts: Dict[str, Any],
+    open_questions: List[Dict[str, Any]],
     known_layers: List[str],
     metamodel: Optional[Dict[str, Any]] = None,
     resolve_field: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """One creator turn. Calls Haiku with tools, then deterministically dispatches
-    each tool call. Returns ``{reply, saved[], pending_question?, game_slug,
-    playable, play_hints}``.
+    """Apply a discipline agent's proposed tool calls deterministically — the gate
+    every agent shares. No LLM here. Mutates ``facts``/``open_questions`` (passed in
+    as the caller's working copies) and returns
+    ``{saved[], pending_question?, game_slug, facts, open_questions}``. The caller
+    (orchestrator) owns memory persistence + the LLM call.
 
     ``metamodel`` (``{layers, relation_types}``) gates ``link_entities`` against the
-    relation contract; omit it (None) and relations are politely rejected.
-    ``resolve_field`` (set when the user is answering a popup) drops that open
-    question from memory once handled.
+    relation contract; None → relations rejected. ``resolve_field`` (set when the user
+    is answering a popup) drops that open question once handled.
     """
-    facts: Dict[str, Any] = {}
-    open_questions: List[Dict[str, Any]] = []
-    if game_slug:
-        mem = load_memory(mongo_db, uid, game_slug)
-        facts, open_questions = dict(mem["facts"]), list(mem["open_questions"])
-
-    import json as _json
-    system = (
-        CREATOR_SYSTEM
-        .replace("{known_layers}", ", ".join(known_layers) or "(none)")
-        .replace("{known_relations}", _render_relations(metamodel))
-        .replace("{facts_json}", _json.dumps(facts, default=str) if facts else "(none yet)")
-    )
-
-    # recent history (Haiku-visible conversation context) + this user turn
-    messages: List[Dict[str, str]] = [
-        {"role": t["role"], "content": t["text"]}
-        for t in load_turns(mongo_db, uid, game_slug, HISTORY_FOR_LLM)
-        if t.get("role") in ("user", "assistant") and t.get("text")
-    ]
-    messages.append({"role": "user", "content": user_text})
-
-    out = provider.chat_tools(system, messages, TOOLS, tool_choice="auto")
-    reply: str = out.get("text") or ""
-    tool_calls: List[Dict[str, Any]] = out.get("tool_calls") or []
-
     saved: List[Dict[str, Any]] = []
     pending_question: Optional[Dict[str, Any]] = None
 
     # Deterministic order: start_game → upsert_entity → save_facts → link_entities →
     # ask_clarification, so a single turn can create a game, populate it, link the new
     # entities, and still ask one gap. Stable sort preserves intra-group order.
-    tool_calls.sort(key=lambda c: _DISPATCH_ORDER.get(c.get("name"), 2))
+    tool_calls = sorted(tool_calls, key=lambda c: _DISPATCH_ORDER.get(c.get("name"), 2))
 
     for call in tool_calls:
         name = call.get("name")
@@ -432,25 +399,12 @@ def run_turn(
         open_questions = [q for q in open_questions if q.get("field") != pending_question["field"]]
         open_questions.append(pending_question)
 
-    # persist memory + the two turns (best-effort; never breaks the reply)
-    if game_slug:
-        save_memory(mongo_db, uid, email, game_slug, facts, open_questions)
-        append_turn(mongo_db, uid, game_slug,
-                    {"role": "user", "text": user_text,
-                     "ts": datetime.now(timezone.utc).isoformat()})
-        append_turn(mongo_db, uid, game_slug,
-                    {"role": "assistant", "text": reply, "ts": datetime.now(timezone.utc).isoformat(),
-                     "saved": saved, "question": pending_question})
-
     return {
-        "reply": reply,
         "saved": saved,
         "pending_question": pending_question,
         "game_slug": game_slug,
-        # The contract renders from defaults, so a game is playable as soon as it
-        # exists; play_hints say what's still missing for a *fun* playtest.
-        "playable": bool(game_slug),
-        "play_hints": _play_hints(sql_db, game_slug) if game_slug else [],
+        "facts": facts,
+        "open_questions": open_questions,
     }
 
 

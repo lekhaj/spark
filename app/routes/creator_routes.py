@@ -2,10 +2,11 @@
 creator_routes.py — chat-driven game builder (the always-on creator orchestrator)
 =================================================================================
 
-The studio chat posts each turn here. The deterministic orchestrator
-(``cyclezero.creator_agent.run_turn``) calls Haiku with tool-use, then writes the
-confirmed parts to the Postgres game graph + the per-(uid, game) Mongo memory doc,
-and surfaces an ``ask_clarification`` as a popup when Haiku is unsure.
+The studio chat posts each turn here. The orchestrator
+(``cyclezero.agents.orchestrator.run_turn``) routes the turn to a discipline agent,
+runs its tool-use, then writes the confirmed parts to the Postgres game graph + the
+per-(uid, game) Mongo memory doc via the shared deterministic gate, and surfaces an
+``ask_clarification`` as a popup when the agent is unsure.
 
   POST /creator/turn    one chat turn → {reply, saved[], pending_question?, game_slug}
   GET  /creator/state   memory doc + recent turns for a game (history reload)
@@ -23,6 +24,7 @@ from fastapi import APIRouter, Body, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.cyclezero import creator_agent, service
+from app.cyclezero.agents import orchestrator
 from app.cyclezero.db import get_db as get_sql_db
 from app.lib import usage_recorder
 from app.lib.identity import StudioUser, current_user
@@ -81,7 +83,7 @@ def creator_turn(
         with usage_recorder.attribution(
             uid=user.uid, email=user.email, game_slug=game_slug or "(new)", agent="creator",
         ):
-            return creator_agent.run_turn(
+            return orchestrator.run_turn(
                 provider=provider,
                 sql_db=sql_db,
                 mongo_db=get_mongo(),
@@ -115,16 +117,56 @@ def creator_state(
             "open_questions": mem["open_questions"], "turns": turns}
 
 
+def _my_games(sql_db: Session, uid: Optional[str]) -> List[service.models.Game]:
+    """This caller's games, newest first (list_games is created_at desc)."""
+    return [g for g in service.list_games(sql_db) if g.owner_id == uid]
+
+
 @router.get("/creator/latest")
 def creator_latest(
     sql_db: Session = Depends(get_sql_db),
     user: StudioUser = Depends(current_user),
 ) -> Dict[str, Any]:
-    """The caller's most-recently-created game (list_games is created_at desc)."""
+    """The game to resume on mount: the active-game pointer if set, else the caller's
+    most-recently-created game."""
     try:
-        for g in service.list_games(sql_db):
-            if g.owner_id == user.uid:
-                return {"game_slug": g.slug, "title": g.title}
+        mine = _my_games(sql_db, user.uid)
+        if not mine:
+            return {"game_slug": None, "title": None}
+        active = creator_agent.get_active_game(get_mongo(), user.uid)
+        if active:
+            for g in mine:
+                if g.slug == active:
+                    return {"game_slug": g.slug, "title": g.title}
+        return {"game_slug": mine[0].slug, "title": mine[0].title}
     except Exception:  # noqa: BLE001
         log.exception("creator latest failed")
     return {"game_slug": None, "title": None}
+
+
+@router.get("/creator/games")
+def creator_games(
+    sql_db: Session = Depends(get_sql_db),
+    user: StudioUser = Depends(current_user),
+) -> Dict[str, Any]:
+    """The caller's games, for the in-chat game switcher."""
+    try:
+        active = creator_agent.get_active_game(get_mongo(), user.uid)
+        games = [{"game_slug": g.slug, "title": g.title, "status": g.status}
+                 for g in _my_games(sql_db, user.uid)]
+        return {"games": games, "active": active}
+    except Exception:  # noqa: BLE001
+        log.exception("creator games failed")
+        return {"games": [], "active": None}
+
+
+@router.post("/creator/active")
+def creator_set_active(
+    body: Dict[str, Any] = Body(...),
+    user: StudioUser = Depends(current_user),
+) -> Dict[str, Any]:
+    """Point the caller's active game at ``game_slug`` (used when switching games)."""
+    game_slug = (body.get("game_slug") or "").strip()
+    if game_slug:
+        creator_agent.set_active_game(get_mongo(), user.uid, game_slug)
+    return {"active": game_slug or None}
