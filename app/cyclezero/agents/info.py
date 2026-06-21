@@ -33,6 +33,9 @@ _LIST_CUES: Tuple[str, ...] = (
     "list", "how many", "which", "all my", "show my", "show all", "show me all",
     "do i have", "have i got", "what are my", "what's in", "whats in",
     "inventory", "catalog", "everything", "summary",
+    # view/read intent phrases — asking to SEE something, not build it
+    "show me", "let me see", "where can i see", "where is", "where are",
+    "can i see", "view the", "see the", "what does", "what did",
 )
 
 # write verbs — if any is present it's an authoring turn, not a catalog read
@@ -46,7 +49,8 @@ _WRITE_VERBS: Tuple[str, ...] = (
 _LAYER_WORDS: Dict[str, Tuple[str, ...]] = {
     "character": ("character", "characters", "hero", "heroes", "npc", "npcs", "cast"),
     "system": ("system", "systems", "mechanic", "mechanics"),
-    "scene": ("scene", "scenes", "level", "levels", "location", "locations"),
+    "scene": ("scene", "scenes", "level", "levels", "location", "locations",
+              "layout", "map", "area", "village", "town", "world"),
     "prop": ("prop", "props", "object", "objects"),
     "item": ("item", "items", "loot"),
     "quest": ("quest", "quests", "mission", "missions"),
@@ -191,6 +195,9 @@ def answer_catalog(text: str, entities: List[dict], *, game_slug: Optional[str],
             return {"reply": reply, "saved": [{"kind": "catalog", "layer": target, "items": []}]}
         names = [e.get("name") or e.get("key") for e in rows]
         reply = f"{len(rows)} {target}(s): " + ", ".join(str(n) for n in names) + "."
+        # for scenes/layout, add the "how to view it" tip so the user knows where to look
+        if target == "scene":
+            reply += " Click ▶ Play in the header to see the spatial layout in the engine."
         return {"reply": reply, "saved": [{"kind": "catalog", "layer": target, "items": names}]}
 
     # overview: counts per layer

@@ -453,17 +453,38 @@ def apply_tool_calls(
                 game = service.get_game(sql_db, game_slug)
                 if game is None:
                     continue
-                key = (args.get("key") or "").strip() or None
-                try:
-                    ent = service.create_entity(
-                        sql_db, game,
-                        schemas.EntityCreate(layer=layer, name=ename, key=key,
-                                             data=args.get("data") or {}),
-                    )
-                    saved.append({"kind": "entity", "layer": layer, "name": ent.name, "key": ent.key})
-                except Exception as e:  # noqa: BLE001 — e.g. duplicate key
-                    sql_db.rollback()
-                    saved.append({"kind": "rejected", "reason": str(e), "name": ename})
+                key = (args.get("key") or "").strip() or schemas.slugify(ename)
+                # true upsert: look up by key first; update data if found, insert if new
+                existing = service.get_entity(sql_db, game, key)
+                if existing is not None:
+                    new_data = args.get("data") or {}
+                    if new_data:
+                        merged = {**(existing.data or {}), **new_data}
+                        service.update_entity(sql_db, existing,
+                                              schemas.EntityUpdate(data=merged))
+                    saved.append({"kind": "entity", "layer": layer,
+                                  "name": existing.name, "key": existing.key,
+                                  "updated": True})
+                else:
+                    try:
+                        ent = service.create_entity(
+                            sql_db, game,
+                            schemas.EntityCreate(layer=layer, name=ename, key=key,
+                                                 data=args.get("data") or {}),
+                        )
+                        saved.append({"kind": "entity", "layer": layer,
+                                      "name": ent.name, "key": ent.key})
+                    except Exception as e:  # noqa: BLE001
+                        sql_db.rollback()
+                        # translate low-level DB errors into user-readable form
+                        reason = str(e)
+                        if "UniqueViolation" in reason or "unique constraint" in reason.lower():
+                            reason = f"'{ename}' already exists in this game"
+                        elif "ForeignKeyViolation" in reason:
+                            reason = f"'{ename}' references an entity that doesn't exist yet"
+                        else:
+                            reason = f"couldn't save '{ename}' — please try again"
+                        saved.append({"kind": "rejected", "reason": reason, "name": ename})
 
             elif name == "link_entities":
                 kind = (args.get("kind") or "").strip()
@@ -501,7 +522,14 @@ def apply_tool_calls(
                                   "src": src_key, "dst": dst_key})
                 except Exception as e:  # noqa: BLE001 — contract violation / bad edge
                     sql_db.rollback()
-                    saved.append({"kind": "rejected", "name": label, "reason": str(e)})
+                    reason = str(e)
+                    if "UniqueViolation" in reason or "unique constraint" in reason.lower():
+                        reason = f"{src_ref} → {dst_ref} ({kind}) already linked"
+                    elif "layer" in reason.lower() or "contract" in reason.lower():
+                        reason = f"'{kind}' can't link {src_ref} to {dst_ref} — wrong layer types"
+                    else:
+                        reason = f"couldn't link {src_ref} → {dst_ref}"
+                    saved.append({"kind": "rejected", "name": label, "reason": reason})
 
             elif name == "generate_asset":
                 ent_ref = (args.get("entity") or "").strip()
