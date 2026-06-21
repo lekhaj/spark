@@ -11,10 +11,19 @@ via ``.replace()`` (the templates contain literal ``{ }`` JSON, so never ``str.f
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
 
 from .. import creator_agent
+
+
+def keyword_hit(text: str, keywords: Tuple[str, ...]) -> bool:
+    """Whole-word/phrase match — used for routing + read-only intents. Naive substring
+    matching is unsafe here ("rate" is inside "generate", "art" inside "start"), so every
+    keyword is matched on word boundaries."""
+    low = (text or "").lower()
+    return any(re.search(r"\b" + re.escape(k) + r"\b", low) for k in keywords)
 
 # Cross-cutting rules shared by every discipline. Each agent prepends its own intro.
 COMMON_RULES = """How you work:

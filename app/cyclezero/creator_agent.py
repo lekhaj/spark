@@ -57,8 +57,10 @@ _DISPATCH_ORDER = {
     "start_game": 0,
     "upsert_entity": 1,
     "save_facts": 2,
+    "propose_system": 0,     # install missing vocab before anything uses it
     "link_entities": 3,
-    "ask_clarification": 4,
+    "generate_asset": 4,     # the entity must exist before we queue its asset
+    "ask_clarification": 5,
 }
 
 
@@ -137,6 +139,45 @@ TOOLS: List[Dict[str, Any]] = [
                 "header": {"type": "string", "description": "≤12-char chip label"},
             },
             "required": ["field", "question"],
+        },
+    },
+    {
+        "name": "generate_asset",
+        "description": "Queue a 3D/visual asset for an EXISTING entity (a prop or "
+                       "character). Create the entity first with upsert_entity. ALWAYS pass "
+                       "the asset's native 'dimensions' {w,h,d} in metres so it can be scaled "
+                       "correctly in the world, and a 'descriptor' of the look. This records a "
+                       "queued job (no GPU spend yet); generation is batched later.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entity": {"type": "string", "description": "key or name of the prop/character"},
+                "asset_kind": {"type": "string", "description": "glb | texture | concept (default glb)"},
+                "dimensions": {"type": "object", "description":
+                               "native size in metres, e.g. {\"w\":1.2,\"h\":2.0,\"d\":1.2}"},
+                "descriptor": {"type": "object", "description":
+                               "look: silhouette/palette/style/refs"},
+                "params": {"type": "object", "description": "optional generation params"},
+            },
+            "required": ["entity"],
+        },
+    },
+    {
+        "name": "propose_system",
+        "description": "Install NEW vocabulary when the design needs a layer or relation "
+                       "kind that doesn't exist yet. Provide the new layer(s) and/or "
+                       "relation-type(s) directly; they are linted and installed so later "
+                       "turns can use them. Use sparingly — prefer existing layers/relations.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "layers": {"type": "array", "description":
+                           "new layers, each {layer, title?, schema?}", "items": {"type": "object"}},
+                "relations": {"type": "array", "description":
+                              "new relation types, each {kind, src_layers[], dst_layers[], "
+                              "src_cardinality?, dst_cardinality?, dependency?, required?}",
+                              "items": {"type": "object"}},
+            },
         },
     },
 ]
@@ -259,6 +300,23 @@ def _play_hints(sql_db: Session, game_slug: str) -> List[str]:
     return hints
 
 
+def load_graph_dicts(sql_db: Session, game_slug: Optional[str]):
+    """The authored graph as plain dicts for the pure analysis helpers (experience
+    scorer, graph algos): ``([{layer,key,name,data}], [{src,dst,kind}])`` keyed by
+    entity *key*. Returns empty lists when the game doesn't exist yet."""
+    game = service.get_game(sql_db, game_slug) if game_slug else None
+    if game is None:
+        return [], []
+    ents = service.list_entities(sql_db, game)
+    id2key = {e.id: e.key for e in ents}
+    entities = [{"layer": e.layer, "key": e.key, "name": e.name, "data": e.data} for e in ents]
+    relations = [
+        {"src": id2key.get(r.src_entity), "dst": id2key.get(r.dst_entity), "kind": r.kind}
+        for r in service.list_relations(sql_db, game)
+    ]
+    return entities, relations
+
+
 # ── deterministic dispatch (the shared blackboard writer) ─────────────────────
 def apply_tool_calls(
     *,
@@ -272,6 +330,7 @@ def apply_tool_calls(
     open_questions: List[Dict[str, Any]],
     known_layers: List[str],
     metamodel: Optional[Dict[str, Any]] = None,
+    metamodel_db=None,
     resolve_field: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Apply a discipline agent's proposed tool calls deterministically — the gate
@@ -309,6 +368,32 @@ def apply_tool_calls(
                 else:
                     game = existing
                 game_slug = game.slug
+
+            elif name == "propose_system":
+                # LLM proposes new vocabulary; we lint it deterministically and install it
+                # into the metamodel store (handed in by the route) so later turns can use
+                # it. No store → reject (we never reach out to resolve one from the gate).
+                from . import metamodel as mm_mod, propose_agent
+                mm_db = metamodel_db
+                if mm_db is None:
+                    saved.append({"kind": "rejected", "name": "propose_system",
+                                  "reason": "metamodel store unavailable"})
+                    continue
+                clean = propose_agent.validate_proposal(
+                    {"layers": args.get("layers") or [], "relations": args.get("relations") or []},
+                    known_layers,
+                )
+                for L in clean["layers"]:
+                    mm_mod.upsert_layer(mm_db, L["layer"], L["layer"], L.get("title"))
+                    saved.append({"kind": "layer_installed", "layer": L["layer"]})
+                for R in clean["relations"]:
+                    try:
+                        mm_mod.upsert_relation_type(mm_db, R)
+                        saved.append({"kind": "relation_type_installed", "rel_kind": R["kind"]})
+                    except ValueError as e:  # bad cardinality
+                        saved.append({"kind": "rejected", "name": R.get("kind"), "reason": str(e)})
+                if clean["warnings"]:
+                    saved.append({"kind": "propose_warnings", "warnings": clean["warnings"]})
 
             elif name == "save_facts":
                 new_facts = args.get("facts") or {}
@@ -377,6 +462,41 @@ def apply_tool_calls(
                 except Exception as e:  # noqa: BLE001 — contract violation / bad edge
                     sql_db.rollback()
                     saved.append({"kind": "rejected", "name": label, "reason": str(e)})
+
+            elif name == "generate_asset":
+                ent_ref = (args.get("entity") or "").strip()
+                if not game_slug or not ent_ref:
+                    continue
+                game = service.get_game(sql_db, game_slug)
+                if game is None:
+                    continue
+                ent_key = _resolve_key(sql_db, game, ent_ref)
+                ent = service.get_entity(sql_db, game, ent_key) if ent_key else None
+                if ent is None:
+                    saved.append({"kind": "rejected", "name": ent_ref,
+                                  "reason": f"entity not found: {ent_ref}"})
+                    continue
+                asset_kind = (args.get("asset_kind") or "glb").strip()
+                dims = args.get("dimensions") or {}
+                descriptor = args.get("descriptor") or {}
+                # capture native dimensions on the entity so scaling is well-defined,
+                # then queue a job RECORD-ONLY (no GPU spend; batched/generated later).
+                if dims or descriptor:
+                    merged = dict(ent.data or {})
+                    if dims:
+                        merged["dimensions"] = dims
+                    if descriptor:
+                        merged.setdefault("descriptor", descriptor)
+                    service.update_entity(sql_db, ent, schemas.EntityUpdate(data=merged))
+                job = service.create_job(
+                    sql_db, game, ent,
+                    schemas.JobCreate(kind=asset_kind, params={
+                        "descriptor": descriptor, "dimensions": dims,
+                        **(args.get("params") or {})}),
+                )
+                saved.append({"kind": "asset_job", "entity": ent.key, "asset_kind": asset_kind,
+                              "status": job.status, "job_id": str(job.id),
+                              "dimensions": dims or None})
 
             elif name == "ask_clarification":
                 if pending_question is None:  # first question wins; one popup at a time

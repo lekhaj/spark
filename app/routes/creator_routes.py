@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Body, Depends, Query
 from sqlalchemy.orm import Session
 
-from app.cyclezero import creator_agent, service
+from app.cyclezero import creator_agent, experience, service
 from app.cyclezero.agents import orchestrator
 from app.cyclezero.db import get_db as get_sql_db
 from app.lib import usage_recorder
@@ -39,14 +39,21 @@ def _provider():
     return creator_agent.make_bedrock_creator()
 
 
+def _metamodel_db():
+    """The Mongo handle holding the metamodel collections (layers + relation types).
+    Used both to read the snapshot and to install proposed vocabulary."""
+    from worker.lib import manual_gen_schema as mgs
+
+    return mgs.get_db()
+
+
 def _metamodel() -> Optional[Dict[str, Any]]:
     """The shared relation metamodel (``{layers, relation_types}``), best-effort.
     Gates ``link_entities`` against the edge contract; None → relations rejected."""
     try:
         from app.cyclezero import metamodel
-        from worker.lib import manual_gen_schema as mgs
 
-        return metamodel.load_metamodel(mgs.get_db())
+        return metamodel.load_metamodel(_metamodel_db())
     except Exception:  # noqa: BLE001
         return None
 
@@ -54,6 +61,20 @@ def _metamodel() -> Optional[Dict[str, Any]]:
 def _known_layers() -> List[str]:
     """Known layer names from the shared metamodel (best-effort)."""
     return list((_metamodel() or {}).get("layers", {}).keys())
+
+
+def _capability_registry(engine: str = "babylon") -> Optional[Dict[str, Any]]:
+    """The engine capability registry = base seed + the living ledger of what Claude Code
+    has built (ingested via /capabilities/ingest). Lets the Director report engine gaps that
+    shrink as builds land. Best-effort; None → Director falls back to the base seed."""
+    try:
+        from app.cyclezero import compile_tools
+        from app.cyclezero import routes as cz_routes
+
+        ledger = cz_routes._load_ledger(cz_routes._mongo(), engine)
+        return compile_tools.get_capability_registry(engine, ledger=ledger)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 @router.post("/creator/turn")
@@ -93,6 +114,8 @@ def creator_turn(
                 user_text=user_text,
                 known_layers=known_layers,
                 metamodel=mm,
+                metamodel_db=_metamodel_db() if mm is not None else None,
+                capabilities=_capability_registry(),
                 resolve_field=resolve_field,
             )
     except Exception as e:  # noqa: BLE001 — chat must degrade, never 500
@@ -158,6 +181,24 @@ def creator_games(
     except Exception:  # noqa: BLE001
         log.exception("creator games failed")
         return {"games": [], "active": None}
+
+
+@router.get("/creator/experience/{game_slug}")
+def creator_experience(
+    game_slug: str,
+    sql_db: Session = Depends(get_sql_db),
+    user: StudioUser = Depends(current_user),
+) -> Dict[str, Any]:
+    """The deterministic structural experience scorecard for a game (the Critic's
+    read-only channel). Prose review comes from the chat path; this is the raw numbers."""
+    try:
+        entities, relations = creator_agent.load_graph_dicts(sql_db, game_slug)
+        sc = experience.score_structural(entities, relations, _metamodel())
+        return {"game_slug": game_slug, **sc.as_dict()}
+    except Exception:  # noqa: BLE001
+        log.exception("creator experience failed")
+        return {"game_slug": game_slug, "headline": 0, "axes": {}, "weakest": None,
+                "suggestion": "", "pitfalls": []}
 
 
 @router.post("/creator/active")

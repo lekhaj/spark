@@ -246,17 +246,107 @@ def test_play_hints_track_scene_and_player(sql, mongo):
     assert o1["play_hints"] == []
 
 
+def test_review_intent_routes_to_critic_without_writing(sql, mongo):
+    """A 'is it fun / review' turn short-circuits to the read-only Critic: it returns a
+    scorecard + prose, attributes the turn to the experience agent, and writes NO graph."""
+    service.create_game(sql, schemas.GameCreate(title="Diablo 2", owner_id="u1"))
+    # seed a tiny graph so there's something to score
+    seed = FakeProvider({"text": "wiring", "tool_calls": [
+        _tc("upsert_entity", layer="system", name="Power Attack"),
+        _tc("upsert_entity", layer="factor", name="Defense"),
+        _tc("link_entities", src="Power Attack", kind="AFFECTS", dst="Defense"),
+    ]})
+    orchestrator.run_turn(
+        provider=seed, sql_db=sql, mongo_db=mongo, uid="u1", email="a@b.com",
+        game_slug="diablo-2", user_text="power attack affects defense",
+        known_layers=_MM_LAYERS, metamodel=_MM,
+    )
+    game = service.get_game(sql, "diablo-2")
+    rels_before = len(service.list_relations(sql, game))
+
+    # the review turn — provider returns prose; it must NOT be asked for tool calls
+    critic_prov = FakeProvider({"text": "Solid start; CHOICE is weakest.", "tool_calls": []})
+    out = orchestrator.run_turn(
+        provider=critic_prov, sql_db=sql, mongo_db=mongo, uid="u1", email="a@b.com",
+        game_slug="diablo-2", user_text="is this fun yet? give me a review",
+        known_layers=_MM_LAYERS, metamodel=_MM,
+    )
+    assert out["agent"] == "experience" and out["routed_to"] == "experience"
+    assert out["reply"] == "Solid start; CHOICE is weakest."
+    assert "scorecard" in out and 0 <= out["scorecard"]["headline"] <= 100
+    assert out["saved"][0]["kind"] == "scorecard"
+    # the critic wrote nothing to the graph
+    assert len(service.list_relations(sql, game)) == rels_before
+
+
+def test_generate_asset_captures_dimensions_and_queues_record_only(sql, mongo):
+    """The Art path: create a prop, then generate_asset captures native dimensions on the
+    entity and queues a job (record-only — status 'queued', no GPU submit)."""
+    service.create_game(sql, schemas.GameCreate(title="Diablo 2", owner_id="u1"))
+    prov = FakeProvider({"text": "Queuing the barrel.", "tool_calls": [
+        _tc("upsert_entity", layer="prop", name="Barrel"),
+        _tc("generate_asset", entity="Barrel", asset_kind="glb",
+            dimensions={"w": 0.6, "h": 0.9, "d": 0.6},
+            descriptor={"style": "weathered oak"}),
+    ]})
+    out = orchestrator.run_turn(
+        provider=prov, sql_db=sql, mongo_db=mongo, uid="u1", email="a@b.com",
+        game_slug="diablo-2", user_text="generate the barrel asset",
+        known_layers=["prop"], metamodel=_MM,
+    )
+    jobs = [s for s in out["saved"] if s["kind"] == "asset_job"]
+    assert len(jobs) == 1 and jobs[0]["status"] == "queued"
+    assert jobs[0]["dimensions"] == {"w": 0.6, "h": 0.9, "d": 0.6}
+    # dimensions captured on the entity so scaling is well-defined
+    game = service.get_game(sql, "diablo-2")
+    barrel = service.get_entity(sql, game, "barrel")
+    assert barrel.data["dimensions"] == {"w": 0.6, "h": 0.9, "d": 0.6}
+    # a durable job row exists, queued (not submitted to GPU)
+    assert len(service.list_jobs(sql, game)) == 1
+
+
+def test_validate_intent_routes_to_validator_without_writing(sql, mongo):
+    """A 'validate / any errors' turn short-circuits to the read-only Validator."""
+    service.create_game(sql, schemas.GameCreate(title="Diablo 2", owner_id="u1"))
+    seed = FakeProvider({"text": "ok", "tool_calls": [
+        _tc("upsert_entity", layer="system", name="Stamina"),
+        _tc("upsert_entity", layer="factor", name="Defense"),
+        _tc("link_entities", src="Stamina", kind="AFFECTS", dst="Defense"),
+    ]})
+    orchestrator.run_turn(
+        provider=seed, sql_db=sql, mongo_db=mongo, uid="u1", email="a@b.com",
+        game_slug="diablo-2", user_text="stamina affects defense",
+        known_layers=_MM_LAYERS, metamodel=_MM,
+    )
+    game = service.get_game(sql, "diablo-2")
+    rels_before = len(service.list_relations(sql, game))
+
+    vprov = FakeProvider({"text": "All checks pass.", "tool_calls": []})
+    out = orchestrator.run_turn(
+        provider=vprov, sql_db=sql, mongo_db=mongo, uid="u1", email="a@b.com",
+        game_slug="diablo-2", user_text="validate the game — any errors?",
+        known_layers=_MM_LAYERS, metamodel=_MM,
+    )
+    assert out["agent"] == "validator" and out["routed_to"] == "validator"
+    assert "validation" in out and out["validation"]["ok"] is True
+    assert out["saved"][0]["kind"] == "validation"
+    assert len(service.list_relations(sql, game)) == rels_before  # wrote nothing
+
+
 # ── agent layer: routing + active game ────────────────────────────────────────
 def test_router_classifies_disciplines():
     # mechanics → systems (implemented)
     ag, routed = registry.route("add a stamina system that drains on attacks")
     assert ag.name == "systems" and routed == "systems"
-    # narrative intent → recognised, but falls back to the default until that module lands
+    # narrative intent → narrative agent (now implemented, handles it directly)
     ag, routed = registry.route("write the opening quest and the villain's dialogue")
-    assert routed == "narrative" and ag.name == "systems"
-    # world intent → recognised, falls back
+    assert routed == "narrative" and ag.name == "narrative"
+    # world intent → world agent (now implemented)
     ag, routed = registry.route("design the dungeon layout and its rooms")
-    assert routed == "world" and ag.name == "systems"
+    assert routed == "world" and ag.name == "world"
+    # art intent → art agent (now implemented)
+    ag, routed = registry.route("generate a 3d model and its texture")
+    assert routed == "art" and ag.name == "art"
 
 
 def test_orchestrator_reports_handling_agent(sql, mongo):
