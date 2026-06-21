@@ -12,6 +12,7 @@ discipline agents, while "list my characters" is answered here for free.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from .base import keyword_hit
@@ -62,8 +63,70 @@ _OVERVIEW_CUES: Tuple[str, ...] = (
 )
 
 
+# enumerative cues that, combined with a games signal, mean "show me my games"
+_GAMES_CUES: Tuple[str, ...] = (
+    "list", "show", "see", "view", "what", "which", "my", "all", "have",
+)
+# plural anchors only — singular "game" is too weak (appears in "game feel"/"game design")
+_GAMES_ANCHORS: Tuple[str, ...] = ("games", "projects")
+# the legit singulars, excluded from fuzzy matching so they don't read as a typo'd plural
+_GAMES_SINGULAR: frozenset = frozenset({"game", "project"})
+
+
+def _within_one(a: str, b: str) -> bool:
+    """True if ``a`` is within edit distance 1 of ``b`` (one insert/delete/substitute or a
+    transposition). Lets typos like 'gsames'/'gamse' still resolve to 'games'."""
+    if a == b:
+        return True
+    la, lb = len(a), len(b)
+    if abs(la - lb) > 1:
+        return False
+    if la == lb:  # one substitution OR one adjacent transposition
+        diff = [i for i in range(la) if a[i] != b[i]]
+        if len(diff) == 1:
+            return True
+        if len(diff) == 2 and diff[1] == diff[0] + 1:
+            i, j = diff
+            return a[i] == b[j] and a[j] == b[i]
+        return False
+    # lengths differ by 1 → one insertion/deletion: the shorter must embed in the longer
+    short, lng = (a, b) if la < lb else (b, a)
+    i = j = 0
+    skipped = False
+    while i < len(short) and j < len(lng):
+        if short[i] == lng[j]:
+            i += 1
+            j += 1
+        elif skipped:
+            return False
+        else:
+            skipped = True
+            j += 1
+    return True
+
+
 def is_games_intent(text: str) -> bool:
-    return keyword_hit(text, GAMES_INTENTS)
+    # 1. explicit phrases (fast path, exact)
+    if keyword_hit(text, GAMES_INTENTS):
+        return True
+    low = (text or "").lower()
+    tokens = re.findall(r"[a-z]+", low)
+    if not tokens:
+        return False
+    # never steal an authoring turn ("add a game mode", "make a new game")
+    if _has_write_verb(text):
+        return False
+    has_cue = any(t in _GAMES_CUES for t in tokens) or keyword_hit(text, _LIST_CUES)
+    if not has_cue:
+        return False
+    # "...in my profile" is an account-level listing → the user's games
+    if "profile" in tokens:
+        return True
+    # typo-tolerant plural anchor: 'games'/'projects' (and near-misses like 'gsames'),
+    # but never the legitimate singular ('game'/'project'), which appears in unrelated
+    # phrases like "game feel" / "game design".
+    return any(t not in _GAMES_SINGULAR and _within_one(t, a)
+               for t in tokens for a in _GAMES_ANCHORS)
 
 
 def _has_write_verb(text: str) -> bool:

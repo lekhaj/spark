@@ -168,8 +168,17 @@ def test_info_games_intent_vs_write():
     assert info.is_games_intent("list my games")
     assert info.is_games_intent("what games do I have?")
     assert info.is_games_intent("show me my games")
+    # typo-tolerant: 'gsames' is one edit from 'games'
+    assert info.is_games_intent("list gsames in my profile")
+    assert info.is_games_intent("show gamse")
+    # profile-scoped listing → games even without the anchor word
+    assert info.is_games_intent("list everything in my profile")
     # "start a game called X" is a write, not a games-list query
     assert not info.is_games_intent("start a game called Nightfall")
+    assert not info.is_games_intent("add a new game mode")
+    # singular 'game' in an unrelated phrase must NOT be a games-list query
+    assert not info.is_games_intent("show me the game feel")
+    assert not info.is_games_intent("improve the game design")
 
 
 def test_info_catalog_target_classification():
