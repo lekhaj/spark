@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from .. import creator_agent
-from . import critic, director, registry, validator
+from . import critic, director, info, registry, validator
 
 log = logging.getLogger("creator_orchestrator")
 
@@ -49,6 +49,19 @@ def run_turn(
     if game_slug:
         mem = creator_agent.load_memory(mongo_db, uid, game_slug)
         facts, open_questions = dict(mem["facts"]), list(mem["open_questions"])
+
+    # 1a. read-only INFO queries (zero LLM, zero writes): "list my games" works with or
+    #     without an active game; "what characters/systems do I have" reads the active
+    #     graph. These are pure catalog reads — the cheapest path, so they go first.
+    if info.is_games_intent(user_text):
+        return _info_games_turn(
+            sql_db=sql_db, mongo_db=mongo_db, uid=uid, email=email,
+            game_slug=game_slug, user_text=user_text,
+        )
+    if game_slug and info.is_catalog_intent(user_text):
+        return _info_catalog_turn(
+            sql_db=sql_db, mongo_db=mongo_db, uid=uid, game_slug=game_slug, user_text=user_text,
+        )
 
     # 1b. read-only short-circuits (no writes, no tools): a "review / is it fun" turn goes
     #     to the Critic (quality); a "validate / is it broken" turn goes to the Validator
@@ -123,6 +136,59 @@ def run_turn(
         "routed_to": routed_to,     # intended discipline (may differ until modules land)
         "playable": bool(game_slug),
         "play_hints": creator_agent._play_hints(sql_db, game_slug) if game_slug else [],
+    }
+
+
+def _persist_readonly_turn(
+    mongo_db, uid, game_slug: Optional[str], user_text: str, reply: str,
+    saved: List[Dict[str, Any]], agent_name: str,
+) -> None:
+    """Append a user+assistant turn for a read-only agent (best-effort). Only persists
+    when there's an active game to attach to — a games-list query with no game is
+    answered but not stored."""
+    if not game_slug:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    creator_agent.append_turn(mongo_db, uid, game_slug,
+                              {"role": "user", "text": user_text, "ts": now})
+    creator_agent.append_turn(mongo_db, uid, game_slug,
+                              {"role": "assistant", "text": reply, "ts": now,
+                               "saved": saved, "question": None, "agent": agent_name})
+    creator_agent.set_active_game(mongo_db, uid, game_slug)
+
+
+def _info_games_turn(
+    *, sql_db: Session, mongo_db, uid: Optional[str], email: Optional[str],
+    game_slug: Optional[str], user_text: str,
+) -> Dict[str, Any]:
+    """The Info path for "list my games" — a deterministic DB read, no LLM. Returns the
+    games list so the frontend switcher can refresh from the same call."""
+    games = creator_agent.list_user_games(sql_db, uid)
+    ans = info.answer_games(games)
+    reply, saved = ans["reply"], ans["saved"]
+    _persist_readonly_turn(mongo_db, uid, game_slug, user_text, reply, saved, info.NAME)
+    return {
+        "reply": reply, "saved": saved, "pending_question": None, "game_slug": game_slug,
+        "agent": info.NAME, "routed_to": info.NAME,
+        "playable": bool(game_slug),
+        "play_hints": creator_agent._play_hints(sql_db, game_slug) if game_slug else [],
+        "games": games,
+    }
+
+
+def _info_catalog_turn(
+    *, sql_db: Session, mongo_db, uid: Optional[str], game_slug: str, user_text: str,
+) -> Dict[str, Any]:
+    """The Info path for "what characters/systems do I have" — reads the active graph
+    deterministically and lists a layer (or an overview), no LLM."""
+    entities, _ = creator_agent.load_graph_dicts(sql_db, game_slug)
+    ans = info.answer_catalog(user_text, entities, game_slug=game_slug)
+    reply, saved = ans["reply"], ans["saved"]
+    _persist_readonly_turn(mongo_db, uid, game_slug, user_text, reply, saved, info.NAME)
+    return {
+        "reply": reply, "saved": saved, "pending_question": None, "game_slug": game_slug,
+        "agent": info.NAME, "routed_to": info.NAME,
+        "playable": True, "play_hints": creator_agent._play_hints(sql_db, game_slug),
     }
 
 

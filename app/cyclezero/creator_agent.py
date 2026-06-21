@@ -260,6 +260,15 @@ def get_active_game(mongo_db, uid: Optional[str]) -> Optional[str]:
     return (doc or {}).get("game_slug")
 
 
+def list_user_games(sql_db: Session, uid: Optional[str]) -> List[Dict[str, Any]]:
+    """This caller's games as plain dicts (newest first), for the deterministic Info
+    agent + the switcher. Empty list when there's no DB or no games."""
+    if sql_db is None:
+        return []
+    return [{"game_slug": g.slug, "title": g.title, "status": getattr(g, "status", None)}
+            for g in service.list_games(sql_db) if g.owner_id == uid]
+
+
 # ── relation + play helpers ───────────────────────────────────────────────────
 def _render_relations(metamodel: Optional[Dict[str, Any]]) -> str:
     """Render the relation vocabulary for the system prompt:

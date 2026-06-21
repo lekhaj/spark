@@ -333,6 +333,45 @@ def test_validate_intent_routes_to_validator_without_writing(sql, mongo):
     assert len(service.list_relations(sql, game)) == rels_before  # wrote nothing
 
 
+def test_list_games_routes_to_info_without_llm(sql, mongo):
+    """'list my games' is a deterministic DB read: it returns the games list, attributes
+    the turn to the Info agent, and NEVER calls the LLM (FakeProvider has no scripts → it
+    would raise IndexError if chat_tools were invoked)."""
+    service.create_game(sql, schemas.GameCreate(title="Diablo 2", owner_id="u1"))
+    service.create_game(sql, schemas.GameCreate(title="Baldurs Gate", owner_id="u1"))
+    out = orchestrator.run_turn(
+        provider=FakeProvider(),  # no scripts: any LLM call blows up the test
+        sql_db=sql, mongo_db=mongo, uid="u1", email="a@b.com",
+        game_slug="diablo-2", user_text="list my games", known_layers=[],
+    )
+    assert out["agent"] == "info" and out["routed_to"] == "info"
+    slugs = {g["game_slug"] for g in out["games"]}
+    assert {"diablo-2", "baldurs-gate"} <= slugs
+    assert out["saved"][0]["kind"] == "games"
+
+
+def test_catalog_query_routes_to_info_and_lists_layer(sql, mongo):
+    """'what characters do I have' reads the active graph deterministically (no LLM) and
+    lists that layer."""
+    service.create_game(sql, schemas.GameCreate(title="Diablo 2", owner_id="u1"))
+    seed = FakeProvider({"text": "", "tool_calls": [
+        _tc("upsert_entity", layer="character", name="Necromancer", data={"role": "player"}),
+        _tc("upsert_entity", layer="character", name="Barbarian"),
+    ]})
+    orchestrator.run_turn(
+        provider=seed, sql_db=sql, mongo_db=mongo, uid="u1", email="a@b.com",
+        game_slug="diablo-2", user_text="add the two heroes", known_layers=["character"],
+    )
+    out = orchestrator.run_turn(
+        provider=FakeProvider(),  # no LLM allowed on the catalog read
+        sql_db=sql, mongo_db=mongo, uid="u1", email="a@b.com",
+        game_slug="diablo-2", user_text="what characters do I have?", known_layers=["character"],
+    )
+    assert out["agent"] == "info"
+    assert out["saved"][0]["kind"] == "catalog" and out["saved"][0]["layer"] == "character"
+    assert set(out["saved"][0]["items"]) == {"Necromancer", "Barbarian"}
+
+
 # ── agent layer: routing + active game ────────────────────────────────────────
 def test_router_classifies_disciplines():
     # mechanics → systems (implemented)

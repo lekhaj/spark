@@ -8,7 +8,7 @@ from __future__ import annotations
 import mongomock
 
 from app.cyclezero import creator_agent, metamodel, spatial
-from app.cyclezero.agents import director, narrative, registry, validator, world
+from app.cyclezero.agents import director, info, narrative, registry, validator, world
 
 # minimal metamodel for validator tests: AFFECTS must go system → factor
 _VMM = {
@@ -161,6 +161,46 @@ def test_propose_system_rejected_without_metamodel_store():
     )
     # no store handed in and worker.lib unavailable offline → rejected, never crashes
     assert any(s["kind"] == "rejected" for s in res["saved"])
+
+
+# ── Info (read-only "librarian": list games / catalog) ─────────────────────────
+def test_info_games_intent_vs_write():
+    assert info.is_games_intent("list my games")
+    assert info.is_games_intent("what games do I have?")
+    assert info.is_games_intent("show me my games")
+    # "start a game called X" is a write, not a games-list query
+    assert not info.is_games_intent("start a game called Nightfall")
+
+
+def test_info_catalog_target_classification():
+    assert info.catalog_target("list my characters") == "character"
+    assert info.catalog_target("what systems do I have") == "system"
+    assert info.catalog_target("how many scenes are there") == "scene"
+    # overview when enumerative but no specific layer
+    assert info.catalog_target("what do I have in this game") == ""
+    # a write turn must NOT be stolen by the catalog reader
+    assert info.catalog_target("add a stamina system") is None
+    assert info.catalog_target("make a new character") is None
+    # plain authoring with no list cue
+    assert info.catalog_target("the hero is older now") is None
+
+
+def test_info_answer_games_empty_and_populated():
+    empty = info.answer_games([])
+    assert empty["saved"][0]["kind"] == "games" and empty["saved"][0]["games"] == []
+    games = [{"game_slug": "nightfall", "title": "Nightfall", "status": "draft"}]
+    out = info.answer_games(games)
+    assert "Nightfall" in out["reply"] and "nightfall" in out["reply"]
+    assert out["saved"][0]["games"] == games
+
+
+def test_info_answer_catalog_layer_and_overview():
+    ents = [_ent("character", "hero"), _ent("character", "villain"), _ent("system", "stamina")]
+    layer = info.answer_catalog("list my characters", ents, game_slug="g")
+    assert layer["saved"][0]["layer"] == "character"
+    assert set(layer["saved"][0]["items"]) == {"hero", "villain"}
+    overview = info.answer_catalog("what do I have", ents, game_slug="g")
+    assert overview["saved"][0]["counts"] == {"character": 2, "system": 1}
 
 
 # ── Director (read-only "what's next") ─────────────────────────────────────────
