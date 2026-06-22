@@ -100,12 +100,20 @@ def _redis():
         return None
 
 
+def _clean_id(v: str) -> str:
+    """Sanitize an instance id from env. systemd ``EnvironmentFile`` does NOT strip
+    inline ``#`` comments, so ``AWS_GPU_INSTANCE_ID=i-123  # note`` arrives with the
+    comment attached. Take the first whitespace-delimited token (the id), dropping
+    any trailing comment — an instance id never contains spaces."""
+    return (v or "").split("#", 1)[0].split()[0] if (v or "").strip() else ""
+
+
 def _spot_id() -> str:
-    return os.getenv("AWS_GPU_SPOT_INSTANCE_ID", "").strip() or _cfg().SPOT_GPU_INSTANCE_ID
+    return _clean_id(os.getenv("AWS_GPU_SPOT_INSTANCE_ID", "")) or _cfg().SPOT_GPU_INSTANCE_ID
 
 
 def _ondemand_id() -> str:
-    return os.getenv("AWS_GPU_INSTANCE_ID", "").strip() or _cfg().ONDEMAND_GPU_INSTANCE_ID
+    return _clean_id(os.getenv("AWS_GPU_INSTANCE_ID", "")) or _cfg().ONDEMAND_GPU_INSTANCE_ID
 
 
 def _err_code(e) -> str:
