@@ -88,6 +88,25 @@ def build_contract(game: Dict[str, Any], entities: List[Dict[str, Any]]) -> Dict
     else:
         player = {"spawn": [0, 1, 0], "speed": 6, "asset": None}
 
+    # Actors — every non-player character + NPC becomes a placed actor the engine
+    # spawns (its GLB if generated, else a role-tinted capsule fallback so the
+    # scene populates before assets exist). The player stays in ``player``.
+    actors: List[dict] = []
+    for e in _by_layer(entities, "character") + _by_layer(entities, "npc"):
+        if e is player_ent:
+            continue
+        d = e.get("data", {})
+        actors.append(
+            {
+                "id": e["key"],
+                "name": e.get("name") or e["key"],
+                "role": d.get("role", "npc"),
+                "spawn": d.get("spawn", [0, 1, 0]),
+                "asset": _register_asset(e),
+                "behavior": d.get("behavior", "idle"),
+            }
+        )
+
     # Colliders → contract entities.
     contract_entities: List[dict] = []
     for e in _by_layer(entities, "collider"):
@@ -130,6 +149,7 @@ def build_contract(game: Dict[str, Any], entities: List[Dict[str, Any]]) -> Dict
         "quality": quality,
         "environment": {"ground": ground, "lights": lights},
         "player": player,
+        "actors": actors,
         "entities": contract_entities,
         "scatter": scatter,
         "triggers": triggers,

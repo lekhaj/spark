@@ -43,7 +43,9 @@ def client(monkeypatch):
 
     # Don't hit real Mongo during generate tests.
     monkeypatch.setattr(
-        generation, "submit", lambda job, entity: {"submitted": True, "mongo_request_id": "x"}
+        generation,
+        "submit",
+        lambda job, entity, game=None: {"submitted": True, "mongo_request_id": "x"},
     )
 
     app = FastAPI()

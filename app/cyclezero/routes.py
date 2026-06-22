@@ -50,7 +50,7 @@ from sqlalchemy.orm import Session
 
 from . import contract as contract_builder
 from . import capability_store, compile_agent, compile_tools, propose_agent, validate_agent
-from . import generation, graph, matching, metamodel, outcome, schemas, service
+from . import generation, graph, matching, metamodel, models, outcome, schemas, service
 from .db import get_db
 from app.lib import usage_recorder
 from app.lib.identity import StudioUser, current_user
@@ -291,8 +291,8 @@ def generate(slug: str, key: str, body: schemas.JobCreate, db: Session = Depends
     game = _require_game(db, slug)
     entity = _require_entity(db, game, key)
     job = service.create_job(db, game, entity, body)
-    outcome = generation.submit(job, entity)
-    job = service.set_job_status(db, job, "queued", result={**job.result, **outcome})
+    submit_result = generation.submit(job, entity, game)
+    job = service.set_job_status(db, job, "queued", result={**job.result, **submit_result})
     return job
 
 
@@ -307,6 +307,30 @@ def get_job(slug: str, job_id: uuid.UUID, db: Session = Depends(get_db)):
     job = service.get_job(db, game, job_id)
     if job is None:
         raise HTTPException(404, "job not found")
+    # Reconcile the linked asset-run: polling a job advances its image→3D→rig
+    # stage machine and, once complete, writes the produced GLB back onto the
+    # owning entity so the contract builder serves it. Best-effort — never 500s.
+    arid = (job.result or {}).get("asset_run_id")
+    if arid:
+        res = generation.reconcile(arid)
+        new_result = {**job.result, "asset_run_status": res.get("status")}
+        glb = res.get("glb")
+        if glb and job.entity_id:
+            entity = db.get(models.Entity, job.entity_id)
+            if entity is not None and (entity.data or {}).get("glb") != glb:
+                entity.data = {
+                    **(entity.data or {}),
+                    "glb": glb,
+                    "fbx": res.get("fbx"),
+                    "lod": res.get("lod", "auto"),
+                }
+                new_result.update(glb=glb, fbx=res.get("fbx"))
+                job = service.set_job_status(db, job, "done", result=new_result)
+                db.commit()
+                db.refresh(job)
+                return job
+        if new_result != job.result:
+            job = service.set_job_status(db, job, job.status, result=new_result)
     return job
 
 
