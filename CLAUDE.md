@@ -2,6 +2,11 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Reference docs (Notion)
+
+- **[Per-Agent UIs — Architecture & Status](https://app.notion.com/p/387f0f8e4d1c81d9b161e81bb06fc9da)** — the studio's per-agent view layer + the `app/cyclezero` creator/agents subsystem it reads (experience/progress/validate endpoints in `app/routes/creator_routes.py`), deploy topology, and the **metamodel relation contracts** (which layers each relation kind may connect — read before adding relation kinds or systems wiring).
+- **[Game systems taxonomy](https://app.notion.com/p/386f0f8e4d1c81059ac4f5ecf3cef693)** — reasoning-agent primitive axes.
+
 ## Commands
 
 - `uvicorn app.main:app --host 0.0.0.0 --port 8000` — FastAPI backend (prod: `fastapi_app.service`).
