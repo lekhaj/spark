@@ -24,7 +24,7 @@ from fastapi import APIRouter, Body, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.cyclezero import creator_agent, experience, service
-from app.cyclezero.agents import orchestrator
+from app.cyclezero.agents import director, orchestrator
 from app.cyclezero.db import get_db as get_sql_db
 from app.lib import usage_recorder
 from app.lib.identity import StudioUser, current_user
@@ -199,6 +199,24 @@ def creator_experience(
         log.exception("creator experience failed")
         return {"game_slug": game_slug, "headline": 0, "axes": {}, "weakest": None,
                 "suggestion": "", "pitfalls": []}
+
+
+@router.get("/creator/progress/{game_slug}")
+def creator_progress(
+    game_slug: str,
+    sql_db: Session = Depends(get_sql_db),
+    user: StudioUser = Depends(current_user),
+) -> Dict[str, Any]:
+    """The deterministic "what's next" report (the Director's read-only channel): a
+    prioritised next-steps list + coverage flags. No LLM — mirrors the chat What's-next so
+    the Director Full view can load it cold in its own browser tab."""
+    try:
+        entities, relations = creator_agent.load_graph_dicts(sql_db, game_slug)
+        return director.progress(entities, relations, metamodel=_metamodel(),
+                                 capabilities=_capability_registry())
+    except Exception:  # noqa: BLE001
+        log.exception("creator progress failed")
+        return {"headline": 0, "playable": False, "next_steps": [], "coverage": {}}
 
 
 @router.post("/creator/active")
