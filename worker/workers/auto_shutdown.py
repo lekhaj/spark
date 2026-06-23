@@ -32,8 +32,16 @@ logger = logging.getLogger("AutoShutdown")
 # ── Config ────────────────────────────────────────────────────────────────────
 # REDIS_HOST defaults to the CPU's private VPC IP — the public IP is firewalled
 # off from GPU egress and AWS-throttled during abuse-case mitigations.
-IDLE_THRESHOLD_MIN = int(os.getenv("IDLE_SHUTDOWN_MINUTES", "15"))
+# Safety-net threshold. The CPU orchestrator is now the PRIMARY stop authority
+# (pipeline-aware: queues + heartbeat + in-flight asset_runs). This GPU-side
+# clock only catches a *dead* CPU orchestrator, so it is deliberately long —
+# never the thing that ends a normal run. Overridable via env / Redis.
+IDLE_THRESHOLD_MIN = int(os.getenv("IDLE_SHUTDOWN_MINUTES", "45"))
 CHECK_INTERVAL_SEC = int(os.getenv("IDLE_CHECK_INTERVAL_SEC", "60"))
+# A GPU heartbeat fresher than this means a task is being processed right now —
+# even if the Redis queue is momentarily empty (long subprocess stage). Treated
+# as "active" so this safety net never fires mid-task.
+HEARTBEAT_FRESH_SEC = int(os.getenv("GPU_HEARTBEAT_FRESH_SEC", "120"))
 # NOTE: do NOT default AWS_GPU_INSTANCE_ID — it's host-specific (different
 # per GPU box). .env.gpu is shared across spark_l4 and spark_gpu_spot, so the
 # value must come from IMDS at runtime. A hardcoded default here previously
@@ -310,6 +318,20 @@ class AutoShutdown:
             if self._active:
                 idle_since = None
                 continue
+
+            # Heartbeat guard: a fresh heartbeat means a task is in flight right
+            # now (e.g. a long pixal3d/hunyuan3d subprocess with an empty queue).
+            # Treat as active so the safety net never kills a working box. Fail
+            # safe: gpu_heartbeat.is_busy returns True on any Redis error.
+            try:
+                from lib import gpu_heartbeat
+                if gpu_heartbeat.is_busy(r, self._this_iid(), HEARTBEAT_FRESH_SEC):
+                    if idle_since is not None:
+                        logger.info("GPU heartbeat fresh — idle timer cleared")
+                    idle_since = None
+                    continue
+            except Exception:
+                pass
 
             threshold = self._get_idle_threshold(r)
 

@@ -136,6 +136,32 @@ class ManualGenWorker(BaseWorker):
         r          = self.get_redis()
         idle_since = time.time()
 
+        # ── GPU busy heartbeat ────────────────────────────────────────────────
+        # Single source of truth for "this GPU is doing work right now", read by
+        # both the GPU-side auto_shutdown and the CPU orchestrator so neither
+        # stops a box mid-task — even during a long pixal3d/hunyuan3d subprocess
+        # that runs with the Redis queue already empty. A daemon thread keeps the
+        # heartbeat fresh while a task is in flight.
+        import threading as _threading
+        from lib import gpu_heartbeat
+        try:
+            from workers.auto_shutdown import _imds_instance_id as _iid_fn
+        except Exception:  # pragma: no cover
+            _iid_fn = lambda: None  # noqa: E731
+        self._hb_iid = os.getenv("AWS_GPU_INSTANCE_ID", "").strip() or _iid_fn()
+        self._hb_processing = False
+
+        def _heartbeat_loop():
+            while True:
+                if getattr(self, "_hb_processing", False):
+                    try:
+                        gpu_heartbeat.touch(self.get_redis(), self._hb_iid)
+                    except Exception:
+                        pass
+                time.sleep(30)
+
+        _threading.Thread(target=_heartbeat_loop, name="GpuHeartbeat", daemon=True).start()
+
         # Spot-reclaim safety: blpop atomically removes the task, so if AWS
         # reclaims this (spot) box mid-job, systemd sends SIGTERM and the
         # in-flight task would be lost. Catch SIGTERM/SIGINT and push the
@@ -208,6 +234,15 @@ class ManualGenWorker(BaseWorker):
             if active_callback:
                 active_callback()
 
+            # Mark busy + stamp the heartbeat immediately on pop so the stop
+            # paths see this box as working before the (possibly long) handler
+            # even starts; the heartbeat thread then keeps it fresh.
+            self._hb_processing = True
+            try:
+                gpu_heartbeat.touch(r, self._hb_iid)
+            except Exception:
+                pass
+
             # Track the in-flight task so a SIGTERM (spot reclaim) can re-queue it.
             self._current_task = task
 
@@ -225,6 +260,13 @@ class ManualGenWorker(BaseWorker):
                     pass
             finally:
                 self._current_task = None   # completed — no longer re-queueable
+                self._hb_processing = False
+                # Final stamp so the "just finished" moment is recorded; the idle
+                # window is measured from here by the stop paths.
+                try:
+                    gpu_heartbeat.touch(r, self._hb_iid)
+                except Exception:
+                    pass
                 if done_callback:
                     done_callback()
 
