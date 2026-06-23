@@ -4,8 +4,11 @@
 # validated code + conda envs, so this unit just runs the worker on boot. Code
 # updates happen by re-baking or an explicit deploy, never a surprise git reset.
 Description=Spark manual-gen GPU worker (g7e/Blackwell)
-After=network-online.target spark-prewarm.service
-Wants=network-online.target
+# NOTE: do NOT gate on network-online.target. On AL2023 that target can fail to be
+# reached on a stop→start boot (no wait-online wiring), which left this enabled unit
+# (and spark-prewarm) un-started → the Redis queue never drained. We order after
+# basic network only and let the worker wait for Redis itself (start script + Restart).
+After=network.target spark-prewarm.service
 
 [Service]
 Type=simple
@@ -13,7 +16,8 @@ User=ec2-user
 Group=ec2-user
 WorkingDirectory=/home/ec2-user/spark
 ExecStart=/home/ec2-user/spark/worker/gpu_setup/start_manual_worker.sh
-Restart=on-failure
+# Always restart: if Redis/network isn't ready yet at boot, keep retrying until it is.
+Restart=always
 RestartSec=10
 # Generous start window — first model touch can lazy-load from EBS.
 TimeoutStartSec=0

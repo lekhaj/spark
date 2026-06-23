@@ -27,6 +27,7 @@ here is unit-testable offline (no LLM), and the agents on top inject a fake prov
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -41,7 +42,12 @@ MEMORY = "game_memory"
 SESSIONS = "creator_sessions"
 ACTIVE = "creator_active_game"   # per-uid pointer: the game the user is working on now
 TURN_CAP = 50          # how much chat history we keep / reload ("to some extent")
-HISTORY_FOR_LLM = 12   # recent turns fed back to Haiku as conversation context
+# Recent turns replayed to the LLM as conversation context. Kept small on purpose:
+# the agent's durable memory is the graph + `facts_json` (both injected into the
+# system prompt, which is prompt-cached), so the chat scrollback only needs to carry
+# short-term continuity. Every replayed turn is *uncached* input billed each call, so
+# 12→6 roughly halves per-call history tokens at negligible quality cost. Tunable.
+HISTORY_FOR_LLM = int(os.getenv("REFINER_HISTORY_TURNS", "6"))
 
 # The contract renders with graceful defaults from an empty graph, but a game is
 # meaningfully playable once there's a place to be (scene) and someone to control
@@ -547,8 +553,7 @@ def apply_tool_calls(
                 asset_kind = (args.get("asset_kind") or "glb").strip()
                 dims = args.get("dimensions") or {}
                 descriptor = args.get("descriptor") or {}
-                # capture native dimensions on the entity so scaling is well-defined,
-                # then queue a job RECORD-ONLY (no GPU spend; batched/generated later).
+                # capture native dimensions on the entity so scaling is well-defined.
                 if dims or descriptor:
                     merged = dict(ent.data or {})
                     if dims:
@@ -562,8 +567,25 @@ def apply_tool_calls(
                         "descriptor": descriptor, "dimensions": dims,
                         **(args.get("params") or {})}),
                 )
+                # Start the REAL pipeline (same path as the REST generate endpoint),
+                # unless ops sets CYCLEZERO_RECORD_ONLY=1 to defer GPU spend. submit()
+                # creates the asset_run and returns its id; we link it into the job
+                # result so polling GET .../jobs/{id} reconciles + drives the UI.
+                sub = {"submitted": False}
+                if os.getenv("CYCLEZERO_RECORD_ONLY", "0") != "1":
+                    from . import generation
+                    sub = generation.submit(job, ent, game)
+                    if sub.get("submitted"):
+                        job = service.set_job_status(
+                            sql_db, job, "running",
+                            result={**(job.result or {}),
+                                    "asset_run_id": sub.get("asset_run_id"),
+                                    "asset_id": sub.get("asset_id")},
+                        )
                 saved.append({"kind": "asset_job", "entity": ent.key, "asset_kind": asset_kind,
                               "status": job.status, "job_id": str(job.id),
+                              "asset_run_id": sub.get("asset_run_id"),
+                              "submitted": bool(sub.get("submitted")),
                               "dimensions": dims or None})
 
             elif name == "ask_clarification":

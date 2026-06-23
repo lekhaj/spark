@@ -15,6 +15,7 @@ import asyncio
 from app.routes import mongo_routes 
 from app.services.orchestrator_service import orchestrator_main
 from app.services.result_consumer import result_consumer_main
+from app.services.asset_reconciler import reconcile_main
 from app.services.mongo_service import get_db
 from app.config import settings
 from app.routes.mongo_routes import router as mongo_router
@@ -80,16 +81,17 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001 — never block startup on the optional DB
         logger.warning("CycleZero metamodel/schema seed skipped: %s", exc)
 
-    # Start orchestrator + result consumer as background tasks
+    # Start orchestrator + result consumer + asset reconciler as background tasks
     orchestrator_task    = asyncio.create_task(orchestrator_main())
     result_consumer_task = asyncio.create_task(result_consumer_main())
-    logger.info("Orchestrator + result consumer background tasks started")
+    reconciler_task      = asyncio.create_task(reconcile_main())
+    logger.info("Orchestrator + result consumer + asset reconciler background tasks started")
 
     yield  # App runs here
 
     # Shutdown
     logger.info("Shutting down FastAPI application...")
-    for task in (orchestrator_task, result_consumer_task):
+    for task in (orchestrator_task, result_consumer_task, reconciler_task):
         task.cancel()
         try:
             await task

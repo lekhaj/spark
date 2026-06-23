@@ -296,9 +296,59 @@ def generate(slug: str, key: str, body: schemas.JobCreate, db: Session = Depends
     return job
 
 
+_TERMINAL_JOB_STATUS = ("done", "failed", "error", "cancelled")
+
+
 @router.get("/games/{slug}/jobs", response_model=List[schemas.JobOut])
-def list_jobs(slug: str, db: Session = Depends(get_db)):
-    return service.list_jobs(db, _require_game(db, slug))
+def list_jobs(slug: str, status: Optional[str] = None, db: Session = Depends(get_db)):
+    """List a game's asset jobs. ``status=active`` returns only in-flight jobs
+    (not terminal) — used by the studio to resume a watch on reopen and by the
+    app-shell watcher to notify on completion regardless of the current screen.
+    Active jobs are reconciled so their phase/stages are fresh."""
+    jobs = service.list_jobs(db, _require_game(db, slug))
+    if status == "active":
+        jobs = [reconcile_job(db, j) for j in jobs if j.status not in _TERMINAL_JOB_STATUS]
+    return jobs
+
+
+def reconcile_job(db: Session, job: "models.AssetJob") -> "models.AssetJob":
+    """Advance a job's linked asset-run and, once the rig completes, write the GLB
+    back onto the owning entity so the contract builder serves it. Best-effort and
+    idempotent — safe to call from the GET handler OR the background reconciler
+    (app/services/asset_reconciler.py). Commits only when something changed.
+    """
+    arid = (job.result or {}).get("asset_run_id")
+    if not arid:
+        return job
+    res = generation.reconcile(arid)
+    # Surface the full progressive snapshot so one job poll drives the whole UI:
+    # phase (gpu_warming→image→model3d→rigging→complete), progress, and the
+    # per-stage block (image url + 3D candidates + rig) the moment each lands.
+    new_result = {
+        **job.result,
+        "asset_run_status": res.get("status"),
+        "phase": res.get("phase"),
+        "progress": res.get("progress"),
+        "stages": res.get("stages"),
+    }
+    glb = res.get("glb")
+    if glb and job.entity_id:
+        entity = db.get(models.Entity, job.entity_id)
+        if entity is not None and (entity.data or {}).get("glb") != glb:
+            entity.data = {
+                **(entity.data or {}),
+                "glb": glb,
+                "fbx": res.get("fbx"),
+                "lod": res.get("lod", "auto"),
+            }
+            new_result.update(glb=glb, fbx=res.get("fbx"))
+            job = service.set_job_status(db, job, "done", result=new_result)
+            db.commit()
+            db.refresh(job)
+            return job
+    if new_result != job.result:
+        job = service.set_job_status(db, job, job.status, result=new_result)
+    return job
 
 
 @router.get("/games/{slug}/jobs/{job_id}", response_model=schemas.JobOut)
@@ -307,31 +357,8 @@ def get_job(slug: str, job_id: uuid.UUID, db: Session = Depends(get_db)):
     job = service.get_job(db, game, job_id)
     if job is None:
         raise HTTPException(404, "job not found")
-    # Reconcile the linked asset-run: polling a job advances its image→3D→rig
-    # stage machine and, once complete, writes the produced GLB back onto the
-    # owning entity so the contract builder serves it. Best-effort — never 500s.
-    arid = (job.result or {}).get("asset_run_id")
-    if arid:
-        res = generation.reconcile(arid)
-        new_result = {**job.result, "asset_run_status": res.get("status")}
-        glb = res.get("glb")
-        if glb and job.entity_id:
-            entity = db.get(models.Entity, job.entity_id)
-            if entity is not None and (entity.data or {}).get("glb") != glb:
-                entity.data = {
-                    **(entity.data or {}),
-                    "glb": glb,
-                    "fbx": res.get("fbx"),
-                    "lod": res.get("lod", "auto"),
-                }
-                new_result.update(glb=glb, fbx=res.get("fbx"))
-                job = service.set_job_status(db, job, "done", result=new_result)
-                db.commit()
-                db.refresh(job)
-                return job
-        if new_result != job.result:
-            job = service.set_job_status(db, job, job.status, result=new_result)
-    return job
+    # Polling a job advances its image→3D→rig stage machine and writes the GLB back.
+    return reconcile_job(db, job)
 
 
 # ── contract (P6) + matching (P7), now sourced from accepted specs (S6) ───────

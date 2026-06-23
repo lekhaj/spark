@@ -170,3 +170,36 @@ def test_submit_best_effort_when_pipeline_unavailable(env, monkeypatch):
                     json={"kind": "character"})
     assert r.status_code == 202
     assert r.json()["result"]["submitted"] is False
+
+
+# ── P1: phase derivation (pure, no DB) ────────────────────────────────────────
+def test_derive_phase_progression():
+    from app.cyclezero.generation import derive_phase
+
+    def doc(image, m3d=None, rig="pending", status="generating", queued=False):
+        return {
+            "status": status,
+            "_model3d_queued": queued,
+            "stages": {
+                "image": {"status": image, "url": None},
+                "model3d": {g: {"status": (m3d or {}).get(g, "pending")} for g in
+                            ("trellis", "pixal3d", "hunyuan3d")},
+                "model3d_chosen": None,
+                "rigged": {"status": rig},
+            },
+        }
+
+    assert derive_phase(None)[0] == "queued"
+    assert derive_phase(doc("queued"))[0] == "gpu_warming"      # GPU booting / queue wait
+    assert derive_phase(doc("running"))[0] == "image"
+    assert derive_phase(doc("done"))[0] == "model3d"            # image done → fan out
+    assert derive_phase(doc("done", queued=True))[0] == "model3d"
+    assert derive_phase(doc("done", {"trellis": "running"}))[0] == "model3d"
+    assert derive_phase(doc("done", {"trellis": "done"}, rig="queued"))[0] == "rigging"
+    assert derive_phase(doc("done", status="complete"))[0] == "complete"
+    assert derive_phase(doc("done", status="complete"))[1] == 1.0
+    assert derive_phase(doc("failed"))[0] == "failed"
+    # progress is monotonic-ish across the 3D fan-out
+    p1 = derive_phase(doc("done", {"trellis": "done"}))[1]
+    p2 = derive_phase(doc("done", {"trellis": "done", "pixal3d": "done"}))[1]
+    assert p2 > p1

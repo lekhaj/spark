@@ -160,28 +160,39 @@ class ManualGenWorker(BaseWorker):
         signal.signal(signal.SIGTERM, _on_term)
         signal.signal(signal.SIGINT, _on_term)
 
+        # Stage affinity: after a task, prefer the next QUEUED task of the same
+        # stage so that stage's model/server stays warm (one load per batch, not
+        # per character). Reorders the pull only — every task still runs. Reset to
+        # None on idle so a fresh batch starts FIFO.
+        from lib.stage_affinity import pop_next_task
+        last_stage: Optional[str] = None
+
         while True:
             try:
-                raw = r.blpop(self.input_queue, timeout=30)
+                payload = pop_next_task(r, self.input_queue, last_stage, timeout=30)
             except Exception as exc:
                 logger.error(f"Redis error: {exc}; reconnecting in 5s")
                 time.sleep(5)
                 self._redis = None
+                r = self.get_redis()
                 continue
 
-            if raw is None:
+            if payload is None:
+                last_stage = None  # queue drained — next batch starts FIFO
                 if idle_notify_callback:
                     idle_notify_callback(time.time() - idle_since)
                 continue
 
             idle_since = time.time()
-            _, payload = raw
 
             try:
                 task = _json.loads(payload)
             except _json.JSONDecodeError:
                 logger.error(f"Bad JSON in queue: {payload[:120]}")
                 continue
+
+            # Remember this stage so the next pull prefers the same one (warm model).
+            last_stage = task.get("stage") or None
 
             if self.is_expired(task):
                 continue
