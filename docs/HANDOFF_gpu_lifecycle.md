@@ -126,11 +126,18 @@ ssh -i ~/Documents/us_cpu_key.pem ubuntu@18.207.13.85 \
 #    (start the box first; it is normally stopped):
 aws ec2 start-instances --instance-ids i-05e8570023728c112 --region us-east-1
 KEY=~/Documents/us_cpu_key.pem; H=ec2-user@52.91.128.47
-for f in worker/lib/gpu_heartbeat.py worker/workers/manual_gen_worker.py \
-         worker/workers/auto_shutdown.py worker/gpu_main.py; do
+# NOTE: the GPU box repo is pinned at an OLD commit with a divergent/dirty tree
+# (git pull conflicts), so we scp individual files. The new manual_gen_worker.py
+# DEPENDS ON worker/lib/stage_affinity.py (P2-2a) which the old box repo lacks —
+# include it or the worker crash-loops with ModuleNotFoundError: lib.stage_affinity.
+for f in worker/lib/gpu_heartbeat.py worker/lib/stage_affinity.py \
+         worker/workers/manual_gen_worker.py worker/workers/auto_shutdown.py \
+         worker/gpu_main.py; do
   scp -i $KEY spark/$f $H:/home/ec2-user/spark/$f
 done
-ssh -i $KEY $H 'sudo systemctl restart --no-block manual_gen_worker.service'
+ssh -i $KEY $H 'sudo systemctl restart manual_gen_worker.service && \
+  sleep 6 && systemctl is-active manual_gen_worker.service && \
+  sudo journalctl -u manual_gen_worker.service -b | tail -5'  # expect "ready", no Traceback
 
 # 4. (Re)set autoshutdown config in Redis (run on CPU box):
 PW=$(grep -hoE 'REDIS_PASSWORD=.*' ~/spark/.env* | head -1 | cut -d= -f2- | tr -d '"')
