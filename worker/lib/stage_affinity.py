@@ -37,6 +37,34 @@ def _stage_of(raw: Any, json_loads: Callable[[Any], Any]) -> Optional[str]:
     return None
 
 
+def peek_has_stage(
+    r,
+    queue: str,
+    stage: Optional[str],
+    *,
+    json_loads: Callable[[Any], Any] = json.loads,
+) -> bool:
+    """True if at least one task of ``stage`` is currently queued.
+
+    Read-only (LRANGE, no pop). The worker uses this as a *lookahead* after a
+    task finishes: if another same-stage task is waiting, the handler can keep
+    that stage's model/server resident (one load per batch) instead of evicting
+    and reloading for the next character. Degrades to False (→ evict, the safe
+    pre-existing behavior) on any Redis hiccup or malformed payload.
+    """
+    if not stage:
+        return False
+    try:
+        items = r.lrange(queue, 0, -1)
+    except Exception as exc:  # noqa: BLE001 — on any error, say "no more" → evict (safe)
+        log.debug("peek lrange failed (%s); assuming no same-stage task", exc)
+        return False
+    for raw in items:
+        if _stage_of(raw, json_loads) == stage:
+            return True
+    return False
+
+
 def pop_next_task(
     r,
     queue: str,

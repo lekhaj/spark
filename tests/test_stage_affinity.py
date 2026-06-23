@@ -11,7 +11,7 @@ from pathlib import Path
 # which runs with cwd=/home/ec2-user/spark and worker/ on the path).
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "worker"))
 
-from lib.stage_affinity import pop_next_task  # noqa: E402
+from lib.stage_affinity import pop_next_task, peek_has_stage  # noqa: E402
 
 
 class FakeRedis:
@@ -101,6 +101,23 @@ def test_falls_back_to_fifo_when_no_same_stage():
 def test_empty_queue_returns_none():
     r = FakeRedis([])
     assert pop_next_task(r, "queue", "trellis", timeout=0) is None
+
+
+def test_peek_has_stage_true_when_more_queued():
+    # After popping char A's trellis, char B's trellis is still queued.
+    r = FakeRedis([_t("trellis", "B"), _t("pixal3d", "A")])
+    assert peek_has_stage(r, "queue", "trellis") is True
+
+
+def test_peek_has_stage_false_at_group_boundary():
+    # Last trellis already popped; only other stages remain → evict (False).
+    r = FakeRedis([_t("pixal3d", "A"), _t("hunyuan3d", "A")])
+    assert peek_has_stage(r, "queue", "trellis") is False
+
+
+def test_peek_has_stage_false_on_empty_or_none():
+    assert peek_has_stage(FakeRedis([]), "queue", "trellis") is False
+    assert peek_has_stage(FakeRedis([_t("trellis", "A")]), "queue", None) is False
 
 
 def test_three_characters_each_model_loads_once():

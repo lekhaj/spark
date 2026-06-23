@@ -143,6 +143,8 @@ class ManualGenWorker(BaseWorker):
         # when a worker (spot-relaunched or the on-demand) comes back.
         import signal
         self._current_task = None
+        # P2-2a lookahead flag: set per-task in the loop; default False = evict.
+        self._keep_stage_warm = False
 
         def _on_term(signum, _frame):
             t = getattr(self, "_current_task", None)
@@ -164,7 +166,7 @@ class ManualGenWorker(BaseWorker):
         # stage so that stage's model/server stays warm (one load per batch, not
         # per character). Reorders the pull only — every task still runs. Reset to
         # None on idle so a fresh batch starts FIFO.
-        from lib.stage_affinity import pop_next_task
+        from lib.stage_affinity import pop_next_task, peek_has_stage
         last_stage: Optional[str] = None
 
         while True:
@@ -193,6 +195,12 @@ class ManualGenWorker(BaseWorker):
 
             # Remember this stage so the next pull prefers the same one (warm model).
             last_stage = task.get("stage") or None
+
+            # Lookahead (P2-2a): is another task of THIS stage still queued? If so,
+            # handlers keep that stage's model/server resident (one load per batch);
+            # if not, they evict at the group boundary. Defaults to False (evict) on
+            # any error — the safe, pre-existing per-task behavior.
+            self._keep_stage_warm = peek_has_stage(r, self.input_queue, last_stage)
 
             if self.is_expired(task):
                 continue
@@ -462,14 +470,19 @@ class ManualGenWorker(BaseWorker):
         s3_key = _char_s3_key(task, "trellis", "glb")
         url    = self._upload_bytes(glb_bytes, s3_key, "model/gltf-binary")
         push_glb_done(r, session_id, stage, url, s3_key)
-        # Free trellis VRAM after upload. In an asset 3D fan-out (trellis +
-        # pixal3d + hunyuan3d queued together, drained sequentially) this keeps
-        # the next generator's headroom clean even though the subprocess
-        # handlers also evict — belt-and-suspenders for the no-fail guarantee.
-        try:
-            self._mgr.evict("trellis")
-        except Exception:
-            pass
+        # VRAM hygiene (P2-2a): only evict trellis at the GROUP boundary. With
+        # stage-affinity grouping, consecutive characters' trellis tasks run
+        # back-to-back; keeping trellis resident across them loads it once per
+        # batch instead of once per character. If no more trellis tasks are
+        # queued (or on any lookahead error → flag False), evict now so the next
+        # stage (pixal3d/hunyuan3d subprocess) gets clean headroom.
+        if getattr(self, "_keep_stage_warm", False):
+            logger.info("[trellis] more trellis queued — keeping model warm")
+        else:
+            try:
+                self._mgr.evict("trellis")
+            except Exception:
+                pass
         logger.info(f"[trellis] → {url}")
 
     def _handle_pixal3d(self, task: dict, r) -> None:
