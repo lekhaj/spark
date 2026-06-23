@@ -153,3 +153,77 @@ def test_all_3d_failed_fails_run(env):
     assert out["status"] == "failed"
     assert out["stages"]["model3d_chosen"] is None
     assert calls["rig"] == 0
+
+
+def test_image_hard_error_fails_run(env):
+    mdb, calls = env
+    doc = _make_doc(mdb)
+    doc["stages"]["image"]["status"] = "queued"
+    # An errored image run that is NOT past timeout (recent) → not recovered,
+    # treated as a hard failure → run fails (and stops holding the GPU).
+    _insert_run(mdb, doc["asset_id"], "flux_pose", "error", age_s=5)
+
+    out = arr._refresh(mdb, doc)
+
+    assert out["status"] == "failed"
+    assert calls["fanout"] == 0
+
+
+# ── _run_has_gpu_work: the single stop-decision predicate ───────────────────────
+
+def _doc(**stages_over):
+    base = {
+        "status": "generating",
+        "stages": {
+            "image": {"status": "done", "url": "u", "stage": "flux_pose"},
+            "model3d": {g: {"status": "done", "url": "u"} for g in GENERATORS},
+            "model3d_chosen": "trellis",
+            "rigged": {"status": "done", "url": "u", "fbx_url": "f"},
+        },
+        "_model3d_queued": True,
+        "_rig_queued": True,
+    }
+    base.update(stages_over)
+    return base
+
+
+def test_work_false_when_terminal():
+    assert arr._run_has_gpu_work(_doc(status="complete")) is False
+    assert arr._run_has_gpu_work(_doc(status="failed")) is False
+
+
+def test_work_true_image_running():
+    d = _doc()
+    d["stages"]["image"]["status"] = "running"
+    assert arr._run_has_gpu_work(d) is True
+
+
+def test_work_false_image_errored():
+    d = _doc()
+    d["stages"]["image"]["status"] = "error"
+    assert arr._run_has_gpu_work(d) is False  # terminal fail → no work → may stop
+
+
+def test_work_true_before_fanout():
+    d = _doc(_model3d_queued=False)
+    assert arr._run_has_gpu_work(d) is True  # image done, about to fan out
+
+
+def test_work_true_gen_running():
+    d = _doc(_rig_queued=False)
+    d["stages"]["model3d_chosen"] = None
+    d["stages"]["model3d"]["pixal3d"]["status"] = "running"
+    assert arr._run_has_gpu_work(d) is True
+
+
+def test_work_false_all_gens_failed_none_chosen():
+    d = _doc(_rig_queued=False)
+    d["stages"]["model3d_chosen"] = None
+    d["stages"]["model3d"] = {g: {"status": "error", "url": None} for g in GENERATORS}
+    assert arr._run_has_gpu_work(d) is False  # nothing left → may stop
+
+
+def test_work_true_before_rig():
+    d = _doc(_rig_queued=False)
+    d["stages"]["rigged"]["status"] = "pending"
+    assert arr._run_has_gpu_work(d) is True  # chosen, rig enqueue imminent

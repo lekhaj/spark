@@ -189,15 +189,22 @@ class GPUOrchestrator:
     # ── Pipeline-aware work detection (the single stop authority) ─────────────
 
     def _has_inflight_asset_run(self) -> Optional[bool]:
-        """True if any cyclezero asset_run is mid-pipeline (a GPU stage not yet
-        terminal). Returns None if Mongo is unreachable so the caller can fail
-        safe (treat as work present, never stop blind)."""
+        """True if any cyclezero asset_run still owes GPU work — using the SAME
+        ``_run_has_gpu_work`` predicate the state machine uses, so the stop
+        decision can't drift from the pipeline. A run that hard-failed and
+        lingers ``generating`` returns no work (won't hold the GPU forever); a
+        healthy run between stages does (won't be stopped in the gap).
+
+        Returns None if Mongo is unreachable so the caller fails safe (treat as
+        work present, never stop blind)."""
         try:
             from worker.lib import manual_gen_schema as mgs
+            from app.routes.asset_run_routes import _run_has_gpu_work
             db = mgs.get_db()
-            return db["asset_runs"].count_documents(
-                {"status": "generating"}, limit=1
-            ) > 0
+            for doc in db["asset_runs"].find({"status": "generating"}):
+                if _run_has_gpu_work(doc):
+                    return True
+            return False
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[GPU] asset_run inflight check failed: {e}")
             return None

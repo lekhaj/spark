@@ -194,6 +194,46 @@ def _submit_one_3d(db, doc: Dict[str, Any], gen: str) -> None:
        src_stage=doc["stages"]["image"]["stage"])
 
 
+# ── Single source of truth: does this run still owe GPU work? ──────────────────
+
+def _run_has_gpu_work(doc: Dict[str, Any]) -> bool:
+    """
+    True iff this asset_run still has GPU work outstanding (a stage queued/
+    running, or a stage transition about to enqueue one). This is THE signal the
+    GPU-lifecycle uses to decide it may shut down — kept here, next to the state
+    machine, so the orchestrator's stop decision can never drift from the actual
+    pipeline logic.
+
+    Returns False once every GPU response is in (success OR failure) and nothing
+    more will be enqueued — so a run that hard-failed and lingers ``generating``
+    can never hold the GPU up forever, and a healthy run between stages (about to
+    fan out / about to rig) still counts as work so the box is never stopped in
+    that gap.
+    """
+    if doc.get("status") in ("complete", "failed"):
+        return False
+    st = doc.get("stages") or {}
+    img = (st.get("image") or {}).get("status")
+    if img in ("queued", "running"):
+        return True
+    if img != "done":
+        # idle/pending → work coming; error/failed → terminal, run will be failed
+        return img not in _TERMINAL
+    # image done ──────────────────────────────────────────────────────────────
+    if not doc.get("_model3d_queued"):
+        return True  # fan-out imminent
+    m = st.get("model3d") or {}
+    if any((m.get(g) or {}).get("status") in ("queued", "running") for g in GENERATORS):
+        return True
+    if st.get("model3d_chosen") is None:
+        # waiting to choose: work only if a generator is still non-terminal
+        return any((m.get(g) or {}).get("status") not in _TERMINAL for g in GENERATORS)
+    # a generator is chosen ─────────────────────────────────────────────────────
+    if not doc.get("_rig_queued"):
+        return True  # rig enqueue imminent
+    return (st.get("rigged") or {}).get("status") in ("queued", "running")
+
+
 # ── Stuck-stage recovery helpers ───────────────────────────────────────────────
 
 def _hb_redis():
@@ -415,6 +455,14 @@ def _refresh(db, doc: Dict[str, Any]) -> Dict[str, Any]:
             doc["stages"]["image"].update(status=status, url=url)
             changed = True
 
+    # image hard-failed (terminal error, not a recoverable timeout — recovery
+    # would have re-queued a fresh run instead) → the run can't proceed; fail it
+    # so it reaches terminal and stops holding the GPU up.
+    if doc["stages"]["image"]["status"] in ("error", "failed") and doc["status"] != "failed":
+        doc["status"] = "failed"
+        changed = True
+        log.warning("asset-run %s: image failed — run failed", asset_id)
+
     # ── 2. fan out 3D once the image is done ──────────────────────────────────
     # Atomic claim: only one concurrent _refresh (reconciler vs. GET) wins the
     # flip from unset → True, so the fan-out runs exactly once (no duplicate
@@ -508,6 +556,12 @@ def _refresh(db, doc: Dict[str, Any]) -> Dict[str, Any]:
             if doc["stages"]["rigged"] != {**doc["stages"]["rigged"], **new}:
                 doc["stages"]["rigged"].update(new)
                 changed = True
+        # rig hard-failed (terminal, not a recoverable timeout) → fail the run so
+        # it terminates instead of lingering "generating" forever.
+        if doc["stages"]["rigged"]["status"] in ("error", "failed") and doc["status"] != "failed":
+            doc["status"] = "failed"
+            changed = True
+            log.warning("asset-run %s: rig failed — run failed", asset_id)
 
     # ── 7. manifest + complete on rig done ────────────────────────────────────
     if doc["stages"]["rigged"]["status"] == "done" and not doc.get("manifest_entry"):
