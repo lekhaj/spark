@@ -30,6 +30,7 @@ from app.routes.access_routes import router as access_router
 from app.routes.usage_routes import router as usage_router
 from app.cyclezero.routes import router as cyclezero_router
 from app.routes.creator_routes import router as creator_router
+from app.routes.pea_routes import router as pea_router
 
 # Bring in the generator and DB helpers from the biome package
 from app.src_biome_gen import database as db_module
@@ -152,6 +153,8 @@ app.include_router(access_router, prefix="/access", tags=["Access"])
 app.include_router(usage_router, prefix="", tags=["Usage"])
 # Chat-driven game builder — the always-on creator orchestrator (tool-use + memory)
 app.include_router(creator_router, prefix="", tags=["Creator"])
+# Player-Experience Analytics — reads derived pea_* tables (Mixpanel-sourced, batch-computed)
+app.include_router(pea_router, prefix="/pea", tags=["PEA"])
 
 # --- Biome generation endpoints (moved from c_main.py) ---
 # In-memory background task store for lightweight single-node async tasks

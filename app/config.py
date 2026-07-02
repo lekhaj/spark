@@ -24,6 +24,16 @@ class Settings(BaseSettings):
     CYCLEZERO_DATABASE_URL: Optional[str] = None
     CYCLEZERO_MONGO_DB: str = "cyclezero"
 
+    # ── Player-Experience Analytics (PEA) — Mixpanel source ────────────────
+    # Service Account creds live in .env.secrets (gitignored). ROTATE any leaked secret.
+    MIXPANEL_SA_USER: Optional[str] = None
+    MIXPANEL_SA_SECRET: Optional[str] = None
+    MIXPANEL_PROJECT_ID: int = 3631004
+    MIXPANEL_REGION: str = "US"
+    PEA_GAME_ID: str = "aurabeam"
+    PEA_TIMEZONE: str = "Asia/Kolkata"
+    PEA_NARRATION_MODEL: str = "claude-opus-4-8"
+
     CELERY_BROKER_URL: str
     CELERY_RESULT_BACKEND: str
 
