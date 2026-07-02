@@ -44,8 +44,9 @@ MONGO_URI   = (os.getenv("MONGO_URI") or os.getenv("MONGODB_URL") or "")
 MONGO_DB    = os.getenv("MONGO_DB",  "World_builder")
 S3_BUCKET   = "sparkassets-us"
 S3_BASE     = f"https://{S3_BUCKET}.s3.us-east-1.amazonaws.com"
-GPU_HOST    = os.getenv("GPU_HOST", "ubuntu@3.215.211.192")
-GPU_SSH_KEY = os.getenv("GPU_SSH_KEY", os.path.expanduser("~/.ssh/spark_gpu.pem"))
+# g7e GPU boxes are Amazon Linux 2023 → user is ec2-user (NOT ubuntu); EIP 52.91.128.47.
+GPU_HOST    = os.getenv("GPU_HOST", "ec2-user@52.91.128.47")
+GPU_SSH_KEY = os.getenv("GPU_SSH_KEY", "/Users/lekhaj/Documents/us_cpu_key.pem")
 
 
 def _db():

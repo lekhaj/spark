@@ -10,9 +10,12 @@
 # Auto-shutdown lives in worker/workers/auto_shutdown.py and stops THIS
 # instance via boto3 once every queue has been empty for IDLE_SHUTDOWN_MINUTES.
 # The CPU orchestrator only starts the instance; it never stops it.
+# LEGACY multi-worker variant (gpu_main.py). The live g7e box uses
+# deploy/systemd/manual_gen_worker.service instead. Kept for the all-in-one path.
 Description=Spark GPU worker (sd15 + trellis + rig + manual_gen + auto-shutdown)
-After=network-online.target
-Wants=network-online.target
+# Do NOT gate on network-online.target — on AL2023 it can stall an enabled unit on a
+# stop→start boot. Order after basic network; the workers retry Redis themselves.
+After=network.target
 
 [Service]
 Type=simple

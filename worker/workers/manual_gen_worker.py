@@ -136,6 +136,32 @@ class ManualGenWorker(BaseWorker):
         r          = self.get_redis()
         idle_since = time.time()
 
+        # ── GPU busy heartbeat ────────────────────────────────────────────────
+        # Single source of truth for "this GPU is doing work right now", read by
+        # both the GPU-side auto_shutdown and the CPU orchestrator so neither
+        # stops a box mid-task — even during a long pixal3d/hunyuan3d subprocess
+        # that runs with the Redis queue already empty. A daemon thread keeps the
+        # heartbeat fresh while a task is in flight.
+        import threading as _threading
+        from lib import gpu_heartbeat
+        try:
+            from workers.auto_shutdown import _imds_instance_id as _iid_fn
+        except Exception:  # pragma: no cover
+            _iid_fn = lambda: None  # noqa: E731
+        self._hb_iid = os.getenv("AWS_GPU_INSTANCE_ID", "").strip() or _iid_fn()
+        self._hb_processing = False
+
+        def _heartbeat_loop():
+            while True:
+                if getattr(self, "_hb_processing", False):
+                    try:
+                        gpu_heartbeat.touch(self.get_redis(), self._hb_iid)
+                    except Exception:
+                        pass
+                time.sleep(30)
+
+        _threading.Thread(target=_heartbeat_loop, name="GpuHeartbeat", daemon=True).start()
+
         # Spot-reclaim safety: blpop atomically removes the task, so if AWS
         # reclaims this (spot) box mid-job, systemd sends SIGTERM and the
         # in-flight task would be lost. Catch SIGTERM/SIGINT and push the
@@ -143,6 +169,8 @@ class ManualGenWorker(BaseWorker):
         # when a worker (spot-relaunched or the on-demand) comes back.
         import signal
         self._current_task = None
+        # P2-2a lookahead flag: set per-task in the loop; default False = evict.
+        self._keep_stage_warm = False
 
         def _on_term(signum, _frame):
             t = getattr(self, "_current_task", None)
@@ -160,22 +188,30 @@ class ManualGenWorker(BaseWorker):
         signal.signal(signal.SIGTERM, _on_term)
         signal.signal(signal.SIGINT, _on_term)
 
+        # Stage affinity: after a task, prefer the next QUEUED task of the same
+        # stage so that stage's model/server stays warm (one load per batch, not
+        # per character). Reorders the pull only — every task still runs. Reset to
+        # None on idle so a fresh batch starts FIFO.
+        from lib.stage_affinity import pop_next_task, peek_has_stage
+        last_stage: Optional[str] = None
+
         while True:
             try:
-                raw = r.blpop(self.input_queue, timeout=30)
+                payload = pop_next_task(r, self.input_queue, last_stage, timeout=30)
             except Exception as exc:
                 logger.error(f"Redis error: {exc}; reconnecting in 5s")
                 time.sleep(5)
                 self._redis = None
+                r = self.get_redis()
                 continue
 
-            if raw is None:
+            if payload is None:
+                last_stage = None  # queue drained — next batch starts FIFO
                 if idle_notify_callback:
                     idle_notify_callback(time.time() - idle_since)
                 continue
 
             idle_since = time.time()
-            _, payload = raw
 
             try:
                 task = _json.loads(payload)
@@ -183,11 +219,29 @@ class ManualGenWorker(BaseWorker):
                 logger.error(f"Bad JSON in queue: {payload[:120]}")
                 continue
 
+            # Remember this stage so the next pull prefers the same one (warm model).
+            last_stage = task.get("stage") or None
+
+            # Lookahead (P2-2a): is another task of THIS stage still queued? If so,
+            # handlers keep that stage's model/server resident (one load per batch);
+            # if not, they evict at the group boundary. Defaults to False (evict) on
+            # any error — the safe, pre-existing per-task behavior.
+            self._keep_stage_warm = peek_has_stage(r, self.input_queue, last_stage)
+
             if self.is_expired(task):
                 continue
 
             if active_callback:
                 active_callback()
+
+            # Mark busy + stamp the heartbeat immediately on pop so the stop
+            # paths see this box as working before the (possibly long) handler
+            # even starts; the heartbeat thread then keeps it fresh.
+            self._hb_processing = True
+            try:
+                gpu_heartbeat.touch(r, self._hb_iid)
+            except Exception:
+                pass
 
             # Track the in-flight task so a SIGTERM (spot reclaim) can re-queue it.
             self._current_task = task
@@ -206,6 +260,13 @@ class ManualGenWorker(BaseWorker):
                     pass
             finally:
                 self._current_task = None   # completed — no longer re-queueable
+                self._hb_processing = False
+                # Final stamp so the "just finished" moment is recorded; the idle
+                # window is measured from here by the stop paths.
+                try:
+                    gpu_heartbeat.touch(r, self._hb_iid)
+                except Exception:
+                    pass
                 if done_callback:
                     done_callback()
 
@@ -451,14 +512,19 @@ class ManualGenWorker(BaseWorker):
         s3_key = _char_s3_key(task, "trellis", "glb")
         url    = self._upload_bytes(glb_bytes, s3_key, "model/gltf-binary")
         push_glb_done(r, session_id, stage, url, s3_key)
-        # Free trellis VRAM after upload. In an asset 3D fan-out (trellis +
-        # pixal3d + hunyuan3d queued together, drained sequentially) this keeps
-        # the next generator's headroom clean even though the subprocess
-        # handlers also evict — belt-and-suspenders for the no-fail guarantee.
-        try:
-            self._mgr.evict("trellis")
-        except Exception:
-            pass
+        # VRAM hygiene (P2-2a): only evict trellis at the GROUP boundary. With
+        # stage-affinity grouping, consecutive characters' trellis tasks run
+        # back-to-back; keeping trellis resident across them loads it once per
+        # batch instead of once per character. If no more trellis tasks are
+        # queued (or on any lookahead error → flag False), evict now so the next
+        # stage (pixal3d/hunyuan3d subprocess) gets clean headroom.
+        if getattr(self, "_keep_stage_warm", False):
+            logger.info("[trellis] more trellis queued — keeping model warm")
+        else:
+            try:
+                self._mgr.evict("trellis")
+            except Exception:
+                pass
         logger.info(f"[trellis] → {url}")
 
     def _handle_pixal3d(self, task: dict, r) -> None:

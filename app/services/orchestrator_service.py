@@ -10,11 +10,14 @@ import asyncio
 import json
 import time
 import logging
+from typing import Optional
+
 import redis as _redis
 
 from app.config import settings
 from app import infra
 from app.services import aws_service
+from worker.lib import gpu_heartbeat
 from worker.lib.gpu_launcher import ensure_gpu_ready, REDIS_ACTIVE_KEY
 
 logger = logging.getLogger("orchestrator")
@@ -23,7 +26,10 @@ r = _redis.Redis.from_url(settings.CELERY_BROKER_URL, decode_responses=True)
 
 # ── Tuning constants (sourced from infra.py) ──────────────────────────────────
 TASK_TTL_SECONDS      = infra.TASK_TTL_SECONDS
-IDLE_SHUTDOWN_SECONDS = infra.IDLE_SHUTDOWN_SECONDS
+# Primary idle-stop window (pipeline-aware). Falls back to the legacy value if a
+# build predates IDLE_STOP_SECONDS.
+IDLE_SHUTDOWN_SECONDS = getattr(infra, "IDLE_STOP_SECONDS", infra.IDLE_SHUTDOWN_SECONDS)
+HEARTBEAT_FRESH_SECONDS = getattr(infra, "HEARTBEAT_FRESH_SECONDS", 120)
 POLL_INTERVAL_SECONDS = infra.POLL_INTERVAL_SECONDS
 GPU_QUEUES            = infra.GPU_QUEUES
 
@@ -180,6 +186,53 @@ class GPUOrchestrator:
             pass
         return infra.SPOT_GPU_INSTANCE_ID   # spot is the steady-state primary
 
+    # ── Pipeline-aware work detection (the single stop authority) ─────────────
+
+    def _has_inflight_asset_run(self) -> Optional[bool]:
+        """True if any cyclezero asset_run still owes GPU work — using the SAME
+        ``_run_has_gpu_work`` predicate the state machine uses, so the stop
+        decision can't drift from the pipeline. A run that hard-failed and
+        lingers ``generating`` returns no work (won't hold the GPU forever); a
+        healthy run between stages does (won't be stopped in the gap).
+
+        Returns None if Mongo is unreachable so the caller fails safe (treat as
+        work present, never stop blind)."""
+        try:
+            from worker.lib import manual_gen_schema as mgs
+            from app.routes.asset_run_routes import _run_has_gpu_work
+            db = mgs.get_db()
+            for doc in db["asset_runs"].find({"status": "generating"}):
+                if _run_has_gpu_work(doc):
+                    return True
+            return False
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[GPU] asset_run inflight check failed: {e}")
+            return None
+
+    def _pipeline_has_work(self, total: int) -> bool:
+        """
+        Authoritative 'is there GPU work outstanding?' used to gate idle-stop.
+
+        True if ANY of:
+          (a) queued GPU tasks (total > 0),
+          (b) a fresh GPU heartbeat — a task is being processed right now, even
+              with an empty queue (long pixal3d/hunyuan3d subprocess),
+          (c) an in-flight asset_run with a non-terminal GPU stage (the CPU is
+              about to enqueue the next stage — never stop in that gap).
+
+        FAIL SAFE: a Redis/Mongo error on (b)/(c) reads as work-present so we
+        never stop a box we can't fully assess.
+        """
+        if total > 0:
+            return True
+        active_iid = self._active_iid()
+        if gpu_heartbeat.is_busy(r, active_iid, HEARTBEAT_FRESH_SECONDS):
+            return True
+        inflight = self._has_inflight_asset_run()
+        if inflight or inflight is None:  # True → work; None → unknown → fail safe
+            return True
+        return False
+
     def _honor_stop_requests(self, total: int):
         """Honour GPU-delegated stop requests from ANY box.
 
@@ -194,14 +247,15 @@ class GPUOrchestrator:
         except Exception as e:
             logger.warning(f"[GPU] could not scan stop requests: {e}")
             return
+        has_work = self._pipeline_has_work(total)
         for key in keys:
             iid = key.rsplit(":", 1)[-1]
-            if total == 0:
+            if not has_work:
                 logger.warning(f"[GPU] Stop requested by GPU-side autoshutdown — stopping {iid}")
                 r.delete(key)
                 aws_service.stop_instance(iid)
             else:
-                logger.info(f"[GPU] Stop request for {iid} cleared — new tasks arrived")
+                logger.info(f"[GPU] Stop request for {iid} cleared — pipeline still has work")
                 r.delete(key)
 
     # ── Main orchestration loop ───────────────────────────────────────────────
@@ -227,6 +281,12 @@ class GPUOrchestrator:
         # Honour GPU-delegated stop requests (any box) before anything else.
         self._honor_stop_requests(total)
 
+        # The orchestrator is the PRIMARY, pipeline-aware stop authority. It
+        # judges idleness from real work (queued tasks OR a fresh GPU heartbeat
+        # OR an in-flight asset_run with a pending GPU stage) — never from bare
+        # queue depth. This is what stops the box mid-pipeline bug.
+        has_work = self._pipeline_has_work(total)
+
         if total > 0:
             self.idle_since = None          # tasks arrived — reset idle clock
             if not gpu_running:
@@ -238,16 +298,21 @@ class GPUOrchestrator:
                     return
                 active_iid = self._active_iid()   # may now be spot or on-demand
             self._ensure_workers_for_queues(queues)
+        elif has_work:
+            # Queue is empty but the pipeline is still working — a long 3D
+            # subprocess (fresh heartbeat) or an asset_run between stages. Hold
+            # the box up and reset the idle clock; never stop here.
+            self.idle_since = None
+            logger.info("[GPU] Queue empty but pipeline still active (heartbeat/in-flight run) — holding GPU up")
         else:
-            # No work in any queue — track idle time and stop the active box.
-            # (Each box also self-stops via GPU-side auto_shutdown; this is the
-            # CPU backstop for the box the EIP currently rides.)
+            # Genuinely idle — no queued tasks, no heartbeat, no in-flight run.
+            # Track idle time and stop the active box once the window elapses.
             if not gpu_running:
                 self.idle_since = None      # already stopped, nothing to do
             else:
                 if self.idle_since is None:
                     self.idle_since = time.time()
-                    logger.info("[GPU] All queues empty — idle timer started")
+                    logger.info("[GPU] No pipeline work — idle timer started")
                 else:
                     idle_elapsed = time.time() - self.idle_since
                     idle_min     = idle_elapsed / 60
@@ -259,21 +324,10 @@ class GPUOrchestrator:
                         if not self._autoshutdown_enabled():
                             logger.info("[GPU] Idle threshold reached but autoshutdown is disabled — skipping stop")
                             self.idle_since = None
-                        elif self._any_worker_active():
-                            # Primary shutdown is GPU-side (auto_shutdown.py),
-                            # which tracks in-flight tasks. The CPU stop is only
-                            # a backstop for a crashed worker — never kill a box
-                            # whose worker service is alive (it may be mid-job
-                            # on a long stage with an empty queue).
-                            logger.info(
-                                "[GPU] Idle threshold reached but worker service is "
-                                "active — deferring to GPU-side autoshutdown"
-                            )
-                            self.idle_since = None
                         else:
                             logger.warning(
-                                f"[GPU] Idle threshold reached ({self.idle_shutdown // 60} min), "
-                                f"worker not active — backstop-stopping {active_iid}"
+                                f"[GPU] Idle {self.idle_shutdown // 60} min with no pipeline "
+                                f"work — stopping {active_iid}"
                             )
                             aws_service.stop_instance(active_iid)
                             self.idle_since = None

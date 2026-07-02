@@ -155,7 +155,15 @@ def main():
     if "sd15"    in requested: all_queues.append("sd15_tasks")
     if "trellis" in requested: all_queues.append("model_tasks")
     if "rig"     in requested: all_queues.append("rig_model")
-    if "manual"  in requested: all_queues.append("manual_gen_tasks")
+    if "manual"  in requested:
+        # Watch the ACTUAL manual-gen queue, not the hardcoded legacy name. The
+        # active queue is "manual_gen_tasks_spot" (see GPU_INSTANCE_MAP); using
+        # the literal "manual_gen_tasks" made AutoShutdown blind to real work.
+        try:
+            from lib.manual_gen_queue import resolve_active_queue
+            all_queues.append(resolve_active_queue())
+        except Exception:
+            all_queues.append(os.getenv("MANUAL_GEN_QUEUE", "manual_gen_tasks_spot"))
 
     shutdown = AutoShutdown(queues=all_queues)
     if not args.no_shutdown:

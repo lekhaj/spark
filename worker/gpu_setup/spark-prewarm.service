@@ -1,7 +1,8 @@
 [Unit]
 Description=Spark GPU pre-warm: read model weights into page cache to defeat EBS snapshot lazy-load
-After=network-online.target
-Wants=network-online.target
+# Reads only LOCAL EBS files — no network needed. Gating on network-online.target
+# could stall this (and the worker that orders After= it) on an AL2023 stop→start boot.
+After=local-fs.target
 
 [Service]
 Type=oneshot

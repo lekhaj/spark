@@ -35,10 +35,13 @@ from datetime import datetime, timezone
 from email.message import EmailMessage
 from typing import Any, Dict, List, Optional
 
+import time
 import pymongo
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from app import infra
+from worker.lib import gpu_heartbeat
 from worker.lib import manual_gen_schema as mgs
 
 log = logging.getLogger("asset_run_routes")
@@ -50,6 +53,9 @@ SPEC_RUNS = "spec_gen_runs"
 
 # The three 3D generators we fan out to for quality comparison.
 GENERATORS = ("trellis", "pixal3d", "hunyuan3d")
+
+# Terminal stage-run statuses (a stage is "settled" once it reaches one of these).
+_TERMINAL = {"done", "failed", "error"}
 
 # Morphology → ControlNet mode for the Union-Pro image step.
 # B1 humanoid uses real OpenPose; everything else uses soft_edge proxies.
@@ -176,6 +182,179 @@ def _submit_rig_job(db, doc: Dict[str, Any], generator: str) -> None:
     )
 
 
+def _submit_one_3d(db, doc: Dict[str, Any], gen: str) -> None:
+    """Re-queue a single 3D generator (used by stuck-stage recovery)."""
+    from worker.lib import manual_gen_queue as mgq
+
+    fn = {"trellis": mgq.queue_trellis,
+          "pixal3d": mgq.queue_pixal3d,
+          "hunyuan3d": mgq.queue_hunyuan3d}[gen]
+    fn(db, char_label=doc["asset_id"], major=doc["_major"], minor=doc["_minor"],
+       char_type=_CHAR_TYPE.get(doc["morphology"], "humanoid"),
+       src_stage=doc["stages"]["image"]["stage"])
+
+
+# ── Single source of truth: does this run still owe GPU work? ──────────────────
+
+def _run_has_gpu_work(doc: Dict[str, Any]) -> bool:
+    """
+    True iff this asset_run still has GPU work outstanding (a stage queued/
+    running, or a stage transition about to enqueue one). This is THE signal the
+    GPU-lifecycle uses to decide it may shut down — kept here, next to the state
+    machine, so the orchestrator's stop decision can never drift from the actual
+    pipeline logic.
+
+    Returns False once every GPU response is in (success OR failure) and nothing
+    more will be enqueued — so a run that hard-failed and lingers ``generating``
+    can never hold the GPU up forever, and a healthy run between stages (about to
+    fan out / about to rig) still counts as work so the box is never stopped in
+    that gap.
+    """
+    if doc.get("status") in ("complete", "failed"):
+        return False
+    st = doc.get("stages") or {}
+    img = (st.get("image") or {}).get("status")
+    if img in ("queued", "running"):
+        return True
+    if img != "done":
+        # idle/pending → work coming; error/failed → terminal, run will be failed
+        return img not in _TERMINAL
+    # image done ──────────────────────────────────────────────────────────────
+    if not doc.get("_model3d_queued"):
+        return True  # fan-out imminent
+    m = st.get("model3d") or {}
+    if any((m.get(g) or {}).get("status") in ("queued", "running") for g in GENERATORS):
+        return True
+    if st.get("model3d_chosen") is None:
+        # waiting to choose: work only if a generator is still non-terminal
+        return any((m.get(g) or {}).get("status") not in _TERMINAL for g in GENERATORS)
+    # a generator is chosen ─────────────────────────────────────────────────────
+    if not doc.get("_rig_queued"):
+        return True  # rig enqueue imminent
+    return (st.get("rigged") or {}).get("status") in ("queued", "running")
+
+
+# ── Stuck-stage recovery helpers ───────────────────────────────────────────────
+
+def _hb_redis():
+    """Best-effort Redis client for heartbeat reads / re-enqueue. None if down."""
+    try:
+        from worker.lib.manual_gen_queue import _redis_client
+        return _redis_client()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _stage_timeout(stage: str) -> int:
+    return infra.STAGE_TIMEOUT_SECONDS.get(stage, infra.STAGE_TIMEOUT_DEFAULT)
+
+
+def _run_age(run: Dict[str, Any]) -> float:
+    """Seconds since the run entered its current in-flight state (epoch floats)."""
+    ts = run.get("started_at") or run.get("queued_at") or run.get("created_at")
+    try:
+        return time.time() - float(ts)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _recover_stuck_stages(db, doc: Dict[str, Any]) -> bool:
+    """
+    Re-enqueue GPU stages whose underlying run doc is stuck (``queued``/
+    ``running`` past its per-stage timeout) when the GPU is **not** actively
+    working — i.e. the task was lost to a stopped/reclaimed box. Idempotent and
+    retry-capped (``STAGE_MAX_RETRIES``); after the cap the stage is left
+    ``error`` so the run can finish with another generator (3D) or fail cleanly.
+
+    Returns True if it changed the asset_run doc.
+
+    FAIL SAFE: if Redis is unreachable (can't read heartbeat or enqueue) it does
+    nothing. If the GPU heartbeat is fresh (a task is running right now) it does
+    nothing — a slow-but-alive stage is never clobbered.
+    """
+    if doc["status"] in ("complete", "failed"):
+        return False
+    r = _hb_redis()
+    if r is None:
+        return False
+    fresh = getattr(infra, "HEARTBEAT_FRESH_SECONDS", 120)
+    if gpu_heartbeat.is_busy(r, None, fresh):
+        return False  # GPU is doing work — give it time
+
+    asset_id = doc["asset_id"]
+    retries: Dict[str, int] = doc.setdefault("_retries", {})
+    changed = False
+
+    def _exhausted(stage: str) -> bool:
+        return retries.get(stage, 0) >= infra.STAGE_MAX_RETRIES
+
+    def _stuck(stage: str) -> bool:
+        run = _poll_run(db, asset_id, stage, doc["created_at"])
+        if not run or run.get("status") not in ("queued", "running"):
+            return False
+        if _run_age(run) <= _stage_timeout(stage):
+            return False
+        # Mark the lost run errored so the queue_* retry can auto-bump a fresh
+        # minor (prepare_run refuses to re-queue a queued/running run).
+        mgs.mark_error(db, run["_id"], stage=stage, error="timeout/lost — auto-recovered")
+        return True
+
+    # ── image ──
+    img_stage = doc["stages"]["image"]["stage"]
+    if doc["stages"]["image"]["status"] in ("queued", "running") and _stuck(img_stage):
+        if _exhausted(img_stage):
+            doc["stages"]["image"]["status"] = "failed"
+            doc["status"] = "failed"
+            log.warning("asset-run %s: image exhausted retries — failing", asset_id)
+        else:
+            spec = db[SPEC_RUNS].find_one({"run_id": doc["spec_run_id"]}) or {}
+            try:
+                _submit_image_job(db, doc, spec.get("output", {}))
+                retries[img_stage] = retries.get(img_stage, 0) + 1
+                doc["stages"]["image"]["status"] = "queued"
+                log.warning("asset-run %s: re-enqueued lost image (try %d)", asset_id, retries[img_stage])
+            except Exception:
+                log.exception("image re-enqueue failed for %s", asset_id)
+        return True  # image is upstream of everything — settle it before the rest
+
+    # ── 3D generators (only after image done + fan-out happened) ──
+    if doc.get("_model3d_queued"):
+        for gen in GENERATORS:
+            if doc["stages"]["model3d"][gen]["status"] in ("queued", "running") and _stuck(gen):
+                if _exhausted(gen):
+                    doc["stages"]["model3d"][gen]["status"] = "error"
+                    log.warning("asset-run %s: %s exhausted retries — leaving error", asset_id, gen)
+                else:
+                    try:
+                        _submit_one_3d(db, doc, gen)
+                        retries[gen] = retries.get(gen, 0) + 1
+                        doc["stages"]["model3d"][gen]["status"] = "queued"
+                        log.warning("asset-run %s: re-enqueued lost %s (try %d)", asset_id, gen, retries[gen])
+                    except Exception:
+                        log.exception("%s re-enqueue failed for %s", gen, asset_id)
+                changed = True
+
+    # ── rig ──
+    if doc.get("_rig_queued") and doc["stages"]["rigged"]["status"] in ("queued", "running"):
+        chosen = doc["stages"]["model3d_chosen"]
+        if chosen and _stuck("rig"):
+            if _exhausted("rig"):
+                doc["stages"]["rigged"]["status"] = "failed"
+                doc["status"] = "failed"
+                log.warning("asset-run %s: rig exhausted retries — failing", asset_id)
+            else:
+                try:
+                    _submit_rig_job(db, doc, chosen)
+                    retries["rig"] = retries.get("rig", 0) + 1
+                    doc["stages"]["rigged"]["status"] = "queued"
+                    log.warning("asset-run %s: re-enqueued lost rig (try %d)", asset_id, retries["rig"])
+                except Exception:
+                    log.exception("rig re-enqueue failed for %s", asset_id)
+            changed = True
+
+    return changed
+
+
 class AssetRunCreate(BaseModel):
     spec_run_id: str = Field(min_length=1)
 
@@ -258,11 +437,15 @@ def _poll_run(db, asset_id: str, stage: str, after: datetime) -> Optional[Dict[s
 
 def _refresh(db, doc: Dict[str, Any]) -> Dict[str, Any]:
     """Advance the stage machine: image → 3D fan-out → chosen → rig → manifest."""
-    if doc["status"] == "complete":
+    if doc["status"] in ("complete", "failed"):
         return doc
     asset_id = doc["asset_id"]
     after = doc["created_at"]
     changed = False
+
+    # ── 0. self-heal: re-enqueue any GPU stage lost to a stopped/reclaimed box ─
+    if _recover_stuck_stages(db, doc):
+        changed = True
 
     # ── 1. image ──────────────────────────────────────────────────────────────
     img = _poll_run(db, asset_id, doc["stages"]["image"]["stage"], after)
@@ -272,16 +455,39 @@ def _refresh(db, doc: Dict[str, Any]) -> Dict[str, Any]:
             doc["stages"]["image"].update(status=status, url=url)
             changed = True
 
+    # image hard-failed (terminal error, not a recoverable timeout — recovery
+    # would have re-queued a fresh run instead) → the run can't proceed; fail it
+    # so it reaches terminal and stops holding the GPU up.
+    if doc["stages"]["image"]["status"] in ("error", "failed") and doc["status"] != "failed":
+        doc["status"] = "failed"
+        changed = True
+        log.warning("asset-run %s: image failed — run failed", asset_id)
+
     # ── 2. fan out 3D once the image is done ──────────────────────────────────
+    # Atomic claim: only one concurrent _refresh (reconciler vs. GET) wins the
+    # flip from unset → True, so the fan-out runs exactly once (no duplicate
+    # tasks). On submit failure the claim is released for a later retry.
     if doc["stages"]["image"]["status"] == "done" and not doc.get("_model3d_queued"):
-        try:
-            _submit_3d_jobs(db, doc)
-            for gen in GENERATORS:
-                doc["stages"]["model3d"][gen]["status"] = "queued"
+        claimed = db[COLLECTION].update_one(
+            {"asset_run_id": doc["asset_run_id"], "_model3d_queued": {"$ne": True}},
+            {"$set": {"_model3d_queued": True}},
+        ).modified_count == 1
+        if claimed:
             doc["_model3d_queued"] = True
-            changed = True
-        except Exception:
-            log.exception("3D fan-out submit failed for %s", asset_id)
+            try:
+                _submit_3d_jobs(db, doc)
+                for gen in GENERATORS:
+                    doc["stages"]["model3d"][gen]["status"] = "queued"
+                changed = True
+            except Exception:
+                log.exception("3D fan-out submit failed for %s", asset_id)
+                db[COLLECTION].update_one(
+                    {"asset_run_id": doc["asset_run_id"]},
+                    {"$unset": {"_model3d_queued": ""}},
+                )
+                doc["_model3d_queued"] = False
+        else:
+            doc["_model3d_queued"] = True  # another pass already fanned out
 
     # ── 3. poll the 3D candidates ─────────────────────────────────────────────
     for gen in GENERATORS:
@@ -299,25 +505,44 @@ def _refresh(db, doc: Dict[str, Any]) -> Dict[str, Any]:
     #       artist gets the full comparison window to choose manually first.
     #       Falls back to the first successful generator in order.
     if doc["stages"]["model3d_chosen"] is None:
-        terminal = {"done", "failed", "error"}
         states = [doc["stages"]["model3d"][g]["status"] for g in GENERATORS]
-        if all(s in terminal for s in states):
+        if all(s in _TERMINAL for s in states):
+            picked = False
             for gen in GENERATORS:
                 if doc["stages"]["model3d"][gen]["status"] == "done":
                     doc["stages"]["model3d_chosen"] = gen
                     changed = True
+                    picked = True
                     break
+            if not picked:
+                # All three 3D generators failed (after recovery retries) — the
+                # run cannot produce a mesh; fail cleanly instead of hanging.
+                doc["status"] = "failed"
+                changed = True
+                log.warning("asset-run %s: all 3D generators failed — run failed", asset_id)
 
-    # ── 5. queue rig over the chosen mesh ─────────────────────────────────────
+    # ── 5. queue rig over the chosen mesh (atomic claim → exactly once) ────────
     chosen = doc["stages"]["model3d_chosen"]
-    if chosen and not doc.get("_rig_queued"):
-        try:
-            _submit_rig_job(db, doc, chosen)
-            doc["stages"]["rigged"]["status"] = "queued"
+    if chosen and not doc.get("_rig_queued") and doc["status"] != "failed":
+        claimed = db[COLLECTION].update_one(
+            {"asset_run_id": doc["asset_run_id"], "_rig_queued": {"$ne": True}},
+            {"$set": {"_rig_queued": True}},
+        ).modified_count == 1
+        if claimed:
             doc["_rig_queued"] = True
-            changed = True
-        except Exception:
-            log.exception("rig submit failed for %s", asset_id)
+            try:
+                _submit_rig_job(db, doc, chosen)
+                doc["stages"]["rigged"]["status"] = "queued"
+                changed = True
+            except Exception:
+                log.exception("rig submit failed for %s", asset_id)
+                db[COLLECTION].update_one(
+                    {"asset_run_id": doc["asset_run_id"]},
+                    {"$unset": {"_rig_queued": ""}},
+                )
+                doc["_rig_queued"] = False
+        else:
+            doc["_rig_queued"] = True
 
     # ── 6. poll rig ───────────────────────────────────────────────────────────
     if doc.get("_rig_queued"):
@@ -331,6 +556,12 @@ def _refresh(db, doc: Dict[str, Any]) -> Dict[str, Any]:
             if doc["stages"]["rigged"] != {**doc["stages"]["rigged"], **new}:
                 doc["stages"]["rigged"].update(new)
                 changed = True
+        # rig hard-failed (terminal, not a recoverable timeout) → fail the run so
+        # it terminates instead of lingering "generating" forever.
+        if doc["stages"]["rigged"]["status"] in ("error", "failed") and doc["status"] != "failed":
+            doc["status"] = "failed"
+            changed = True
+            log.warning("asset-run %s: rig failed — run failed", asset_id)
 
     # ── 7. manifest + complete on rig done ────────────────────────────────────
     if doc["stages"]["rigged"]["status"] == "done" and not doc.get("manifest_entry"):
@@ -359,7 +590,7 @@ def _refresh(db, doc: Dict[str, Any]) -> Dict[str, Any]:
             {"asset_run_id": doc["asset_run_id"]},
             {"$set": {k: doc[k] for k in (
                 "stages", "manifest_entry", "status", "completed_at",
-                "_model3d_queued", "_rig_queued") if k in doc}},
+                "_model3d_queued", "_rig_queued", "_retries") if k in doc}},
         )
     return doc
 

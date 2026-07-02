@@ -172,7 +172,7 @@ class BedrockConverseProvider:
             {"role": m["role"], "content": [{"text": m["content"]}]}
             for m in messages
         ]
-        tool_specs = [
+        tool_specs: List[Dict] = [
             {"toolSpec": {
                 "name": t["name"],
                 "description": t.get("description", ""),
@@ -180,6 +180,12 @@ class BedrockConverseProvider:
             }}
             for t in tools
         ]
+        # Cache the tool schemas too. Bedrock caches a contiguous prefix (tools →
+        # system → messages); the tool block is large AND stable across calls (unlike
+        # the system block, which busts whenever facts_json changes), so a cachePoint
+        # here gives consistent input-token savings on every agent tool-use turn.
+        if self._cache and tool_specs:
+            tool_specs.append({"cachePoint": {"type": "default"}})
         if tool_choice == "auto":
             choice: Dict = {"auto": {}}
         elif tool_choice == "any":

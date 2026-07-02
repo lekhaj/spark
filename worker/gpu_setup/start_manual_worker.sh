@@ -14,5 +14,19 @@ source "$SPARK_ROOT/.env.secrets"
 set +a
 export PYTHONPATH=/home/ec2-user/trellis
 
+# Wait (bounded) for Redis on the CPU's VPC IP before starting — on a stop→start
+# boot the network may lag. If it never comes up in time we still exec; systemd
+# Restart=always will relaunch. Avoids noisy crash-loops at boot.
+REDIS_HOST="${REDIS_HOST:-localhost}"
+REDIS_PORT="${REDIS_PORT:-6379}"
+for i in $(seq 1 30); do
+  if timeout 2 bash -c "</dev/tcp/${REDIS_HOST}/${REDIS_PORT}" 2>/dev/null; then
+    echo "start_manual_worker: Redis ${REDIS_HOST}:${REDIS_PORT} reachable (attempt $i)"
+    break
+  fi
+  echo "start_manual_worker: waiting for Redis ${REDIS_HOST}:${REDIS_PORT} (attempt $i)…"
+  sleep 4
+done
+
 cd "$SPARK_ROOT"
 exec /home/ec2-user/miniconda3/envs/spark/bin/python worker/run_manual_worker.py

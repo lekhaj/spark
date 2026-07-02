@@ -164,6 +164,34 @@ TASK_TTL_SECONDS      = 14400   # 4 hours — expire stale queued tasks
 IDLE_SHUTDOWN_SECONDS = 900
 POLL_INTERVAL_SECONDS = 30      # how often orchestrator checks queues
 
+# ── Pipeline-aware GPU lifecycle (cost-efficiency hardening) ──────────────────
+# The CPU orchestrator is the PRIMARY stop authority and judges idleness from
+# real pipeline state (queues + GPU heartbeat + in-flight asset_runs), not bare
+# queue depth. It stops the box only after IDLE_STOP_SECONDS with no work — long
+# enough to absorb a follow-up edit without a second cold prewarm, short enough to
+# never burn hours idle. Overridable via Redis autoshutdown:idle_minutes.
+IDLE_STOP_SECONDS = 1320         # 22 min — primary CPU-side idle-stop window
+# A GPU heartbeat fresher than this means "a task is being processed right now"
+# (covers long pixal3d/hunyuan3d subprocesses that run with an empty queue).
+HEARTBEAT_FRESH_SECONDS = 120
+# Per-stage "this run is lost — re-enqueue it" timeouts (seconds). Generous: well
+# above each stage's worst-case cold runtime, so we only recover genuinely lost
+# tasks (box died / spot reclaim), never a slow-but-alive one. A fresh heartbeat
+# also suppresses recovery regardless of these.
+STAGE_TIMEOUT_SECONDS = {
+    "flux":      720,    # 12 min
+    "flux_pose": 720,    # 12 min
+    "sd_tpose":  720,
+    "trellis":   900,    # 15 min
+    "pixal3d":  1200,    # 20 min
+    "hunyuan3d": 1200,   # 20 min
+    "rig":      1200,    # 20 min
+}
+STAGE_TIMEOUT_DEFAULT = 1200
+# Max automatic re-enqueues per stage before we give up and mark it failed (so a
+# perpetually-failing generator can't loop forever and burn GPU).
+STAGE_MAX_RETRIES = 2
+
 # ─────────────────────────────────────────────────────────────────────────────
 # SPOT INSTANCE CONFIG — FUTURE (disabled until custom AMI is ready)
 # ─────────────────────────────────────────────────────────────────────────────

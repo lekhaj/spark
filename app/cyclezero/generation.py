@@ -147,14 +147,56 @@ def submit(
         return {"submitted": False, "submit_error": str(exc), "asset_id": asset_id}
 
 
+_GENERATORS = ("trellis", "pixal3d", "hunyuan3d")
+
+
+def derive_phase(doc: Optional[Dict[str, Any]]) -> tuple[str, float]:
+    """Map an asset_run doc to a coarse ``(phase, progress 0..1)`` for the UI.
+
+    Phases (ordered): ``queued`` → ``gpu_warming`` → ``image`` → ``model3d`` →
+    ``rigging`` → ``complete``; ``failed`` is terminal-bad. ``gpu_warming`` covers
+    the window where the image stage is queued but nothing has produced yet (GPU
+    booting / waiting in the Redis queue) — so the UI shows "starting GPU…" not a
+    stall. Pure + total: any missing/odd shape degrades to ``queued``.
+    """
+    if not doc:
+        return "queued", 0.0
+    if doc.get("status") == "complete":
+        return "complete", 1.0
+    stages = doc.get("stages") or {}
+    image = stages.get("image") or {}
+    m3d = stages.get("model3d") or {}
+    rig = stages.get("rigged") or {}
+    img_s = image.get("status") or "pending"
+
+    if img_s in ("failed", "error"):
+        return "failed", 0.0
+    if rig.get("status") in ("failed", "error"):
+        return "failed", 0.85
+    if rig.get("status") in ("queued", "running"):
+        return "rigging", 0.85
+
+    gen_states = [(m3d.get(g) or {}).get("status") or "pending" for g in _GENERATORS]
+    if doc.get("_model3d_queued") or any(s in ("queued", "running", "done") for s in gen_states):
+        terminal = sum(1 for s in gen_states if s in ("done", "failed", "error"))
+        return "model3d", round(0.45 + 0.30 * (terminal / len(_GENERATORS)), 2)
+    if img_s == "done":
+        return "model3d", 0.40
+    if img_s == "running":
+        return "image", 0.20
+    # image still queued/pending → GPU booting or task waiting in the queue
+    return "gpu_warming", 0.05
+
+
 def reconcile(asset_run_id: Optional[str]) -> Dict[str, Any]:
     """Advance the linked asset_run's stage machine and report the result.
 
-    Returns ``{"status": …}`` and, once the run is ``complete``, the produced
-    ``glb``/``fbx``/``lod`` so the caller can write them back onto the entity.
-    Never raises.
+    Returns a self-describing snapshot the UI can render progressively without a
+    second call: ``status``, ``phase``, ``progress``, the full per-stage ``stages``
+    block (image url, the 3 model3d candidates + chosen, rig + rig_status), and —
+    once ``complete`` — the produced ``glb``/``fbx``/``lod``. Never raises.
     """
-    out: Dict[str, Any] = {"status": "unknown"}
+    out: Dict[str, Any] = {"status": "unknown", "phase": "queued", "progress": 0.0}
     if not asset_run_id:
         return out
     try:
@@ -166,6 +208,12 @@ def reconcile(asset_run_id: Optional[str]) -> Dict[str, Any]:
             return out
         doc = arr._refresh(db, doc)
         out["status"] = doc.get("status")
+        phase, progress = derive_phase(doc)
+        out["phase"] = phase
+        out["progress"] = progress
+        # Full per-stage detail (JSON-safe: only strings/dicts, no datetimes) so the
+        # UI can show the image the moment it lands while 3D is still running.
+        out["stages"] = doc.get("stages")
         me = doc.get("manifest_entry") or {}
         if doc.get("status") == "complete" and me.get("glb_url"):
             out.update(
