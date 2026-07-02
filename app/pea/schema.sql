@@ -21,7 +21,7 @@ CREATE INDEX IF NOT EXISTS idx_pea_raw_evt ON pea_raw_events (game_id, event_nam
 CREATE TABLE IF NOT EXISTS pea_session_state (
     game_id TEXT NOT NULL, distinct_id TEXT NOT NULL, session_id TEXT NOT NULL,
     session_date DATE, started_at TIMESTAMPTZ, ended_at TIMESTAMPTZ, duration_s INT,
-    build_version TEXT, platform TEXT, is_new BOOLEAN, level_reached INT, levels_played INT[],
+    build_version TEXT, platform TEXT, is_new BOOLEAN, level_reached INT, levels_played JSONB DEFAULT '[]',
     retries INT DEFAULT 0, fails INT DEFAULT 0, wins INT DEFAULT 0,
     entry_mood TEXT, entry_mood_runner_up TEXT, exit_mood TEXT,
     overall_feeling TEXT, feeling_score INT,
