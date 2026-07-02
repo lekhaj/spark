@@ -22,7 +22,10 @@ def _dsn() -> str:
     url = getattr(settings, "CYCLEZERO_DATABASE_URL", None)
     if not url:
         raise RuntimeError("CYCLEZERO_DATABASE_URL not set (needed for PEA tables)")
-    return url
+    # The shared URL is SQLAlchemy-style (postgresql+psycopg2://...); raw psycopg2
+    # wants a bare postgresql:// DSN — strip the driver suffix.
+    return url.replace("postgresql+psycopg2://", "postgresql://").replace(
+        "postgres+psycopg2://", "postgresql://")
 
 
 def connect():
