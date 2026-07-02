@@ -62,7 +62,7 @@ def _session_metrics(g: pd.DataFrame) -> dict:
     # per-level attempt tally for frustration detection
     per_level_attempts = defaultdict(int)
     for _, r in g.iterrows():
-        if r["event_name"] in (C.RETRY_EVENTS | C.FAIL_EVENTS) and r["level_id"]:
+        if r["event_name"] in (C.RETRY_EVENTS | C.FAIL_EVENTS) and pd.notna(r["level_id"]):
             per_level_attempts[int(r["level_id"])] += 1
     return {
         "levels_played": levels,
