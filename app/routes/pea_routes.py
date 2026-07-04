@@ -27,6 +27,8 @@ from sqlalchemy.orm import Session
 from app.cyclezero.db import get_db as get_sql_db
 from app.lib.identity import StudioUser, current_user, require_owner
 from app.pea import config as C, store
+from app.pea import felt_axes as felt_axes_mod
+from app.pea import grow as grow_mod
 
 router = APIRouter()
 
@@ -45,6 +47,14 @@ def _default_date(date: Optional[dt.date], table: str = "pea_daily_digest") -> O
 @router.get("/health")
 def health():
     return {"ok": True, "game_id": GAME, "banner": BANNER}
+
+
+@router.get("/felt-axes")
+def felt_axes(game_id: str = GAME, user: StudioUser = Depends(current_user)):
+    """The FELT (telemetry) half of the Critic's 7-axis scorecard — how players actually
+    felt, on the same axes, so the studio can see GAP = |structural - felt|. Aggregate-only
+    (no distinct_ids), so signed-in creators can see it in the Experience view."""
+    return felt_axes_mod.felt_axes(game_id)
 
 
 @router.get("/digest")
@@ -156,3 +166,23 @@ def funnel(date: Optional[dt.date] = None, game_id: str = GAME,
                      {"g": game_id, "d": date})
     return _rows(db, "SELECT * FROM pea_funnel_retention WHERE game_id=:g ORDER BY date DESC LIMIT 1",
                  {"g": game_id})
+
+
+# ── GROW: capture-worthy moments → package → publish link → share funnel ──────────
+@router.get("/grow/moments")
+def grow_moments(game_id: str = GAME, user: StudioUser = Depends(current_user)):
+    require_owner(user)
+    return {"banner": BANNER, "channels": grow_mod.CHANNELS, "moments": grow_mod.detect_moments(game_id)}
+
+
+@router.post("/grow/share")
+def grow_share(payload: dict = Body(...), game_id: str = GAME, user: StudioUser = Depends(current_user)):
+    """Log a share package the creator built: {moment:{...}, channel, caption}."""
+    require_owner(user)
+    return grow_mod.log_share(game_id, payload.get("moment", {}), payload["channel"], payload.get("caption", ""))
+
+
+@router.get("/grow/shares")
+def grow_shares(game_id: str = GAME, user: StudioUser = Depends(current_user)):
+    require_owner(user)
+    return {"shares": grow_mod.list_shares(game_id), "funnel": grow_mod.share_funnel(game_id)}

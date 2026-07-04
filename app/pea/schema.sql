@@ -86,3 +86,14 @@ CREATE TABLE IF NOT EXISTS pea_ingest_watermark (
     last_date_pulled DATE, last_run_at TIMESTAMPTZ,
     PRIMARY KEY (game_id, source)
 );
+
+-- GROW: a log of share packages the creator built from detected moments. clicks/plays
+-- are populated later when the /play landing + Mixpanel UTM join lands (data gap today).
+CREATE TABLE IF NOT EXISTS pea_share_log (
+    game_id TEXT NOT NULL, share_id TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT now(),
+    moment_key TEXT, distinct_id TEXT, level_id INT, felt_tension TEXT, exit_mood TEXT,
+    channel TEXT, caption TEXT, play_url TEXT,
+    clicks INT DEFAULT 0, plays INT DEFAULT 0,
+    PRIMARY KEY (game_id, share_id)
+);
+CREATE INDEX IF NOT EXISTS idx_pea_share_created ON pea_share_log (game_id, created_at DESC);
