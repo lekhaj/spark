@@ -104,5 +104,58 @@ def upsert_sessions(rows): _write("pea_session_state", rows, ("game_id", "sessio
 def upsert_players(rows): _write("pea_player_state", rows, ("game_id", "distinct_id", "date"))
 def upsert_digest(rows): _write("pea_daily_digest", rows, ("game_id", "date"))
 def upsert_friction(rows): _write("pea_level_friction", rows, ("game_id", "date", "level_id"))
-def upsert_bringback(rows): _write("pea_bringback_list", rows, ("game_id", "date", "distinct_id"))
 def upsert_funnel(rows): _write("pea_funnel_retention", rows, ("game_id", "date"))
+
+
+def upsert_bringback(rows: list[dict]):
+    """Like _write but PRESERVE the user's included/overridden flags across nightly runs —
+    a hand-curated bring-back list must survive recompute."""
+    if not rows:
+        return
+    cols = list(rows[0].keys())
+    keep = {"included", "overridden"}
+    updates = ", ".join(f"{c}=EXCLUDED.{c}" for c in cols if c not in ("game_id", "date", "distinct_id") and c not in keep)
+    # only reset the flags when the row was NOT overridden by the user
+    updates += (", included = CASE WHEN pea_bringback_list.overridden THEN pea_bringback_list.included ELSE EXCLUDED.included END")
+    tmpl = "(" + ",".join(["%s"] * len(cols)) + ")"
+    vals = [[psycopg2.extras.Json(r[c]) if isinstance(r[c], (dict, list)) else r[c] for c in cols] for r in rows]
+    sql = (f"INSERT INTO pea_bringback_list ({','.join(cols)}) VALUES %s "
+           f"ON CONFLICT (game_id, date, distinct_id) DO UPDATE SET {updates}")
+    with connect() as cx, cx.cursor() as cur:
+        psycopg2.extras.execute_values(cur, sql, vals, template=tmpl)
+        cx.commit()
+
+
+def set_bringback_override(game_id: str, date, distinct_id: str, included: bool):
+    """Persist a user's hand-pick/override on the bring-back list (PATCH /pea/bringback)."""
+    with connect() as cx, cx.cursor() as cur:
+        cur.execute(
+            "UPDATE pea_bringback_list SET included=%s, overridden=TRUE "
+            "WHERE game_id=%s AND date=%s AND distinct_id=%s",
+            (included, game_id, date, distinct_id))
+        cx.commit()
+        return cur.rowcount
+
+
+def latest_date(game_id: str, table: str = "pea_daily_digest"):
+    """Most recent date present in a derived table — used as the default 'today' so the
+    dashboard isn't blank when the box's UTC clock is a day ahead of the IST data."""
+    with connect() as cx, cx.cursor() as cur:
+        cur.execute(f"SELECT max(date) FROM {table} WHERE game_id=%s", (game_id,))
+        row = cur.fetchone()
+        return row[0] if row and row[0] else None
+
+
+def load_existing_narratives(game_id: str) -> dict:
+    """{(distinct_id, date_str): (row_dict, narrative)} for incremental narration reuse."""
+    cols = ["entry_mood", "exit_mood", "overall_feeling", "personality", "felt_tension",
+            "level_reached", "retries", "fails", "wins", "sessions_today"]
+    with connect() as cx, cx.cursor() as cur:
+        cur.execute(f"SELECT distinct_id, date, narrative, {','.join(cols)} "
+                    f"FROM pea_player_state WHERE game_id=%s", (game_id,))
+        out = {}
+        for r in cur.fetchall():
+            did, date, narrative = r[0], r[1], r[2]
+            row_dict = dict(zip(cols, r[3:]))
+            out[(did, str(date))] = (row_dict, narrative)
+        return out

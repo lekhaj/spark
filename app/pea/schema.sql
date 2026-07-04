@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS pea_player_state (
     game_id TEXT NOT NULL, distinct_id TEXT NOT NULL, date DATE NOT NULL,
     sessions_today INT DEFAULT 0, level_reached INT,
     retries INT DEFAULT 0, fails INT DEFAULT 0, wins INT DEFAULT 0,
+    build_version TEXT, platform TEXT,
     entry_mood TEXT, exit_mood TEXT, overall_feeling TEXT, feeling_score INT,
     persona TEXT, persona_axes JSONB DEFAULT '{}', prev_persona TEXT,
     personality TEXT, personality_runner_up TEXT, personality_spectrum JSONB DEFAULT '{}',

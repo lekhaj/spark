@@ -16,6 +16,23 @@ def _confidence(n_users: int) -> str:
     return "low" if n_users < C.LOW_CONFIDENCE_USER_THRESHOLD else "high"
 
 
+# FELT tension severity — pick the DAY's worst so "during" reflects the hardest moment,
+# not just how the last session happened to end.
+_TENSION_RANK = {"defeated": 3, "frustrated": 2, "earned-relief": 1, "flat": 0}
+
+
+def _worst_tension(day_sessions: list[dict]) -> str | None:
+    ts = [s.get("felt_tension") for s in day_sessions if s.get("felt_tension")]
+    return max(ts, key=lambda t: _TENSION_RANK.get(t, 0)) if ts else None
+
+
+def _first_present(day_sessions: list[dict], key: str):
+    for s in day_sessions:
+        if s.get(key):
+            return s[key]
+    return None
+
+
 def rollup_players(sessions: list[dict]) -> list[dict]:
     """Collapse a player's sessions on a given date into one player_state row."""
     by_day: dict[tuple, list[dict]] = defaultdict(list)
@@ -50,12 +67,14 @@ def rollup_players(sessions: list[dict]) -> list[dict]:
             "wins": sum(s["wins"] for s in day_sessions),
             "entry_mood": first["entry_mood"], "exit_mood": exit_m,
             "overall_feeling": last["overall_feeling"], "feeling_score": last["feeling_score"],
+            "build_version": _first_present(day_sessions, "build_version"),
+            "platform": _first_present(day_sessions, "platform"),
             "persona": p_str, "persona_axes": axes, "prev_persona": None,
             "personality": pers["personality"],
             "personality_runner_up": pers.get("personality_runner_up"),
             "personality_spectrum": pers["spectrum"],
-            "felt_tension": last["felt_tension"], "felt_mastery": last["felt_mastery"],
-            "felt_autonomy": last["felt_autonomy"],
+            "felt_tension": _worst_tension(day_sessions) or last["felt_tension"],
+            "felt_mastery": last["felt_mastery"], "felt_autonomy": last["felt_autonomy"],
             "confidence": pers["confidence"], "is_new": any(s["is_new"] for s in day_sessions),
             "flipped_to_risk": exit_m in ("frustrated", "churn-risk"),
             "evidence": [e for s in day_sessions for e in s["evidence"]],
@@ -71,7 +90,8 @@ def build_digest(player_rows: list[dict], date: dt.date, prev_dist: dict | None 
     during = Counter(p.get("felt_tension") for p in today if p.get("felt_tension"))  # DURING gameplay
     exit_ = Counter(p["exit_mood"] for p in today)             # how they ENDED
     personality_dist = Counter(p.get("personality") for p in today if p.get("personality"))
-    by_build = Counter(p.get("build_version") or "unknown" for p in today)  # from sessions ideally
+    by_build = Counter(p.get("build_version") or "unknown" for p in today)
+    by_platform = Counter(p.get("platform") or "unknown" for p in today)
     watch = [{"distinct_id": p["distinct_id"], "exit_mood": p["exit_mood"], "persona": p["persona"]}
              for p in today if p["flipped_to_risk"]]
     friction = _friction_from_players(today)
@@ -86,7 +106,7 @@ def build_digest(player_rows: list[dict], date: dt.date, prev_dist: dict | None 
         "game_id": C.GAME_ID, "date": date, "dau": dau,
         "new_users": sum(1 for p in today if p["is_new"]),
         "returning_users": sum(1 for p in today if not p["is_new"]),
-        "by_build": dict(by_build), "by_platform": {},
+        "by_build": dict(by_build), "by_platform": dict(by_platform),
         "entry_mood_dist": dict(entry), "exit_mood_dist": dict(exit_),
         "during_tension_dist": dict(during), "personality_dist": dict(personality_dist),
         "entry_mood_dod": dod(entry, (prev_dist or {}).get("entry")),

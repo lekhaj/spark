@@ -83,8 +83,9 @@ def _score_archetypes(d: dict) -> list[tuple[str, float, str]]:
         f"persistence={d['persistence']}, mastery={d['mastery']}")
     add("casual-gamer", (d["rhythm"] < mid) + (m["avg_session_min"] <= 4) + (d["persistence"] < mid),
         f"grazer rhythm={d['rhythm']}, avg_session={m['avg_session_min']}min")
-    add("at-risk-drifter", (m["sessions_per_day"] < 1) * 2,  # placeholder; refined by lapse in caller
-        f"sessions/day={m['sessions_per_day']}")
+    # low-engagement drift: very few, very short sessions in the window (or lapsing, added by caller)
+    add("at-risk-drifter", (m["sessions"] <= 2) + (m["avg_session_min"] <= 1.5),
+        f"sessions={m['sessions']}, avg_session={m['avg_session_min']}min")
     add("steady-improver", 0.5, "default when no dimension dominates")  # baseline
     cands.sort(key=lambda c: c[1], reverse=True)
     return cands
